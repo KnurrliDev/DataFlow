@@ -5,6 +5,9 @@
 - Guided review: name the files and the folders to review, and a language model makes a plan of steps. The side view shows one step after the other, with its lines, its text and its questions. Mark each step as OK, issue or question, and copy a summary of the review.
 - The MCP server has the new tools `get_review`, `show_review_plan` and `review_step`, and the prompt `guided-review`.
 - The commands **DataFlow: Next Review Step**, **DataFlow: Previous Review Step**, **DataFlow: Copy Review Summary** and **DataFlow: Close Guided Review**, and the theme color `dataflow.reviewGuide`.
+- Unreal Engine 5 projects: the command **DataFlow: Make Unreal Compile Database** lets UnrealBuildTool make the compile database of the project in `Intermediate/DataFlow`. DataFlow asks if it can make the database when an Unreal project has none. The settings `dataflow.unreal.enginePath`, `dataflow.unreal.target`, `dataflow.unreal.configuration` and `dataflow.unreal.arguments` change the run of UnrealBuildTool.
+- The default of `dataflow.ripple.asyncFunctions` has the async functions of Unreal: `Async`, `AsyncTask`, `AsyncThread`, `AsyncPool` and `UE::Tasks::Launch`. The default of `dataflow.project.skipFolders` has the folders `Binaries`, `DerivedDataCache`, `Intermediate` and `Saved`.
+- The engine ignores the options of MSVC that clang-cl does not know, for example the options of UnrealBuildTool in its response files. In a command of MSVC, a `##` that gives no valid token is not an error, as in MSVC.
 
 ## 0.1.0
 

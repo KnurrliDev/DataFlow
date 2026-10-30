@@ -2648,6 +2648,77 @@ test('ignores a module map of MSVC that the build did not write, and the module 
 	}
 });
 
+test('ignores the options of MSVC that clang-cl does not know, as UnrealBuildTool gives them in a response file', async () => {
+	// UnrealBuildTool gives MSVC "/experimental:log <file>.sarif", "/sourceDependencies <file>.json" and
+	// /dximplicitlyinstantiatevirtualfunction-. The driver took the files and the unknown option as source files: "cannot
+	// specify /Fo when compiling multiple source files"
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-ubt-'));
+	const file = path.join(dir, 'Actor.cpp');
+	writeFileSync(file, 'int df_tick() { return 1; }\n');
+	const rsp = path.join(dir, 'Actor.cpp.obj.rsp');
+	writeFileSync(rsp, [
+		`"${file}"`, `/Fo"${path.join(dir, 'Actor.cpp.obj')}"`, `/experimental:log "${path.join(dir, 'Actor.cpp.sarif')}"`,
+		`/sourceDependencies "${path.join(dir, 'Actor.cpp.dep.json')}"`, '/dximplicitlyinstantiatevirtualfunction-', '/d2ExtendedWarningInfo',
+		'/nologo', '/TP', '/std:c++20', '/c',
+	].join('\r\n'));
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file, command: `cl.exe @"${rsp}"` }]));
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		const init = await own.send('initialize', { compileCommands: [db], maxThreads: 1, cacheSize: 2 });
+		assert.equal(init.error, undefined, JSON.stringify(init.error));
+		const res = await own.send('dataflow/functions', { file });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+		assert.deepEqual(res.result.functions.map((f) => f.name), ['df_tick']);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('accepts a ## that gives no valid token in a command of MSVC, as MSVC does, and not in a command of clang-cl', async () => {
+	// clang defines _MSVC_TRADITIONAL as 1, thus Unreal Engine pastes a macro name and its arguments in parentheses for the
+	// traditional preprocessor of MSVC (UE_APPEND_VA_ARG_COUNT). clang-cl gave "pasting formed 'ADD(', an invalid
+	// preprocessing token" for each use
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-paste-'));
+	const text = [
+		'#if defined(_MSVC_TRADITIONAL) && _MSVC_TRADITIONAL',
+		'#define DF_INVOKE(Macro, Args) DF_EXPAND(Macro##Args)',
+		'#else',
+		'#define DF_INVOKE(Macro, Args) Macro Args',
+		'#endif',
+		'#define DF_EXPAND(X) X',
+		'#define DF_ADD(A, B) ((A) + (B))',
+		'int df_sum() { return DF_INVOKE(DF_ADD, (1, 2)); }',
+		'',
+	].join('\n');
+	const msvc = path.join(dir, 'msvc.cpp');
+	const clang = path.join(dir, 'clang.cpp');
+	writeFileSync(msvc, text);
+	writeFileSync(clang, text);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([
+		{ directory: dir, file: msvc, command: `cl.exe /nologo /TP /std:c++20 /Zc:preprocessor /c "${msvc}"` },
+		{ directory: dir, file: clang, command: `clang-cl.exe /nologo /TP /std:c++20 /c "${clang}"` },
+	]));
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		const init = await own.send('initialize', { compileCommands: [db], maxThreads: 1, cacheSize: 2 });
+		assert.equal(init.error, undefined, JSON.stringify(init.error));
+		const res = await own.send('dataflow/functions', { file: msvc });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+		assert.deepEqual(res.result.functions.map((f) => f.name), ['df_sum']);
+		// clang-cl itself gives the error, so the engine shows it
+		const other = await own.send('dataflow/functions', { file: clang });
+		assert.ok(other.result.errors.some((e) => e.includes('pasting formed')), other.result.errors.join('\n'));
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('sends status notifications', () => {
 	const states = engine.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params.state);
 	assert.ok(states.includes('parsing') && states.includes('ready'), states.join(','));

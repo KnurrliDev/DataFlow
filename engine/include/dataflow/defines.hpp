@@ -55,6 +55,7 @@
 #include <clang/Lex/PPCallbacks.h>
 #include <clang/Lex/Preprocessor.h>
 #include <clang/Lex/PreprocessorOptions.h>
+#include <clang/Options/Options.h>
 #include <clang/Serialization/PCHContainerOperations.h>
 #include <clang/Tooling/ArgumentsAdjusters.h>
 #include <clang/Tooling/CompilationDatabase.h>
@@ -63,6 +64,9 @@
 #include <clang/Tooling/JSONCompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
 #include <llvm/ADT/BitVector.h>
+#include <llvm/Option/ArgList.h>
+#include <llvm/Option/OptTable.h>
+#include <llvm/Option/Option.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/JSON.h>

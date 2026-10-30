@@ -12,7 +12,11 @@ export const MAX_PROJECT_FILES = 20000;
 
 // The names of the folders that the list of files skips: hidden folders, build folders, and the packages that CMake
 // gets. The setting dataflow.project.skipFolders has the same default. A * is any text and a ? is one character
-export const SKIP_FOLDERS = ['.*', 'node_modules', '_deps', 'out', 'build', 'builds', 'build-*', 'build_*', 'build.*', 'cmake-build-*'];
+export const SKIP_FOLDERS = [
+	'.*', 'node_modules', '_deps', 'out', 'build', 'builds', 'build-*', 'build_*', 'build.*', 'cmake-build-*',
+	// the folders of an Unreal project with built and generated files
+	'Binaries', 'DerivedDataCache', 'Intermediate', 'Saved',
+];
 // qmake writes the files of an in-source build into these folders, next to its Makefiles
 const QMAKE_OUTPUT = /^(debug|release)$/i;
 

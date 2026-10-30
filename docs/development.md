@@ -18,12 +18,13 @@ This document tells how to change, run, test and release the code of DataFlow. [
 | `src/` | The extension code. VS Code calls `activate()` and `deactivate()` in `src/extension.ts`. |
 | `src/side/` | The side view in the extension. It has the webview panel, the scroll sync, the theme colors and the rows of the file. It also has the layers of Flow Lens, Logic Map and Hidden C++, and the story of Change Ripple. Include Hierarchy, Call Hierarchy and Threads and races have their data in `src/lenses/includes.ts`, `src/lenses/calls.ts` and `src/lenses/threads.ts`. |
 | `src/webview-side/` | The code of the side view in the webview, with Preact |
+| `src/cdb/` | The compile databases. `manager.ts`: the search in the build folders, the selection and the watchers. `qmake.ts`: the database from the Makefiles of qmake. `project.ts` and `settings.ts`: a project that is not open in VS Code. `unreal.ts`: the engine, the targets and the database of UnrealBuildTool for an Unreal Engine project. |
 | `src/mcp/` | The MCP server. `server.ts`: the protocol over HTTP. `tools.ts`: the tools and the prompts. `host.ts`: the data and the changes of the view. `manager.ts`: the start, the token and the setup. `bridge.ts`: the bridge for clients that start programs. `claude.ts`: the plugin and the settings of the connection to Claude Code. The logical blocks of a model have their data in `src/lenses/blocks.ts`. `layers.ts` keeps the layers of the model and the guided review for the next session. |
 | `src/review/` | Change Ripple: the diff against the target branch (`git.ts`), the target branches (`targets.ts`) and the ripple (`ripple.ts`). The guided review has its data in `guide.ts`. |
 | `scripts/` | `build-engine.mjs` builds the engine. `build-webviews.mjs` bundles the script of the side view with esbuild. `prepare-fixtures.mjs` prepares the fixture projects for the tests. `docs-screenshots.mjs` makes the screenshots of the documents. `package-vsix.mjs` makes the VSIX package. |
 | `engine/` | The analysis engine in C++ |
 | `media/` | The icon of DataFlow |
-| `test/fixtures/` | A CMake project and a qmake project for the tests. The test of Change Ripple uses a git copy of the CMake project. |
+| `test/fixtures/` | A CMake project, a qmake project and an Unreal Engine 5 project for the tests. The test of Change Ripple uses a git copy of the CMake project. |
 | `test/engine/` | The protocol tests of the engine |
 | `test/ui/` | The tests of the side view |
 | `spikes/` | Test scripts and tools. The scripts of `spikes/ui/` start VS Code, use the side view and make screenshots. |
@@ -70,7 +71,9 @@ node scripts/prepare-fixtures.mjs
 npx vscode-test --label unit
 ```
 
-The labels are `unit`, `cmake`, `qmake`, `project`, `late-db` and `review`.
+The labels are `unit`, `cmake`, `qmake`, `project`, `late-db`, `review` and `unreal`.
+
+The group `unreal` uses the newest Unreal Engine 5 of the Epic Games Launcher. `prepare-fixtures.mjs` writes its version into the copy of the Unreal project. The test runs UnrealBuildTool, which takes about 1 minute. If a different UnrealBuildTool of the same engine runs, for example a build in Visual Studio, UnrealBuildTool waits until it stops. With no Unreal Engine 5, the test is skipped.
 
 ## Make the screenshots
 
@@ -119,3 +122,4 @@ The tests use the extension ID in these files:
 - `src/test/fixtures/helpers.ts`
 - `src/test/fixtures/latedb.test.ts`
 - `src/test/fixtures/project.test.ts`
+- `src/test/fixtures/unreal.test.ts`

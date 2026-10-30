@@ -4,6 +4,10 @@ node_modules
 build/
 spikes/**/out/
 test/fixtures/**/build*/
+# the files that UnrealBuildTool writes into the Unreal fixture
+test/fixtures/unreal/*/Binaries/
+test/fixtures/unreal/*/Intermediate/
+test/fixtures/unreal/*/Saved/
 *.tsbuildinfo
 
 # example code from another project. it stays local and is not committed

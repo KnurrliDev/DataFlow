@@ -93,6 +93,11 @@
         "category": "DataFlow"
       },
       {
+        "command": "dataflow.unreal.makeCompileDatabase",
+        "title": "Make Unreal Compile Database",
+        "category": "DataFlow"
+      },
+      {
         "command": "dataflow.restartEngine",
         "title": "Restart Engine",
         "category": "DataFlow"
@@ -329,6 +334,40 @@
           "scope": "resource",
           "markdownDescription": "The path to `compile_commands.json`, to a folder that contains it, or to a qmake build folder. An array gives more than one database. A relative path starts at the workspace folder."
         },
+        "dataflow.unreal.enginePath": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "The folder of the Unreal Engine of the project: the folder that contains the folder `Engine`. If it is empty, DataFlow uses the Unreal Engine of `EngineAssociation` in the `.uproject` file: an installed version, a source build, or the Unreal Engine in a folder above the project."
+        },
+        "dataflow.unreal.target": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "The target of the compile database of an Unreal project, for example `MyGameEditor`. If it is empty, DataFlow uses the editor target of the project."
+        },
+        "dataflow.unreal.configuration": {
+          "type": "string",
+          "default": "Development",
+          "enum": [
+            "Debug",
+            "DebugGame",
+            "Development",
+            "Test",
+            "Shipping"
+          ],
+          "scope": "resource",
+          "markdownDescription": "The configuration of the compile database of an Unreal project."
+        },
+        "dataflow.unreal.arguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "More arguments for UnrealBuildTool when it makes the compile database of an Unreal project, for example `-Verbose`."
+        },
         "dataflow.project.skipFolders": {
           "type": "array",
           "items": {
@@ -344,7 +383,11 @@
             "build-*",
             "build_*",
             "build.*",
-            "cmake-build-*"
+            "cmake-build-*",
+            "Binaries",
+            "DerivedDataCache",
+            "Intermediate",
+            "Saved"
           ],
           "markdownDescription": "The names of the folders that the list of the files of a project skips, for example build folders. A `*` is any text, and a `?` is one character. The case of the letters is not important. The list also skips the `debug` and `release` folders next to the Makefiles of qmake."
         },
@@ -453,7 +496,12 @@
           "default": [
             "std::async",
             "QtConcurrent::run",
-            "tf::Executor::async"
+            "tf::Executor::async",
+            "Async",
+            "AsyncTask",
+            "AsyncThread",
+            "AsyncPool",
+            "UE::Tasks::Launch"
           ],
           "scope": "resource",
           "markdownDescription": "Functions that run a callable on a different thread and return its result, for example `std::async`. Change Ripple follows the result of a call of one of these functions, and marks the step as async. Flow Lens shows the callable of a data member trace on a different thread. Call Hierarchy shows the calls in the callable as calls on a different thread. Threads and races shows the callable as a worker thread. A name with `::` is a qualified name."

@@ -1,0 +1,13 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.8",
+	"Category": "",
+	"Description": "The Unreal project of the tests of DataFlow",
+	"Modules": [
+		{
+			"Name": "BatteryPlant",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

@@ -20,7 +20,7 @@ The side view shows the file of the active C++ editor with the colors of your th
 
 DataFlow also has an MCP server. A language model reads the facts of the engine through the tools of the server. Then the model shows logical blocks, notes, comments and details in the side view. The engine gives the lines and the data, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other.
 
-DataFlow works on Windows 64-bit with VS Code 1.120 or later. Your project needs a compile database, for example the `compile_commands.json` file of CMake or a qmake build folder.
+DataFlow works on Windows 64-bit with VS Code 1.120 or later. Your project needs a compile database, for example the `compile_commands.json` file of CMake or a qmake build folder. For an Unreal Engine 5 project, DataFlow makes the compile database with UnrealBuildTool.
 
 ## Quickstart with Claude Code
 

@@ -33,7 +33,8 @@ add_custom_command(TARGET dataflow-engine POST_BUILD
           "$<TARGET_FILE_DIR:dataflow-engine>/lib/clang/${LLVM_VERSION_MAJOR}/include")
 
 if(MSVC)
-  target_compile_options(dataflow-engine PRIVATE /utf-8 /permissive- /Zc:__cplusplus /bigobj)
+  # the option tables of clang (clang/Options/Options.inc) need the preprocessor of the standard for __VA_ARGS__
+  target_compile_options(dataflow-engine PRIVATE /utf-8 /permissive- /Zc:__cplusplus /Zc:preprocessor /bigobj)
   # classes from llvm without rtti need the same setting in the engine
   if(NOT LLVM_ENABLE_RTTI)
     target_compile_options(dataflow-engine PRIVATE /GR-)

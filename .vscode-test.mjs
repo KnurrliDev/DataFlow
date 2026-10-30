@@ -41,4 +41,7 @@ export default defineConfig([
 		workspaceFolder: 'build/fixtures/battery-review',
 		...common,
 	},
+	// An Unreal project with no compile database. scripts/prepare-fixtures.mjs makes it from test/fixtures/unreal. The test
+	// needs an installed Unreal Engine 5, else it is skipped.
+	{ label: 'unreal', files: 'out/test/fixtures/unreal.test.js', workspaceFolder: 'build/fixtures/unreal/BatteryPlant', ...common },
 ]);

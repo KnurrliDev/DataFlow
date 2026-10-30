@@ -55,7 +55,7 @@ For the engine:
 
 For each C++ project:
 
-- A compile database: a `compile_commands.json` file from CMake, the build folder of qmake, or the compile database that Qt Creator writes for clangd
+- A compile database: a `compile_commands.json` file from CMake, the build folder of qmake, or the compile database that Qt Creator writes for clangd. For an Unreal Engine 5 project, DataFlow makes the compile database with UnrealBuildTool.
 
 ### Get the libraries for the engine
 
@@ -175,6 +175,7 @@ DataFlow uses the engine in `build/engine` of the repository. To use an engine i
    - The `compile_commands.json` file of CMake. CMake writes this file for the Ninja generators and the Makefile generators if `CMAKE_EXPORT_COMPILE_COMMANDS` is `ON`.
    - The build folder of qmake, with its Makefile.
    - The `.qtc_clangd/compile_commands.json` file that Qt Creator writes for clangd.
+   - For an Unreal Engine 5 project, the compile database that UnrealBuildTool makes for DataFlow. If the project has no compile database, DataFlow asks if it can make one. [Unreal Engine projects](usage.md#unreal-engine-projects) tells how.
 2. If DataFlow finds no compile database, run **DataFlow: Select Compile Database**, and select the file or the build folder.
 3. Open a C++ file of the project. The DataFlow item in the status bar shows the file that the engine parses. Then it shows the function at the cursor.
 4. Click **DataFlow: Open Side View** in the title bar of the editor. The side view opens beside the editor.

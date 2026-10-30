@@ -33,6 +33,7 @@ To use the side view, do these steps:
 1. Open a C++ project with a compile database. DataFlow finds the database. If DataFlow finds no database, run **DataFlow: Select Compile Database**.
    - DataFlow looks in the folder, in its build folders, and in the build folders next to it. An example is `../build-App-Desktop-Debug` of Qt Creator.
    - DataFlow also finds a database in a build folder that you make later, for example with the first build with a CMake preset. Then DataFlow starts the engine.
+   - For an Unreal Engine 5 project, UnrealBuildTool makes the database. See [Unreal Engine projects](#unreal-engine-projects).
 2. Open the side view. Do one of these steps:
    - Click **DataFlow: Open Side View** in the title bar of the editor.
    - Click the DataFlow item in the status bar.
@@ -104,6 +105,44 @@ The engine parses an `.inc` file alone, with the compile command of a file with 
 The first parse takes about the time of a parse of the C++ file, because it also parses these lines. A parse after an edit of the `.inc` file is fast. For example, a unity build of a Qt project has 65 `.inc` files in one C++ file. The first parse of the last `.inc` file took 3.9 s, and a parse after an edit took 0.1 s.
 
 To keep an `.inc` file as plain text, run **Change Language Mode** and select **Plain Text**.
+
+### Unreal Engine projects
+
+An Unreal Engine 5 project is a folder with a `.uproject` file. UnrealBuildTool makes its compile database.
+
+1. Open the folder of the project in VS Code.
+2. If the project has no compile database, DataFlow asks if it can make one. Click **Make**. You can also run **DataFlow: Make Unreal Compile Database**.
+3. A notification shows the progress. To stop UnrealBuildTool, click **Cancel**. When the database is ready, the engine starts with it.
+
+DataFlow runs UnrealBuildTool of the Unreal Engine of the project with the mode `GenerateClangDatabase`:
+
+- UnrealBuildTool runs UnrealHeaderTool first, so the `.generated.h` files exist.
+- For this mode, UnrealBuildTool turns off the precompiled headers and the unity builds, so each source file has its own command.
+- The commands get their options from response files (`.rsp`) in `Intermediate/Build`. With an Unreal Engine of the Epic Games Launcher, a normal build writes the same files again, for example with its precompiled headers. Thus DataFlow copies the response files into `Intermediate/DataFlow/rsp`. Its database `Intermediate/DataFlow/compile_commands.json` uses the copies.
+- The usual `.gitignore` file of an Unreal project contains the folder `Intermediate`, so git ignores the database.
+
+After you add a module or a source file, or change a `.Build.cs` file, run the command again.
+
+The Unreal Engine of the project comes from `EngineAssociation` in the `.uproject` file:
+
+- A version, for example `5.8`: an installation of the Epic Games Launcher.
+- The GUID of a source build: the folder that the registry of Windows has for the GUID.
+- No value: the Unreal Engine in a folder above the project.
+
+The target is the editor target of the project, for example `MyGameEditor`, because it has the code of the game and of the editor. For the database, UnrealBuildTool uses Clang: the Clang of Visual Studio (the component "C++ Clang tools for Windows") or of LLVM. If UnrealBuildTool finds no Clang, install one of them. To use MSVC, add the compiler of your Visual Studio to `dataflow.unreal.arguments`, for example `-Compiler=VisualStudio2022`.
+
+DataFlow does not use the databases of the VS Code project files of Unreal, `.vscode/compileCommands_<name>.json`. Their commands are for IntelliSense: they have no source file and no C++ standard.
+
+The first parse of a file of an Unreal project takes some seconds, because the headers of Unreal Engine are large. A parse after an edit is fast.
+
+| Setting | Default | Function |
+| --- | --- | --- |
+| `dataflow.unreal.enginePath` | empty | The folder of Unreal Engine: the folder that contains the folder `Engine`. If it is empty, DataFlow uses `EngineAssociation`. |
+| `dataflow.unreal.target` | empty | The target of the database, for example `MyGameEditor`. If it is empty, DataFlow uses the editor target of the project. |
+| `dataflow.unreal.configuration` | `Development` | The configuration of the database. |
+| `dataflow.unreal.arguments` | `[]` | More arguments for UnrealBuildTool, for example `-Verbose`. |
+
+The list of the files of a project skips the folders `Binaries`, `DerivedDataCache`, `Intermediate` and `Saved`. The async functions of Unreal are in the default of `dataflow.ripple.asyncFunctions`: `Async`, `AsyncTask`, `AsyncThread`, `AsyncPool` and `UE::Tasks::Launch`. Thus Threads and races, Call Hierarchy, Flow Lens and Change Ripple know the code that these functions run on a different thread.
 
 ## Flow Lens
 
@@ -377,7 +416,7 @@ DataFlow keeps the target branch of each branch of a repository, also for a proj
 | --- | --- | --- |
 | `dataflow.ripple.baseRef` | empty | The target branch if you did not select one with **Target**. If the setting is empty or its ref does not exist, Change Ripple uses the automatic target branch. A different ref is also possible, for example `HEAD~1` for the last commit. |
 | `dataflow.ripple.maxDepth` | `2` | The number of caller levels that Change Ripple analyzes after a return value |
-| `dataflow.ripple.asyncFunctions` | `std::async`, `QtConcurrent::run`, `tf::Executor::async` | Functions that run a callable on a different thread. Change Ripple continues with their result. |
+| `dataflow.ripple.asyncFunctions` | `std::async`, `QtConcurrent::run`, `tf::Executor::async`, `Async`, `AsyncTask`, `AsyncThread`, `AsyncPool`, `UE::Tasks::Launch` | Functions that run a callable on a different thread. Change Ripple continues with their result. |
 
 ## Commands and keys
 
@@ -391,6 +430,7 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | **DataFlow: Open File of the Project** | | Opens a C or C++ file of the project. The command shows only when a project is open. |
 | **DataFlow: Close Project** | | Closes the project. The command shows only when a project is open. |
 | **DataFlow: Select Compile Database** | | Selects the compile database. |
+| **DataFlow: Make Unreal Compile Database** | | Lets UnrealBuildTool make the compile database of an Unreal Engine 5 project. See [Unreal Engine projects](#unreal-engine-projects). |
 | **DataFlow: Restart Engine** | | Starts the engine again. |
 | **DataFlow: Show Log** | | Shows the log of DataFlow. |
 | **DataFlow: Trace Variable** | Ctrl+Alt+F | Starts Flow Lens on the variable or the data member at the cursor. |
@@ -424,7 +464,11 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | Setting | Default | Function |
 | --- | --- | --- |
 | `dataflow.compileCommands` | empty | The path to `compile_commands.json`, to a folder that contains it, or to a qmake build folder. An array gives more than one database. A relative path starts at the workspace folder. |
-| `dataflow.project.skipFolders` | `.*`, `node_modules`, `_deps`, `out`, `build`, `builds`, `build-*`, `build_*`, `build.*`, `cmake-build-*` | The names of the folders that the list of the files of a project skips, for example build folders. A `*` is any text, and a `?` is one character. The case of the letters is not important. The list also skips the `debug` and `release` folders next to the Makefiles of qmake. |
+| `dataflow.unreal.enginePath` | empty | The folder of the Unreal Engine of the project: the folder that contains the folder `Engine`. If it is empty, DataFlow uses the engine of `EngineAssociation` in the `.uproject` file. See [Unreal Engine projects](#unreal-engine-projects). |
+| `dataflow.unreal.target` | empty | The target of the compile database of an Unreal project, for example `MyGameEditor`. If it is empty, DataFlow uses the editor target of the project. |
+| `dataflow.unreal.configuration` | `Development` | The configuration of the compile database of an Unreal project: `Debug`, `DebugGame`, `Development`, `Test` or `Shipping`. |
+| `dataflow.unreal.arguments` | `[]` | More arguments for UnrealBuildTool when it makes the compile database of an Unreal project, for example `-Verbose`. |
+| `dataflow.project.skipFolders` | `.*`, `node_modules`, `_deps`, `out`, `build`, `builds`, `build-*`, `build_*`, `build.*`, `cmake-build-*`, `Binaries`, `DerivedDataCache`, `Intermediate`, `Saved` | The names of the folders that the list of the files of a project skips, for example build folders. A `*` is any text, and a `?` is one character. The case of the letters is not important. The list also skips the `debug` and `release` folders next to the Makefiles of qmake. |
 | `dataflow.engine.path` | empty | The path to `dataflow-engine`. If it is empty, DataFlow uses the engine of the extension. |
 | `dataflow.engine.maxThreads` | `0` | The number of parse threads. `0` uses half of the processor cores. The engine never uses more than 80% of the cores. |
 | `dataflow.engine.cacheSize` | `4` | The number of parsed files that the engine keeps in memory, from 1 to 64. |
@@ -435,7 +479,7 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | `dataflow.flow.readFunctions` | `[]` | Functions that only read their arguments and their object, for example `log_value` or `Config::get`. Flow Lens shows a call of such a function as a read, not as a possible write. Use a qualified name with `::` or a simple name. The format functions of std, fmt and spdlog are reads already. |
 | `dataflow.cost.categories` | all categories | The categories of Hidden C++ that show: `copy`, `move`, `conversion`, `lifetime`, `destructor`, `allocation`, `lookup` and `state`. The category `lifetime` contains the temporaries and the variables that hide a variable of an outer scope. |
 | `dataflow.cost.minCopyBytes` | `16` | A copy of a trivially copyable type of this size in bytes or less does not show in Hidden C++. |
-| `dataflow.ripple.asyncFunctions` | `std::async`, `QtConcurrent::run`, `tf::Executor::async` | Functions that run a callable on a different thread and return its result. Change Ripple continues with the result of a call of one of these functions, and marks the step as async. Flow Lens shows the callable of a data member trace on a different thread. Call Hierarchy shows the calls in the callable as calls on a different thread. Threads and races shows the callable as a worker thread. A name with `::` is a qualified name. |
+| `dataflow.ripple.asyncFunctions` | `std::async`, `QtConcurrent::run`, `tf::Executor::async`, `Async`, `AsyncTask`, `AsyncThread`, `AsyncPool`, `UE::Tasks::Launch` | Functions that run a callable on a different thread and return its result. Change Ripple continues with the result of a call of one of these functions, and marks the step as async. Flow Lens shows the callable of a data member trace on a different thread. Call Hierarchy shows the calls in the callable as calls on a different thread. Threads and races shows the callable as a worker thread. A name with `::` is a qualified name. |
 | `dataflow.ripple.baseRef` | empty | The target branch of Change Ripple, if you did not select one with **Target** in the Change Ripple bar. Change Ripple compares the files with the merge base of `HEAD` and this ref. If the ref starts with `origin/` and does not exist, Change Ripple uses the local branch. If the ref is empty or does not exist, Change Ripple uses the default branch of the remote, then `origin/main`, `main`, `origin/master` or `master`. |
 | `dataflow.ripple.maxDepth` | `2` | The number of caller levels that Change Ripple analyzes after a return value, from 0 to 5. |
 | `dataflow.mcp.enabled` | `false` | Start the MCP server of DataFlow when the extension starts. The agent mode of VS Code starts the server when it needs it. See [Use the MCP tools](tools.md). |

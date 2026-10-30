@@ -7,6 +7,8 @@
 //   branch main, and the change of acceptance scenario 4 on the branch review
 // > remote fixture: build/fixtures/remote-default/, a git repository as a clone of a remote with the default branch
 //   dev, and a change on the branch feature. It has no branch main and no branch master
+// > unreal fixture: build/fixtures/unreal/BatteryPlant/, a copy of the Unreal project with no compile database. Its
+//   EngineAssociation is the newest Unreal Engine 5 of the Epic Games Launcher. With no engine, the test is skipped
 import { execFileSync, execSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -136,3 +138,26 @@ writeFileSync(path.join(remoteBuild, 'compile_commands.json'), JSON.stringify([
 	{ directory: remoteBuild, file: calc, arguments: ['clang++', '-std=c++20', '-c', calc] },
 ], null, 2));
 console.log('remote fixture: build/fixtures/remote-default/ with the default branch dev of origin and the branch feature');
+
+// unreal fixture. The newest Unreal Engine 5 of the Epic Games Launcher with UnrealBuildTool becomes the
+// EngineAssociation of the copy, so the extension finds the engine as for a real project
+const unrealRoot = path.join(repo, 'build', 'fixtures', 'unreal');
+rmSync(unrealRoot, { recursive: true, force: true });
+cpSync(path.join(repo, 'test', 'fixtures', 'unreal', 'BatteryPlant'), path.join(unrealRoot, 'BatteryPlant'), { recursive: true });
+let unrealVersion;
+try {
+	const installed = JSON.parse(readFileSync(path.join(process.env.ProgramData ?? 'C:\ProgramData', 'Epic', 'UnrealEngineLauncher', 'LauncherInstalled.dat'), 'utf8'));
+	const versionOf = (name) => /^UE_(5\.\d+)$/.exec(name ?? '')?.[1];
+	unrealVersion = (installed.InstallationList ?? [])
+		.filter((i) => versionOf(i.AppName) && existsSync(path.join(i.InstallLocation, 'Engine', 'Binaries', 'DotNET', 'UnrealBuildTool', 'UnrealBuildTool.exe')))
+		.map((i) => versionOf(i.AppName))
+		.sort((a, b) => Number(b.split('.')[1]) - Number(a.split('.')[1]))[0];
+} catch {
+	// no Epic Games Launcher
+}
+if (unrealVersion) {
+	const uproject = path.join(unrealRoot, 'BatteryPlant', 'BatteryPlant.uproject');
+	const json = JSON.parse(readFileSync(uproject, 'utf8'));
+	writeFileSync(uproject, JSON.stringify({ ...json, EngineAssociation: unrealVersion }, null, '\t'));
+}
+console.log(`unreal fixture: build/fixtures/unreal/BatteryPlant/ ${unrealVersion ? `for Unreal Engine ${unrealVersion}` : 'with no Unreal Engine, so its test is skipped'}`);

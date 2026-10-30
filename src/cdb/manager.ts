@@ -5,10 +5,11 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { commonRoot, isInside, qtCreatorBuildFolders } from './project';
 import { QMAKE_MAKEFILES, qmakeEntries } from './qmake';
+import { findUnrealProject, UNREAL_DB_FOLDER } from './unreal';
 
 export interface CompileDbInfo {
 	path: string;
-	source: 'setting' | 'cmake-tools' | 'qmake' | 'qt-creator' | 'found';
+	source: 'setting' | 'cmake-tools' | 'qmake' | 'qt-creator' | 'unreal' | 'found';
 	folder: string;
 	makefile?: string; // the qmake Makefile that the database comes from
 }
@@ -99,8 +100,10 @@ export class CompileDbManager implements vscode.Disposable {
 	async useProject(folder: string, pick: (candidates: CompileDbInfo[]) => Thenable<CompileDbInfo | undefined>): Promise<ProjectInfo | undefined> {
 		const candidates = await this.candidatesOf(folder);
 		if (candidates.length === 0) {
-			vscode.window.showWarningMessage(`DataFlow found no compile_commands.json and no qmake build folder in ${folder}. `
-				+ 'Select the folder of the project or its build folder.');
+			const unreal = findUnrealProject(folder);
+			vscode.window.showWarningMessage(unreal
+				? `${unreal.name} is an Unreal project with no compile database. Open its folder in VS Code, and run "DataFlow: Make Unreal Compile Database".`
+				: `DataFlow found no compile_commands.json and no qmake build folder in ${folder}. Select the folder of the project or its build folder.`);
 			return undefined;
 		}
 		const db = candidates.length === 1 ? candidates[0] : await pick(candidates);
@@ -252,13 +255,16 @@ export class CompileDbManager implements vscode.Disposable {
 		return undefined;
 	}
 
-	// The databases of the build folders of a project
+	// The databases of the build folders of a project. An Unreal project also has the database that UnrealBuildTool
+	// writes for DataFlow. The databases of the VS Code project files of Unreal (.vscode/compileCommands_<name>.json) do
+	// not count: their commands are for IntelliSense, with no source file and no C++ standard
 	private async fromBuildFolders(root: string): Promise<CompileDbInfo[]> {
 		const out: CompileDbInfo[] = [];
+		const unrealFolder = findUnrealProject(root) ? pathKey(path.join(root, UNREAL_DB_FOLDER)) : undefined;
 		for (const dir of this.buildFolders(root)) {
 			const info = await this.fromPath(dir, root);
 			if (info) {
-				out.push(info);
+				out.push(pathKey(dir) === unrealFolder ? { ...info, source: 'unreal' } : info);
 			}
 		}
 		return [...new Map(out.map((db) => [pathKey(db.makefile ?? db.path), db])).values()];
@@ -272,6 +278,7 @@ export class CompileDbManager implements vscode.Disposable {
 	// > the build folders of Qt Creator next to the project: build-<name>-<kit>-<configuration>, with the name of the
 	//   folder or of a .pro file
 	// > the build folders in the project files of Qt Creator (*.user), also outside of the project
+	// > for an Unreal project, the folder Intermediate/DataFlow, where UnrealBuildTool writes the database for DataFlow
 	private buildFolders(root: string): string[] {
 		const parent = path.dirname(root);
 		const names = [path.basename(root), ...readdirSafe(root).filter((n) => n.endsWith('.pro')).map((n) => n.slice(0, -'.pro'.length))]
@@ -282,7 +289,8 @@ export class CompileDbManager implements vscode.Disposable {
 			...readdirSafe(parent).filter((n) => names.some((b) => n.toLowerCase().startsWith(b))).map((n) => path.join(parent, n)),
 		].filter(isFolder);
 		const nested = top.flatMap((dir) => readdirSafe(dir).map((n) => path.join(dir, n)).filter(isFolder));
-		return [...new Map([root, ...top, ...nested, ...this.qtCreatorFolders(root)].map((dir) => [pathKey(dir), dir])).values()];
+		const unreal = findUnrealProject(root) ? [path.join(root, UNREAL_DB_FOLDER)] : [];
+		return [...new Map([root, ...top, ...nested, ...this.qtCreatorFolders(root), ...unreal].map((dir) => [pathKey(dir), dir])).values()];
 	}
 
 	// The build folders of the project files of Qt Creator in the project folder and in its folder .qtcreator
@@ -355,6 +363,12 @@ export class CompileDbManager implements vscode.Disposable {
 		await writeFile(file, JSON.stringify(entries, null, 2));
 		this.log.info(`qmake: ${entries.length} entries from ${makefile}`);
 		return { path: file, source: 'qmake', folder: root, makefile };
+	}
+
+	// Looks for the compile databases again after a short pause, for example after a tool wrote a new database. A watcher
+	// event of the new file in the pause gives no second change, so the engine starts only one time
+	refresh(): void {
+		this.fireChange();
 	}
 
 	private fireChange(): void {

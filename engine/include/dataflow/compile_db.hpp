@@ -85,10 +85,12 @@ namespace DataFlow {
     return out;
   }  // strip_unsafe_args
 
-  // removes the response files that the expansion did not find, and the options of the C++ modules of MSVC. CMake gives
-  // MSVC a module map for each source file, for example @game\CMakeFiles\Game.dir\src\main.cpp.obj.modmap, and Ninja
-  // writes it only in a build. Before the build, the driver takes the missing file as a second source file. The options
-  // in a module map, for example -reference <name>=<file>.ifc, are for MSVC only
+  // removes the response files that the expansion did not find, the options of the C++ modules of MSVC, and the options
+  // of MSVC that write a file. CMake gives MSVC a module map for each source file, for example
+  // @game\CMakeFiles\Game.dir\src\main.cpp.obj.modmap, and Ninja writes it only in a build. Before the build, the
+  // driver takes the missing file as a second source file. The options in a module map, for example -reference
+  // <name>=<file>.ifc, are for MSVC only. UnrealBuildTool gives MSVC "/sourceDependencies <file>.json" and
+  // "/experimental:log <file>.sarif". The driver does not know these options, so it takes their files as source files
   [[nodiscard]] inline std::vector<std::string> strip_module_args(const std::vector<std::string>& _args) {
     const auto is_option = [](const std::string& _a, const std::initializer_list<std::string_view> _names) {
       return (_a.starts_with('-') || _a.starts_with('/')) &&
@@ -98,7 +100,8 @@ namespace DataFlow {
     for (size_t i = 0; i < _args.size(); ++i) {
       const std::string& a = _args[i];
       if (i > 0 && a.size() > 1 && a.front() == '@') continue;  // a response file that does not exist
-      if (is_option(a, {"reference", "ifcOutput", "ifcSearchDir", "headerUnit"})) {
+      if (is_option(a, {"reference", "ifcOutput", "ifcSearchDir", "headerUnit", "sourceDependencies",
+                        "sourceDependencies:directives", "experimental:log"})) {
         ++i;  // the option and its value
         continue;
       }
@@ -107,6 +110,34 @@ namespace DataFlow {
     }
     return out;
   }  // strip_module_args
+
+  // true if the driver of clang-cl takes the argument as an option. An option with its value in the next argument is
+  // also an option
+  [[nodiscard]] inline bool is_cl_option(const std::string& _arg) {
+    const char* argv[]     = {_arg.c_str()};
+    unsigned missing_index = 0, missing_count = 0;
+    const llvm::opt::InputArgList list = clang::getDriverOptTable().ParseArgs(
+        argv, missing_index, missing_count, llvm::opt::Visibility(clang::options::CLOption));
+    if (missing_count > 0) return true;
+    for (const llvm::opt::Arg* a : list) {
+      const llvm::opt::Option::OptionClass kind = a->getOption().getKind();
+      if (kind == llvm::opt::Option::InputClass || kind == llvm::opt::Option::UnknownClass) return false;
+    }
+    return true;
+  }  // is_cl_option
+
+  // removes the arguments of MSVC that clang-cl does not know, for example /dximplicitlyinstantiatevirtualfunction- of
+  // UnrealBuildTool. The driver of clang-cl takes an argument that starts with / and that no option knows as a source
+  // file. An argument with the path of a file stays
+  [[nodiscard]] inline std::vector<std::string> strip_unknown_cl_args(const std::vector<std::string>& _args) {
+    std::vector<std::string> out;
+    for (size_t i = 0; i < _args.size(); ++i) {
+      const std::string& a = _args[i];
+      if (i > 0 && a.size() > 1 && a.front() == '/' && !llvm::sys::fs::exists(a) && !is_cl_option(a)) continue;
+      out.push_back(a);
+    }
+    return out;
+  }  // strip_unknown_cl_args
 
   // true if the folder is the folder of the builtin headers of a clang: <...>/lib/clang/<version>/include
   [[nodiscard]] inline bool is_builtin_include(llvm::StringRef _dir) {
@@ -233,7 +264,12 @@ namespace DataFlow {
     const std::string program = args.empty() ? "" : llvm::sys::path::stem(args.front()).lower();
     const bool is_cl          = program == "cl" || program == "clang-cl" ||
                        std::ranges::any_of(args, [](const std::string& _a) { return _a == "--driver-mode=cl"; });
+    if (is_cl) args = strip_unknown_cl_args(args);
     if (!args.empty()) args.insert(args.begin() + 1, is_cl ? "/w" : "-w");
+    // msvc makes 2 tokens from a ## that gives no valid token, and clang-cl gives an error that /w does not remove.
+    // clang defines _MSVC_TRADITIONAL as 1 and ignores /Zc:preprocessor, thus unreal engine uses such a ## for the
+    // traditional preprocessor of msvc, for example in UE_APPEND_VA_ARG_COUNT
+    if (program == "cl" && !args.empty()) args.insert(args.begin() + 1, "-Wno-invalid-token-paste");
     // the preamble instantiates the templates that the code of its headers needs. else each parse of the main file
     // instantiates them again at its end, for example 7 s after each edit of a file with the headers of clang
     if (!args.empty())

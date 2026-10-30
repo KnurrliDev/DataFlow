@@ -1,13 +1,18 @@
 // The "vscode" module gives the extension access to the VS Code API.
 // VS Code gives this module to the extension when the extension runs.
 // The "@types/vscode" package contains only the type declarations.
+import { execFile, spawn } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { CompileDbInfo, CompileDbManager } from './cdb/manager';
 import { findProjectFiles, isInside, MAX_PROJECT_FILES, SKIP_FOLDERS } from './cdb/project';
 import { ProjectSettings } from './cdb/settings';
-import { readFile, stat } from 'fs/promises';
+import {
+	defaultTarget, findEngine, findUnrealProject, launcherInstalls, readRegistry, UBT_DB_FILE, ubtArguments, ubtProgram, UNREAL_DB_FILE, UNREAL_DB_FOLDER,
+	unrealDbPath, UnrealProject, unrealTargets, writeUnrealDatabase,
+} from './cdb/unreal';
+import { mkdir, readFile, rm, stat } from 'fs/promises';
 import { HomeView } from './home';
 import {
 	CallGraphModel, CostModel, EngineClient, EngineFunction, FlowModel, FlowOptions, FunctionSelector, LogicModel, LogicOptions, MemberEntry,
@@ -76,7 +81,9 @@ const CALL_HIERARCHY_FAILED = 'The call hierarchy of the C/C++ extension stopped
 	+ 'DataFlow does not ask it again in this window, because a request can stop its language server.';
 const CALL_LIST_FAILED = 'The call hierarchy of the C/C++ extension stopped with an error, so the list has only the calls in this file. '
 	+ 'DataFlow does not ask it again in this window, because a request can stop its language server.';
-const DEFAULT_ASYNC_FUNCTIONS = ['std::async', 'QtConcurrent::run', 'tf::Executor::async'];
+// the same default as the setting dataflow.ripple.asyncFunctions. Async, AsyncTask, AsyncThread, AsyncPool and
+// UE::Tasks::Launch are the functions of Unreal Engine
+const DEFAULT_ASYNC_FUNCTIONS = ['std::async', 'QtConcurrent::run', 'tf::Executor::async', 'Async', 'AsyncTask', 'AsyncThread', 'AsyncPool', 'UE::Tasks::Launch'];
 
 // The variable that Flow Lens traces. After an edit, the name and the ordinal find the variable again.
 interface Trace {
@@ -119,6 +126,8 @@ const REVIEW_UPDATE_MS = 1000;
 // this time before it offers it again. The global state keeps 'never' or the time of the last offer
 const CLAUDE_CODE_EXTENSION = 'anthropic.claude-code';
 const CLAUDE_OFFER_KEY = 'dataflow.claude.offer';
+// 'never' after "Do not ask again" for the compile database of an Unreal project
+const UNREAL_OFFER_KEY = 'dataflow.unreal.offer';
 const CLAUDE_OFFER_MS = 7 * 24 * 60 * 60 * 1000;
 
 // The names of the folders that the list of the files of a project skips
@@ -303,6 +312,12 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		if (databases.length === 0) {
 			log.warn('No compile database. Run "DataFlow: Select Compile Database", or set dataflow.compileCommands.');
 			store.update({ engine: 'stopped' });
+			// an Unreal project gets its database from UnrealBuildTool
+			const unreal = unrealProjects().find((p) => p.hasSource);
+			if (unreal) {
+				log.info(`${unreal.name} is an Unreal project. Run "DataFlow: Make Unreal Compile Database".`);
+				void offerUnrealDatabase(unreal);
+			}
 			return;
 		}
 		const enginePath = resolveEnginePath(context);
@@ -373,6 +388,138 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		}
 	};
 	const restartEngine = (): Promise<void> => (restarting = restarting.then(restartNow, restartNow));
+
+	// The Unreal projects of the workspace folders and of the project of DataFlow
+	const unrealProjects = (): UnrealProject[] => {
+		const roots = [...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath), ...(cdb.project ? [cdb.project.root] : [])];
+		return [...new Map(roots.map((r) => [fileKey(r), r])).values()].map(findUnrealProject).filter((p): p is UnrealProject => !!p);
+	};
+
+	// Runs a program with no shell, and gives each line of its output. The result is the exit code, or 'cancelled' if the
+	// token stopped the program
+	const runProgram = (program: string, args: string[], cwd: string, token: vscode.CancellationToken, onLine: (line: string) => void): Promise<number | 'cancelled'> =>
+		new Promise((resolve) => {
+			const child = spawn(program, args, { cwd, windowsHide: true });
+			let isCancelled = false;
+			const cancel = token.onCancellationRequested(() => {
+				isCancelled = true;
+				// UnrealBuildTool starts more processes, so the whole tree stops
+				if (process.platform === 'win32' && child.pid) {
+					execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => undefined);
+				} else {
+					child.kill();
+				}
+			});
+			let rest = '';
+			const onData = (data: Buffer) => {
+				const lines = (rest + data.toString()).split(/\r?\n/);
+				rest = lines.pop() ?? '';
+				lines.filter((l) => l.trim()).forEach(onLine);
+			};
+			child.stdout.on('data', onData);
+			child.stderr.on('data', onData);
+			const finish = (code: number) => {
+				cancel.dispose();
+				if (rest.trim()) {
+					onLine(rest);
+				}
+				resolve(isCancelled ? 'cancelled' : code);
+			};
+			child.on('error', (error) => {
+				onLine(String(error));
+				finish(-1);
+			});
+			child.on('close', (code) => finish(code ?? -1));
+		});
+
+	// Lets UnrealBuildTool write the compile database of an Unreal project into Intermediate/DataFlow, with the target of
+	// the setting, else the editor target. A notification shows the progress, and its button Cancel stops UnrealBuildTool.
+	// Then DataFlow writes its database with copies of the response files, and the engine starts again with it. The
+	// database manager starts it, so the watcher of the new file and the command give one start
+	const makeUnrealDatabase = async (given?: UnrealProject): Promise<boolean> => {
+		const projects = given ? [given] : unrealProjects();
+		const project = projects.length > 1
+			? (await vscode.window.showQuickPick(projects.map((p) => ({ label: p.name, description: p.root, project: p })), { placeHolder: 'Select the Unreal project' }))?.project
+			: projects[0];
+		if (!project) {
+			if (projects.length === 0) {
+				void vscode.window.showWarningMessage('DataFlow found no .uproject file in the workspace folders or in the project.');
+			}
+			return false;
+		}
+		if (!project.hasSource) {
+			void vscode.window.showWarningMessage(`${project.name} has no C++ code: the project has no folder Source.`);
+			return false;
+		}
+		const config = vscode.workspace.getConfiguration('dataflow.unreal', vscode.Uri.file(project.root));
+		const engineRoot = await findEngine(project, { setting: config.get<string>('enginePath') || undefined, registry: readRegistry, launcherInstalls });
+		const program = engineRoot && ubtProgram(engineRoot);
+		if (!engineRoot || !program) {
+			const engineName = project.engineAssociation ? `Unreal Engine ${project.engineAssociation}` : 'an Unreal Engine in a folder above the project';
+			const pick = await vscode.window.showErrorMessage(`DataFlow found no ${engineName} with UnrealBuildTool for ${project.name}. `
+				+ 'Set dataflow.unreal.enginePath to the folder of the engine.', 'Open Settings');
+			if (pick) {
+				void vscode.commands.executeCommand('workbench.action.openSettings', 'dataflow.unreal.enginePath');
+			}
+			return false;
+		}
+		const target = defaultTarget(unrealTargets(project.root), project.name, config.get<string>('target') ?? '');
+		if (!target) {
+			void vscode.window.showWarningMessage(`${project.name} has no target: its folder Source has no .Target.cs file.`);
+			return false;
+		}
+		const args = ubtArguments(project, target.name, config.get<string>('configuration') || 'Development', config.get<string[]>('arguments') ?? []);
+		// UnrealBuildTool does not make the folder of the database. The file of a run that failed must not count
+		const ubtFile = path.join(project.root, UNREAL_DB_FOLDER, UBT_DB_FILE);
+		await mkdir(path.dirname(ubtFile), { recursive: true });
+		await rm(ubtFile, { force: true });
+		log.info(`UnrealBuildTool of ${engineRoot}: ${args.join(' ')}`);
+		const result = await vscode.window.withProgress(
+			{ location: vscode.ProgressLocation.Notification, title: `DataFlow: UnrealBuildTool makes the compile database of ${target.name}`, cancellable: true },
+			(progress, token) => runProgram(program, args, project.root, token, (line) => {
+				log.info(`UnrealBuildTool: ${line}`);
+				progress.report({ message: line.length > 100 ? `${line.slice(0, 99)}…` : line });
+			}),
+		);
+		if (result === 0 && existsSync(ubtFile)) {
+			try {
+				const copies = await writeUnrealDatabase(ubtFile, unrealDbPath(project.root));
+				log.info(`DataFlow wrote ${unrealDbPath(project.root)} with ${copies} copies of the response files of UnrealBuildTool.`);
+			} catch (error) {
+				log.error(`DataFlow did not write ${unrealDbPath(project.root)}: ${error instanceof Error ? error.message : String(error)}`);
+				void vscode.window.showErrorMessage(`DataFlow did not write the compile database of ${project.name}. The log of DataFlow has the cause.`);
+				return false;
+			}
+			void vscode.window.showInformationMessage(`DataFlow: the compile database of ${project.name} is ready.`);
+			cdb.refresh();
+			return true;
+		}
+		if (result !== 'cancelled') {
+			const pick = await vscode.window.showErrorMessage(`UnrealBuildTool did not make the compile database of ${project.name}. The log of DataFlow has its output.`, 'Show Log');
+			if (pick) {
+				log.show();
+			}
+		}
+		return false;
+	};
+
+	// Offers the compile database to an Unreal project with no database: one time in a session, until the user selects
+	// "Do not ask again" for the workspace
+	let isUnrealOffered = false;
+	const offerUnrealDatabase = async (project: UnrealProject): Promise<void> => {
+		if (isUnrealOffered || context.workspaceState.get(UNREAL_OFFER_KEY) === 'never') {
+			return;
+		}
+		isUnrealOffered = true;
+		const pick = await vscode.window.showInformationMessage(`${project.name} is an Unreal project with no compile database. `
+			+ `DataFlow can let UnrealBuildTool make one: it runs UnrealHeaderTool and writes ${path.join(UNREAL_DB_FOLDER, UNREAL_DB_FILE)}.`,
+		'Make', 'Not now', 'Do not ask again');
+		if (pick === 'Make') {
+			await makeUnrealDatabase(project);
+		} else if (pick === 'Do not ask again') {
+			await context.workspaceState.update(UNREAL_OFFER_KEY, 'never');
+		}
+	};
 
 	// An .inc file of a unity build can need the code before its #include in the source file, for example a declaration
 	// of an earlier header. If its parse alone has errors, the engine parses it again after the lines of the source file
@@ -2303,6 +2450,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		vscode.commands.registerCommand('dataflow.openRecentProject', (root?: unknown) => openRecentProject(typeof root === 'string' ? root : undefined)),
 		vscode.commands.registerCommand('dataflow.closeProject', () => cdb.closeProject()),
 		vscode.commands.registerCommand('dataflow.selectCompileCommands', () => cdb.select()),
+		vscode.commands.registerCommand('dataflow.unreal.makeCompileDatabase', () => makeUnrealDatabase()),
 		vscode.commands.registerCommand('dataflow.restartEngine', () => restartEngine()),
 		vscode.commands.registerCommand('dataflow.showLog', () => log.show()),
 		vscode.commands.registerCommand('dataflow.traceVariable', () => traceAtCursor(false)),
