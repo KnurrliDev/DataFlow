@@ -1,0 +1,11 @@
+out
+node_modules
+.vscode-test/
+build/
+spikes/**/out/
+test/fixtures/**/build*/
+*.tsbuildinfo
+
+# example code from another project. it stays local and is not committed
+example/
+*.vsix

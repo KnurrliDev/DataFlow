@@ -1,0 +1,23 @@
+// The F5 key starts the "Run Extension" configuration.
+// First, it compiles the code. Then it opens a second VS Code window with the extension loaded.
+// The title of the second window starts with "[Extension Development Host]".
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Run Extension",
+			"type": "extensionHost",
+			"request": "launch",
+			"args": [
+				// Load the extension from this folder.
+				"--extensionDevelopmentPath=${workspaceFolder}"
+			],
+			// The debugger uses the source maps of these files to find the TypeScript lines.
+			"outFiles": [
+				"${workspaceFolder}/out/**/*.js"
+			],
+			// Start the default build task, "npm: watch", before the second window opens.
+			"preLaunchTask": "${defaultBuildTask}"
+		}
+	]
+}

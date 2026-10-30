@@ -1,0 +1,26 @@
+{
+	// The type check of the script of the side view. It runs in a webview, so it needs the DOM types and no Node
+	// types. esbuild makes the bundle, see scripts/build-webviews.mjs.
+	"compilerOptions": {
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"target": "ES2022",
+		"lib": [
+			"ES2022",
+			"DOM",
+			"DOM.Iterable"
+		],
+		"types": [],
+		// JSX of the side view, with the runtime of Preact
+		"jsx": "react-jsx",
+		"jsxImportSource": "preact",
+		"noEmit": true,
+		"strict": true
+	},
+	"include": [
+		"src/webview-side/**/*.ts",
+		"src/webview-side/**/*.tsx",
+		"src/side/protocol.d.ts",
+		"src/side/guides.ts"
+	]
+}

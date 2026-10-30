@@ -1,0 +1,266 @@
+import {
+	COMMENT_COLORS, MAX_BLOCK_LEVELS, MAX_COMMENTS, type ModelBlockInput, type ModelCommentInput, type ModelDetailInput, type ModelNoteInput,
+} from '../lenses/blocks';
+import type { McpPrompt, McpTool } from './server';
+
+// The tools and the prompt of the MCP server of DataFlow. The read tools give the facts of the engine. The view tools
+// change the side view that the user looks at. The host gives the data and changes the view, so this file only checks
+// the arguments and writes the results as JSON.
+
+// A function: its name, or a line in it. With neither, the function at the cursor
+export interface FunctionArg {
+	function?: string;
+	line?: number;
+}
+
+export interface McpHost {
+	view(): Promise<object>;
+	functions(file?: string): Promise<object>;
+	structure(file: string | undefined, fn: FunctionArg): Promise<object>;
+	flow(file: string | undefined, line: number, name: string, show: boolean): Promise<object>;
+	calls(file: string | undefined, fn: FunctionArg): Promise<object>;
+	threads(file?: string): Promise<object>;
+	hidden(file: string | undefined, fn: FunctionArg): Promise<object>;
+	includes(file?: string): Promise<object>;
+	showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<object>;
+	highlight(file: string | undefined, ranges: ModelNoteInput[], append: boolean): Promise<object>;
+	comment(file: string | undefined, comments: ModelCommentInput[], append: boolean): Promise<object>;
+	detail(file: string | undefined, detail: ModelDetailInput): Promise<object>;
+	clear(file?: string): Promise<object>;
+}
+
+export const INSTRUCTIONS = [
+	'DataFlow analyzes the C++ code that is open in VS Code with the Clang compiler, and it shows the results in its side view beside the editor.',
+	'The read tools (get_*, list_functions) give facts of the engine: statements, data flow, calls, threads and races, hidden operations and includes.',
+	'The view tools (show_blocks, show_flow, highlight, comment_lines, add_detail, clear) change the side view that the user looks at.',
+	'Lines start at 1. If you omit "file", a tool uses the file of the active editor, or else the file of the side view. Call get_view first to see what the user looks at.',
+	'If no C++ editor shows, the cursor of get_view is the cursor of the side view, where the user clicked, and the view tools move only the side view.',
+	'If the user selected code and asks for details, an explanation or examples of it, call get_view for the selection, then add_detail with no line.',
+	'The side view marks your titles, summaries, notes, comments and details as text of a model. The lines and the data of each block come from the engine, so use the data of the results in your answers.',
+].join(' ');
+
+const FILE = { type: 'string', description: 'The C++ file: an absolute path, or a path relative to the workspace folder. Default: the file of the active editor, or else the file of the side view.' };
+const FUNCTION = { type: 'string', description: 'The function: its qualified name, for example electricity::power_ctrl::process, its name, or the text of its macro call (macroCall). Default: the function at the cursor.' };
+const LINE_IN_FUNCTION = { type: 'integer', minimum: 1, description: 'A line in the function. Use it for an overloaded name, or instead of "function".' };
+const LINES = { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 2, maxItems: 2, description: 'The first and the last line, from 1.' };
+
+const BLOCK_PROPERTIES = {
+	lines: LINES,
+	title: { type: 'string', description: 'A short name of the block, for example "Start the solver". Maximum 80 characters.' },
+	summary: { type: 'string', description: 'One or two sentences: what the block does and why.' },
+};
+
+const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
+
+// The schema of a block with its children, to the last level that the view shows. The schema has no references, because
+// not all clients read them
+function blockSchema(levels: number): object {
+	const children = levels > 1
+		? { children: { type: 'array', description: 'The blocks in this block, for example one block for each branch of an if chain.', items: blockSchema(levels - 1) } }
+		: {};
+	return object({ ...BLOCK_PROPERTIES, ...children }, ['lines', 'title']);
+}
+
+// The arguments of a tool, with a clear error for the model if a value has a wrong type
+class Args {
+	constructor(private readonly args: Record<string, unknown>) {}
+
+	text(key: string): string | undefined {
+		const v = this.args[key];
+		if (v === undefined || v === null || v === '') {
+			return undefined;
+		}
+		if (typeof v !== 'string') {
+			throw new Error(`"${key}" must be a text.`);
+		}
+		return v;
+	}
+
+	requiredText(key: string): string {
+		const v = this.text(key);
+		if (v === undefined) {
+			throw new Error(`Give "${key}".`);
+		}
+		return v;
+	}
+
+	line(key: string): number | undefined {
+		const v = this.args[key];
+		if (v === undefined || v === null) {
+			return undefined;
+		}
+		const n = typeof v === 'string' ? Number(v) : v;
+		if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) {
+			throw new Error(`"${key}" must be a line number from 1.`);
+		}
+		return n;
+	}
+
+	requiredLine(key: string): number {
+		const v = this.line(key);
+		if (v === undefined) {
+			throw new Error(`Give "${key}".`);
+		}
+		return v;
+	}
+
+	list<T>(key: string): T[] {
+		const v = this.args[key];
+		if (!Array.isArray(v)) {
+			throw new Error(`"${key}" must be a list.`);
+		}
+		return v as T[];
+	}
+
+	fn(): FunctionArg {
+		return { function: this.text('function'), line: this.line('line') };
+	}
+
+	flag(key: string): boolean {
+		const v = this.args[key];
+		if (v === undefined || v === null) {
+			return false;
+		}
+		if (typeof v !== 'boolean') {
+			throw new Error(`"${key}" must be true or false.`);
+		}
+		return v;
+	}
+}
+
+const json = (value: object) => ({ text: JSON.stringify(value) });
+
+export function createTools(host: McpHost): McpTool[] {
+	const tool = (
+		name: string, title: string, description: string, properties: Record<string, unknown>, required: string[], isReadOnly: boolean,
+		run: (a: Args) => Promise<object>,
+	): McpTool => ({
+		name, title, description, inputSchema: object(properties, required), isReadOnly,
+		call: async (args) => json(await run(new Args(args))),
+	});
+
+	return [
+		tool('get_view', 'Get the view',
+			'What the user looks at in VS Code: the active C++ file, the function and the line at the cursor, the selection (also a selection in the DataFlow side view), the lenses of the side view and the layers of the model. Call it first when the user writes "this function", "here" or "the selection".',
+			{}, [], true, () => host.view()),
+		tool('list_functions', 'List the functions',
+			'The function definitions of a C++ file with their lines. A function that a macro makes, for example a test case of Catch2, '
+			+ 'also has the text of the macro call (macroCall).',
+			{ file: FILE }, [], true, (a) => host.functions(a.text('file'))),
+		tool('get_structure', 'Get the statements of a function',
+			'The statements of a function, as the Clang engine of DataFlow finds them: the lines and the kind of each statement, the branches of if chains and switches, '
+			+ 'the data that goes in (read, and set before) and comes out (written, and used after or visible to the caller), and the exits, thread starts, events and calls. '
+			+ 'Use it to group the statements into logical blocks for show_blocks.',
+			{ file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION }, [], true, (a) => host.structure(a.text('file'), a.fn())),
+		tool('get_flow', 'Trace a variable',
+			'Traces a variable or a data member, as Flow Lens of DataFlow does, but does not change the view: each definition, read, write and check with its line. '
+			+ 'For a data member also the function, the thread and the locks of each access, and a verdict about data races. Give a line with a reference and the name, '
+			+ 'for example "charge.is_dirty" or "is_dirty".',
+			{ file: FILE, line: { type: 'integer', minimum: 1, description: 'A line with a reference of the name.' }, name: { type: 'string', description: 'The name of the variable or the member.' } },
+			['line', 'name'], true, (a) => host.flow(a.text('file'), a.requiredLine('line'), a.requiredText('name'), false)),
+		tool('get_calls', 'Get the calls of a function',
+			'The callers and the called functions of a function, with what goes in and comes out of each call: written arguments, checked or unchecked results, async calls and events. The callers in other files come from the call hierarchy of the C++ extension, with only the lines of their calls. A virtual call also gives each override of the project, with virtualOf: the function that the call names.',
+			{ file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION }, [], true, (a) => host.calls(a.text('file'), a.fn())),
+		tool('get_threads', 'Get the threads and races',
+			'The thread starts of a file, the data that two threads share, the protection of each access (lock, order, check), and a verdict for each item: race, check or safe.',
+			{ file: FILE }, [], true, (a) => host.threads(a.text('file'))),
+		tool('get_hidden', 'Get the hidden C++',
+			'The hidden operations of a function: copies, moves, conversions, temporaries, destructors, allocations, map lookups and hidden state, with their lines.',
+			{ file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION }, [], true, (a) => host.hidden(a.text('file'), a.fn())),
+		tool('get_includes', 'Get the includes',
+			'The include hierarchy of a file: the lines that each include adds after the preprocessor, the headers that come in two times, the includes that the file possibly does not use, '
+			+ 'and the translation units of the compile database that include the file (includedBy). A change of a header compiles these translation units again.',
+			{ file: FILE }, [], true, (a) => host.includes(a.text('file'))),
+		tool('show_blocks', 'Show logical blocks',
+			'Shows logical blocks of one function in the DataFlow side view: a bar beside the lines of each block, its title at the end of its first line, and a list with the summaries and the data of the blocks. '
+			+ `Give the blocks in the sequence of the lines, with no overlap. A block can have children, for example one child for each branch of an if chain, and a child can have children too: ${MAX_BLOCK_LEVELS} levels at most. `
+			+ 'DataFlow moves each range to whole statements and calculates the data that goes in and comes out. The result gives the id, the lines and the data of each block. '
+			+ 'A new call replaces the blocks of its function. The blocks of the other functions of the file stay, so you can show blocks for each function of a file, '
+			+ 'also with calls at the same time. Each function has its own ids.',
+			{
+				file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION,
+				blocks: {
+					type: 'array', minItems: 1, description: 'The blocks of the function.', items: blockSchema(MAX_BLOCK_LEVELS),
+				},
+			},
+			['blocks'], false, (a) => host.showBlocks(a.text('file'), a.fn(), a.list<ModelBlockInput>('blocks'))),
+		tool('show_flow', 'Show a flow',
+			'Starts Flow Lens of DataFlow on a variable or a data member, as a click on it does, and returns the trace. The side view colors each reference and connects the definitions to the uses.',
+			{ file: FILE, line: { type: 'integer', minimum: 1, description: 'A line with a reference of the name.' }, name: { type: 'string', description: 'The name of the variable or the member.' } },
+			['line', 'name'], false, (a) => host.flow(a.text('file'), a.requiredLine('line'), a.requiredText('name'), true)),
+		tool('highlight', 'Highlight code',
+			'Colors lines or blocks in the DataFlow side view and shows a note at the first line of each range. Give "lines" or the id of a block from show_blocks. '
+			+ 'If more functions have a block with the id, also give "function". A new call replaces the notes of the file, except with "append".',
+			{
+				file: FILE,
+				ranges: {
+					type: 'array', minItems: 1, description: 'The ranges with their notes.',
+					items: object({
+						lines: LINES,
+						block: { type: 'string', description: 'The id of a block, for example 5b, instead of "lines".' },
+						function: {
+							type: 'string',
+							description: 'The function of the block, for example process, if more functions have a block with the id. Overloads have the same name, so for them give "lines".',
+						},
+						kind: { type: 'string', enum: ['problem', 'warning', 'info'], description: 'The color.' },
+						note: { type: 'string', description: 'A short note. Maximum 300 characters.' },
+					}, ['kind', 'note']),
+				},
+				append: { type: 'boolean', description: 'true: keep the old notes of the file. Default: false.' },
+			},
+			['ranges'], false, (a) => host.highlight(a.text('file'), a.list<ModelNoteInput>('ranges'), a.flag('append'))),
+		tool('comment_lines', 'Comment lines',
+			'Shows a short comment after the code of single lines in the DataFlow side view, for example to explain a line that is hard to read. '
+			+ 'A comment has the color of the comments of the model, or a color that you select, for example one color for each topic. A comment does not color its line. '
+			+ 'A new call replaces the comments of the file. With "append", the old comments stay, and a new comment on a line replaces the old comment of that line.',
+			{
+				file: FILE,
+				comments: {
+					type: 'array', minItems: 1, maxItems: MAX_COMMENTS, description: 'One comment for each line.',
+					items: object({
+						line: { type: 'integer', minimum: 1, description: 'The line.' },
+						text: { type: 'string', description: 'A short comment in one line of text. Maximum 200 characters.' },
+						color: { type: 'string', enum: [...COMMENT_COLORS], description: 'The color. Default: the color of the comments of the model.' },
+					}, ['line', 'text']),
+				},
+				append: { type: 'boolean', description: 'true: keep the old comments of the file. Default: false.' },
+			},
+			['comments'], false, (a) => host.comment(a.text('file'), a.list<ModelCommentInput>('comments'), a.flag('append'))),
+		tool('add_detail', 'Add a detail',
+			'Adds a detail to code in the DataFlow side view: a longer explanation or examples, for example values that go in and the result. The line of the code gets a '
+			+ 'small symbol at its end, and the text shows in a card when the user moves the mouse on the symbol, so the detail takes no space in the view. '
+			+ 'Give "line" and "expression" for the code, or no line for the code that the user selected (get_view gives the selection). '
+			+ 'The text can use a small part of Markdown: paragraphs, lists, `code`, code blocks, **bold** and *italic*. '
+			+ 'The details of a file stay until clear. A detail on the same code replaces the old detail.',
+			{
+				file: FILE,
+				line: { type: 'integer', minimum: 1, description: 'The first line of the code. Default: the code that the user selected.' },
+				expression: { type: 'string', description: 'The code as in the file, for example "a + b * c". It can have more than one line. Default: the line.' },
+				title: { type: 'string', description: 'A short title, for example "Examples of the scale". Maximum 80 characters. Default: the code.' },
+				text: { type: 'string', description: 'The explanation or the examples. Maximum 4000 characters.' },
+			},
+			['text'], false, (a) => host.detail(a.text('file'), { line: a.line('line'), expression: a.text('expression'), title: a.text('title'), text: a.requiredText('text') })),
+		tool('clear', 'Remove the model layers',
+			'Removes the blocks, the notes, the comments and the details of the model from the DataFlow side view.',
+			{ file: { ...FILE, description: 'The file. Default: all files.' } }, [], false, (a) => host.clear(a.text('file'))),
+	];
+}
+
+export function createPrompts(): McpPrompt[] {
+	return [{
+		name: 'explain-function',
+		title: 'Explain a function in logical blocks',
+		description: 'Explains a C++ function in logical blocks, and shows the blocks in the DataFlow side view.',
+		arguments: [{ name: 'function', description: 'The function. Default: the function at the cursor.', required: false }],
+		text: (args) => [
+			`Explain the C++ function ${args.function ? `"${args.function}"` : 'at the cursor in VS Code'} in logical blocks. Use the DataFlow tools:`,
+			args.function ? '1. Call get_structure with this function.' : '1. Call get_view to find the file and the function, then get_structure.',
+			'2. Group the statements into 3 to 8 logical blocks. An if chain on a state can get one child block for each branch, and a long branch can get child blocks too.',
+			'   Give each block a short title in the imperative, for example "Start the solver", and a summary of one sentence.',
+			'3. Call show_blocks.',
+			'4. Explain the function in a few short paragraphs, with the block ids in parentheses.',
+			'5. If a line is hard to read, call comment_lines with a short comment for it. For a longer explanation of an expression, call add_detail.',
+			'Use the facts of the tool results for the data, the threads and the exits. If a statement is not clear, say so.',
+		].join('\n'),
+	}];
+}

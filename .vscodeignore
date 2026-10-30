@@ -1,0 +1,19 @@
+# The "vsce package" command does not put these files into the .vsix file.
+.vscode/**
+.vscode-test/**
+src/**
+out/test/**
+docs/**
+example/**
+engine/**
+spikes/**
+test/**
+scripts/**
+build/**
+tsconfig.webview.json
+**/*.tsbuildinfo
+.gitignore
+**/tsconfig.json
+**/*.map
+**/*.ts
+**/.vscode-test.*

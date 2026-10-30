@@ -1,0 +1,7 @@
+{
+	// VS Code recommends these extensions when you open this folder.
+	// The Extension Test Runner shows the tests in the Testing view.
+	"recommendations": [
+		"ms-vscode.extension-test-runner"
+	]
+}

@@ -1,0 +1,610 @@
+import { existsSync } from 'fs';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { isInside } from '../cdb/project';
+import type { EngineClient, EngineFunction, FileResult, StructureModel } from '../engine/client';
+import {
+	addDetail, functionLines, MAX_DETAILS, mergeComments, ModelBlockInput, ModelCommentInput, ModelDetailInput, ModelNoteInput, moveModelLayer, resolveComments,
+	resolveDetail, resolveNotes, snapBlocks, structureSummary, TextChange,
+} from '../lenses/blocks';
+import { callFunctionAt, ExternalCaller } from '../lenses/calls';
+import { findingText, LineText, toUtf8Column, variableAt } from '../lenses/flow';
+import { buildSideIncludes } from '../lenses/includes';
+import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../lenses/member';
+import { buildSideThreads } from '../lenses/threads';
+import type { SideViewController } from '../side/controller';
+import type { CodePlace } from '../side/details';
+import { functionTitle } from '../side/names';
+import type { SideModel } from '../side/protocol';
+import type { StateStore } from '../state/store';
+import type { FunctionArg, McpHost } from './tools';
+
+// The host of the MCP tools: it gets the data from the engine, and it changes the side view. Each tool works on a file
+// of the project. Without a file, a tool uses the file of the active C++ editor. If no C++ editor shows, for example
+// while the focus is in the terminal of the MCP client, it uses the file of the side view. With no C++ text editor on
+// the screen, for example with Claude Code in the other editor group, the view tools move only the side view.
+
+export interface HostDeps {
+	engine(): EngineClient | undefined;
+	store: StateStore;
+	side: SideViewController;
+	currentEditor(): vscode.TextEditor | undefined;
+	// the cursor of the C++ editor, else the cursor of the side view
+	currentPlace(): { doc: vscode.TextDocument; pos: vscode.Position } | undefined;
+	asyncFunctions(uri: vscode.Uri): string[];
+	readFunctions(uri: vscode.Uri): string[]; // the functions that only read their arguments, from dataflow.flow.readFunctions
+	eventFunctions(uri: vscode.Uri): string[];
+	minCopyBytes(uri: vscode.Uri): number;
+	headerUnit(doc: vscode.TextDocument): Promise<string | undefined>; // a source file that includes a header with a template
+	roots(): string[]; // the folders of the project
+	flushChange(doc: vscode.TextDocument): void; // sends a change that waits for its timer
+	trace(doc: vscode.TextDocument, pos: vscode.Position): Promise<void>; // starts Flow Lens at the position
+	client(): string | undefined; // the name of the MCP client
+	// the callers of the function at a position from the call hierarchy of VS Code. Lines from 1, a column of UTF-8 bytes
+	// from 1. undefined if no provider answers for C++, 'failed' if the provider failed
+	incomingCalls(file: string, line: number, col: number): Promise<ExternalCaller[] | undefined | 'failed'>;
+}
+
+const CPP_LANGUAGES = new Set(['c', 'cpp', 'cuda-cpp']);
+const isCpp = (doc: vscode.TextDocument) => doc.uri.scheme === 'file' && CPP_LANGUAGES.has(doc.languageId);
+const MAX_ITEMS = 200;
+
+// The parse errors of a result, so that the model knows that the facts can be incomplete
+function parseNote(res: FileResult): object {
+	return res.errorCount > 0 ? { parseErrors: res.errors.slice(0, 5) } : {};
+}
+
+// A position in the function for the engine: the start of its body
+function positionOf(fn: EngineFunction): { line: number; col: number } {
+	return fn.body ? { line: fn.body.begin.line, col: fn.body.begin.col } : { line: fn.range.begin.line, col: fn.range.begin.col };
+}
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// The UTF-16 column of a name on a line. For charge.is_dirty, the column of is_dirty after charge. -1 if the line has
+// no such name
+export function nameColumn(text: string, name: string): number {
+	const parts = name.split(/\.|->|::/).filter(Boolean);
+	const last = parts[parts.length - 1] ?? name;
+	if (parts.length > 1) {
+		const pattern = parts.map(escapeRegExp).join('\\s*(?:\\.|->|::)\\s*');
+		const m = new RegExp(`\\b${pattern}\\b`).exec(text);
+		if (m) {
+			return m.index + m[0].length - last.length;
+		}
+	}
+	const m = new RegExp(`\\b${escapeRegExp(last)}\\b`).exec(text);
+	return m ? m.index : -1;
+}
+
+export class DataFlowMcpHost implements McpHost {
+	constructor(private readonly deps: HostDeps) {}
+
+	//-------------------
+	// Read tools
+
+	async view(): Promise<object> {
+		const { store, side } = this.deps;
+		const state = store.state;
+		const editor = this.deps.currentEditor();
+		const editorDoc = editor && isCpp(editor.document) ? editor.document : undefined;
+		const shown = editorDoc ? undefined : side.file;
+		const doc = editorDoc ?? (shown ? vscode.workspace.textDocuments.find((d) => fileKey(d.uri.fsPath) === fileKey(shown)) : undefined);
+		const file = editorDoc?.uri.fsPath ?? shown;
+		const fn = file && state.file === file && state.fn ? state.fn : undefined;
+		const selection = doc ? this.selectionOf(doc) : undefined;
+		const place = this.deps.currentPlace();
+		const cursor = place && file && fileKey(place.doc.uri.fsPath) === fileKey(file) ? place.pos : undefined;
+		const layer = file ? this.layerOf(file) : undefined;
+		return {
+			file: file ?? null,
+			lineCount: doc?.lineCount,
+			cursor: cursor ? { line: cursor.line + 1, col: cursor.character + 1 } : null,
+			selection: doc && selection ? {
+				lines: [selection.line, selection.endLine], start: { line: selection.line, col: selection.col + 1 },
+				end: { line: selection.endLine, col: selection.endCol + 1 },
+				text: doc.getText(new vscode.Range(selection.line - 1, selection.col, selection.endLine - 1, selection.endCol)).slice(0, 2000),
+			} : null,
+			function: fn ? { name: fn.qualifiedName, ...(fn.macroCall ? { macroCall: fn.macroCall } : {}), lines: [fn.range.begin.line, fn.range.end.line] } : null,
+			otherFiles: vscode.window.visibleTextEditors.filter((e) => e.document !== doc && isCpp(e.document)).map((e) => e.document.uri.fsPath),
+			sideView: {
+				isOpen: side.isOpen, file: side.file ?? null, lenses: Object.entries(state.lenses).filter(([, on]) => on).map(([lens]) => lens),
+				modelLayersShown: state.isModelShown,
+			},
+			model: layer ? {
+				functions: [...new Set(layer.blocks.map((b) => b.fn))].map((fn) => ({
+					function: fn, blocks: layer.blocks.filter((b) => b.fn === fn).map((b) => `${b.id} ${b.title} (${b.first}-${b.last})`),
+				})),
+				notes: layer.notes.length, comments: layer.comments.length, details: layer.details.map((d) => `${d.id} ${d.title} (${d.line}-${d.endLine})`),
+			} : null,
+			engine: state.engine,
+			project: { folders: this.roots(), compileDatabases: state.databases.map((d) => d.makefile ?? d.path) },
+		};
+	}
+
+	async functions(file?: string): Promise<object> {
+		const { client, file: f } = await this.prepare(file);
+		const res = await client.functions(f);
+		return {
+			file: f,
+			functions: res.functions.map((fn) => ({
+				name: fn.qualifiedName || fn.name, ...(fn.macroCall ? { macroCall: fn.macroCall } : {}), kind: fn.kind,
+				lines: [fn.range.begin.line, fn.range.end.line],
+			})),
+			...parseNote(res),
+		};
+	}
+
+	async structure(file: string | undefined, fn: FunctionArg): Promise<object> {
+		const { doc, model } = await this.structureModel(file, fn);
+		return { file: doc.uri.fsPath, ...structureSummary(model), ...parseNote(model) };
+	}
+
+	async flow(file: string | undefined, line: number, name: string, show: boolean): Promise<object> {
+		const { client, doc, file: f } = await this.prepare(file);
+		if (line > doc.lineCount) {
+			throw new Error(`${path.basename(f)} has ${doc.lineCount} lines.`);
+		}
+		const text = doc.lineAt(line - 1).text;
+		const character = nameColumn(text, name);
+		if (character < 0) {
+			throw new Error(`Line ${line} has no "${name}": ${text.trim()}`);
+		}
+		const pos = new vscode.Position(line - 1, character);
+		const lineText: LineText = (l) => (l >= 0 && l < doc.lineCount ? doc.lineAt(l).text : undefined);
+		if (show) {
+			await this.reveal(doc, pos, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+			await this.deps.trace(doc, pos);
+		}
+		const at = { line, col: toUtf8Column(text, character) };
+		const shown = show ? { shown: true } : {};
+
+		// a variable of the function
+		const flow = await client.flow(f, at, { readFunctions: this.deps.readFunctions(doc.uri) }).catch(() => undefined);
+		const index = flow ? variableAt(flow, line - 1, character, lineText) : undefined;
+		if (flow && index !== undefined) {
+			const v = flow.variables[index];
+			return {
+				kind: 'variable', name: v.name, type: v.type, storage: v.storage, function: flow.function.qualifiedName,
+				refs: flow.refs.filter((r) => r.var === index).map((r) => ({ line: r.line, role: r.role, ...(r.finding ? { finding: findingText(r.finding) } : {}) })),
+				...shown,
+			};
+		}
+
+		// a data member of a class, a static data member or a global variable
+		const member = await client.member(f, at, {
+			asyncFunctions: this.deps.asyncFunctions(doc.uri), readFunctions: this.deps.readFunctions(doc.uri), roots: this.roots(),
+		}).catch(() => undefined);
+		if (member) {
+			const summary = memberSummary(member);
+			const fileOf = (file: string) => (fileKey(file) === fileKey(f) ? undefined : file);
+			// the threads of an access: more than one if more than one thread calls its function
+			const threadLabel = (t: number) => (t < 0 ? 'caller' : member.threads[t].via);
+			return {
+				kind: member.member.kind === 'global' ? 'global' : member.member.kind === 'static' ? 'static member' : 'member',
+				name: memberLabel(member), type: member.member.type, access: member.member.access,
+				...(member.member.isAtomic ? { atomic: true } : {}),
+				refs: member.refs.slice(0, MAX_ITEMS).map((r) => ({
+					...(fileOf(r.file) ? { file: r.file } : {}), line: r.line, role: r.role, function: bodyLabel(member, r.fn),
+					thread: threadOf(member, r.fn)?.label ?? 'caller', ...(r.locks?.length ? { locks: r.locks } : {}),
+					...(r.runs && r.runs.length > 1 ? { threads: [...new Set(r.runs.map((x) => threadLabel(x.thread)))] } : {}),
+				})),
+				threads: summary.threads,
+				locks: summary.locks,
+				...(summary.verdict ? { verdict: { kind: summary.verdict.kind, text: summary.verdict.text } } : {}),
+				...shown,
+			};
+		}
+		throw new Error(`No variable or data member "${name}" on line ${line}.`);
+	}
+
+	async calls(file: string | undefined, fn: FunctionArg): Promise<object> {
+		const { client, doc, file: f } = await this.prepare(file);
+		const at = await this.selector(client, doc, fn);
+		const model = await client.calls(f, {
+			eventFunctions: this.deps.eventFunctions(doc.uri), asyncFunctions: this.deps.asyncFunctions(doc.uri), roots: this.roots(),
+		});
+		const focus = callFunctionAt(model, at.line);
+		if (focus < 0) {
+			throw new Error(`No function on line ${at.line}.`);
+		}
+		const name = (i: number) => model.functions[i].qualifiedName || `lambda on line ${model.functions[i].line}`;
+		const site = (s: (typeof model.calls)[number]) => ({
+			line: s.line, result: s.result,
+			...(s.async ? { async: s.async } : {}), ...(s.event ? { event: true } : {}), ...(s.writes?.length ? { writes: s.writes } : {}),
+			...(s.into ? { into: s.into } : {}), ...(s.optional ? { optional: s.optional } : {}), ...(s.uncheckedLine ? { uncheckedLine: s.uncheckedLine } : {}),
+			...(s.virtualOf !== undefined ? { virtualOf: name(s.virtualOf) } : {}),
+		});
+		// the callers in other files come from the call hierarchy of VS Code, with no data of the calls. A lambda has no
+		// callers in other files
+		const info = model.functions[focus];
+		const external = info.qualifiedName ? await this.deps.incomingCalls(f, info.line, info.col) : [];
+		const others = Array.isArray(external) ? external.filter((c) => fileKey(c.file) !== fileKey(f)) : [];
+		return {
+			file: f,
+			function: name(focus),
+			callers: model.calls.filter((s) => s.to === focus).slice(0, MAX_ITEMS).map((s) => ({ caller: name(s.from), ...site(s) })),
+			calls: model.calls.filter((s) => s.from === focus).slice(0, MAX_ITEMS).map((s) => ({ callee: name(s.to), where: model.functions[s.to].where, ...site(s) })),
+			callersInOtherFiles: others.slice(0, MAX_ITEMS).map((c) => ({ caller: c.name, file: c.file, line: c.line, callLines: c.sites.map((s) => s.line) })),
+			note: external === 'failed'
+				? 'The call hierarchy of the C/C++ extension failed, so the callers in other files are not in this result.'
+				: external === undefined
+					? 'No call hierarchy of a C++ extension answered, so the callers in other files are not in this result.'
+					: 'callersInOtherFiles comes from the call hierarchy of the C++ extension. It has the lines of the calls, but no data of the calls.',
+			...parseNote(model),
+		};
+	}
+
+	async threads(file?: string): Promise<object> {
+		const { client, doc, file: f } = await this.prepare(file);
+		const model = await client.threads(f, { asyncFunctions: this.deps.asyncFunctions(doc.uri), roots: this.roots() });
+		const side = buildSideThreads(model, f, (l) => (l >= 0 && l < doc.lineCount ? doc.lineAt(l).text : undefined));
+		return {
+			file: f,
+			threads: side.threads.map((t) => ({
+				label: t.label, via: t.via, line: t.line, function: t.fn, handle: t.handle, ...(t.isRepeated ? { repeated: true } : {}),
+				joins: t.joins.map((j) => `${j.kind} on line ${j.line}`),
+			})),
+			items: side.items.slice(0, MAX_ITEMS).map((i) => ({
+				item: i.label, kind: i.kind, type: i.type, verdict: i.pill, caller: i.caller, worker: i.worker, protection: i.protection, summary: i.summary,
+				...(i.fix ? { fix: { line: i.fix.line, text: i.fix.text, before: i.fix.before, after: i.fix.after } } : {}),
+			})),
+			counts: side.counts,
+			...(side.isTruncated ? { truncated: true } : {}),
+			...parseNote(model),
+		};
+	}
+
+	async hidden(file: string | undefined, fn: FunctionArg): Promise<object> {
+		const { client, doc, file: f } = await this.prepare(file);
+		const at = await this.selector(client, doc, fn);
+		// a header with a template: the items of its instantiations come from a source file that includes it
+		const unit = await this.deps.headerUnit(doc);
+		const minCopyBytes = this.deps.minCopyBytes(doc.uri);
+		const model = await client.cost(f, minCopyBytes, undefined, unit).catch((error) => {
+			if (!unit) {
+				throw error;
+			}
+			return client.cost(f, minCopyBytes);
+		});
+		// the innermost function at the line
+		let index = -1;
+		model.functions.forEach((x, i) => {
+			const isIn = x.range.begin.line <= at.line && at.line <= x.range.end.line;
+			const best = index >= 0 ? model.functions[index] : undefined;
+			if (isIn && (!best || x.range.end.line - x.range.begin.line < best.range.end.line - best.range.begin.line)) {
+				index = i;
+			}
+		});
+		if (index < 0) {
+			throw new Error(`No function on line ${at.line}.`);
+		}
+		const items = model.items.filter((i) => i.fn === index);
+		return {
+			file: f,
+			function: model.functions[index].qualifiedName,
+			items: items.slice(0, MAX_ITEMS).map((i) => ({ line: i.line, kind: i.kind, text: i.text, detail: i.detail, ...(i.heuristic ? { estimated: true } : {}) })),
+			...(items.length > MAX_ITEMS ? { more: items.length - MAX_ITEMS } : {}),
+			...parseNote(model),
+		};
+	}
+
+	async includes(file?: string): Promise<object> {
+		const { client, file: f } = await this.prepare(file);
+		const model = await client.includes(f, this.roots());
+		const side = buildSideIncludes(model, f);
+		if (!side) {
+			throw new Error(`No include hierarchy for ${path.basename(f)}.`);
+		}
+		// the translation units that include the file. The first request scans the compile databases
+		const units = await client.includers(f, this.roots()).catch(() => undefined);
+		return {
+			file: f,
+			stats: side.stats,
+			groups: side.groups.map((g) => ({ group: g.name, lines: g.lines })),
+			includes: side.nodes.filter((n) => n.parent === 0).map((n) => ({
+				line: n.line, include: n.name, lines: n.total, state: n.state,
+				...(n.isUsed === false ? { possiblyUnused: true } : {}),
+				...(n.first !== undefined ? { includedBefore: side.nodes[n.first]?.parentPath } : {}),
+			})),
+			largestHeaders: side.nodes.filter((n) => n.state === 'entered').sort((a, b) => b.own - a.own).slice(0, 10).map((n) => ({ file: n.name, lines: n.own })),
+			...(units ? {
+				includedBy: {
+					translationUnits: units.units.slice(0, MAX_ITEMS), count: units.units.length, ofAll: units.unitCount,
+					...(units.units.length > MAX_ITEMS ? { more: units.units.length - MAX_ITEMS } : {}),
+				},
+			} : {}),
+			...parseNote(model),
+		};
+	}
+
+	//-------------------
+	// View tools
+
+	async showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<object> {
+		const { doc, model } = await this.structureModel(file, fn);
+		const title = functionTitle(model.function, true);
+		const { blocks: placed, problems } = snapBlocks(model, blocks, title);
+		if (problems.length > 0) {
+			throw new Error(`The view did not change.\n${problems.join('\n')}`);
+		}
+		const f = doc.uri.fsPath;
+		// the blocks of the other functions stay, so a model can show blocks for each function of a file. The old blocks in
+		// the lines of this function go with their notes. The lines select them, because overloads have the same name. The
+		// other notes and the comments stay. No await comes between the read of the layer and the write, so calls for two
+		// functions at the same time keep both
+		const old = this.layerOf(f);
+		const [from, to] = functionLines(model);
+		const isOther = (first: number, last: number) => last < from || first > to;
+		const others = (old?.blocks ?? []).filter((b) => isOther(b.first, b.last));
+		const all = [...others, ...placed].sort((a, b) => a.first - b.first || a.level - b.level);
+		const notes = (old?.notes ?? []).filter((n) => n.block === undefined || isOther(n.first, n.last));
+		this.setLayer({ file: f, fn: title, client: this.deps.client(), blocks: all, notes, comments: old?.comments ?? [], details: old?.details ?? [] });
+		this.showLayers();
+		await this.reveal(doc, new vscode.Position(Math.max(0, placed[0].first - 1), 0));
+		this.deps.side.showDetails('model');
+		return {
+			file: f,
+			function: model.function.qualifiedName,
+			shown: placed.length,
+			functionsWithBlocks: new Set(all.map((b) => b.fn)).size,
+			blocks: placed.map((b) => ({
+				id: b.id, ...(b.parent ? { parent: b.parent } : {}), lines: [b.first, b.last], title: b.title,
+				...(b.from ? { movedFrom: b.from } : {}),
+				...(b.ins.length ? { in: b.ins } : {}),
+				...(b.outs.length ? { out: b.outs } : {}),
+				...(b.extra.length ? { items: b.extra.map((e) => `${e.kind}: ${e.text} on ${e.line}`) } : {}),
+			})),
+			...parseNote(model),
+		};
+	}
+
+	// Notes on ranges or on blocks. append keeps the old notes of the file
+	async highlight(file: string | undefined, ranges: ModelNoteInput[], append = false): Promise<object> {
+		const doc = await this.document(file);
+		const f = doc.uri.fsPath;
+		const old = this.layerOf(f);
+		const { notes, problems } = resolveNotes(ranges, old?.blocks ?? [], [1, doc.lineCount]);
+		if (problems.length > 0) {
+			throw new Error(`The view did not change.\n${problems.join('\n')}`);
+		}
+		const all = append ? [...(old?.notes ?? []), ...notes].sort((a, b) => a.first - b.first || a.last - b.last) : notes;
+		this.setLayer({ file: f, fn: old?.fn, client: this.deps.client(), blocks: old?.blocks ?? [], notes: all, comments: old?.comments ?? [], details: old?.details ?? [] });
+		this.showLayers();
+		await this.reveal(doc, new vscode.Position(Math.max(0, notes[0].first - 1), 0));
+		return {
+			file: f,
+			shown: notes.length,
+			notesInFile: all.length,
+			notes: notes.map((n) => ({ lines: [n.first, n.last], kind: n.kind, ...(n.block ? { block: n.block, function: n.blockFn } : {}) })),
+		};
+	}
+
+	// Comments on single lines. append keeps the old comments of the file: a new comment on a line replaces only the old
+	// comment of that line
+	async comment(file: string | undefined, input: ModelCommentInput[], append: boolean): Promise<object> {
+		const doc = await this.document(file);
+		const f = doc.uri.fsPath;
+		const old = this.layerOf(f);
+		const { comments, problems } = resolveComments(input, [1, doc.lineCount]);
+		if (problems.length > 0) {
+			throw new Error(`The view did not change.\n${problems.join('\n')}`);
+		}
+		const all = append ? mergeComments(old?.comments ?? [], comments) : comments;
+		this.setLayer({
+			file: f, fn: old?.fn, client: this.deps.client(), blocks: old?.blocks ?? [], notes: old?.notes ?? [], comments: all, details: old?.details ?? [],
+		});
+		this.showLayers();
+		await this.reveal(doc, new vscode.Position(Math.max(0, comments[0].line - 1), 0));
+		return { file: f, shown: comments.length, commentsInFile: all.length, lines: comments.map((c) => c.line) };
+	}
+
+	// A detail on code: an expression on a line, a line, or the selection of the user. The side view shows a symbol at the
+	// end of the line, and the symbol shows the text in a card. A detail on the same code replaces the old detail
+	async detail(file: string | undefined, input: ModelDetailInput): Promise<object> {
+		const doc = await this.document(file);
+		const f = doc.uri.fsPath;
+		const old = this.layerOf(f);
+		const lineText = (l: number) => (l >= 1 && l <= doc.lineCount ? doc.lineAt(l - 1).text : undefined);
+		const { detail, problem } = resolveDetail(input, lineText, doc.lineCount, input.line === undefined ? this.selectionOf(doc) : undefined);
+		if (!detail) {
+			throw new Error(`The view did not change.\n${problem}`);
+		}
+		const { details, id } = addDetail(old?.details ?? [], detail);
+		if (details.length > MAX_DETAILS) {
+			throw new Error(`The view did not change.\nThe file has ${MAX_DETAILS} details. Call clear, or give a detail on the code of an old detail.`);
+		}
+		this.setLayer({ file: f, fn: old?.fn, client: this.deps.client(), blocks: old?.blocks ?? [], notes: old?.notes ?? [], comments: old?.comments ?? [], details });
+		this.showLayers();
+		await this.reveal(doc, new vscode.Position(detail.line - 1, detail.col));
+		return {
+			file: f, id, lines: [detail.line, detail.endLine], code: detail.code.slice(0, 300), title: detail.title, detailsInFile: details.length,
+			note: 'The line of the code gets a symbol at its end. The user sees the text when the mouse is on the symbol.',
+		};
+	}
+
+	async clear(file?: string): Promise<object> {
+		const { store } = this.deps;
+		if (!file) {
+			const removed = store.state.modelLayers.length;
+			store.update({ modelLayers: [] });
+			return { removed };
+		}
+		const doc = await this.document(file);
+		const had = !!this.layerOf(doc.uri.fsPath);
+		this.removeLayer(doc.uri.fsPath);
+		return { removed: had ? 1 : 0 };
+	}
+
+	// Moves the lines of the blocks and the notes of the model in a file with the changes of an edit. Returns false if
+	// the layer went away, because a change replaced all its lines
+	moveLayer(file: string, changes: readonly TextChange[]): boolean {
+		const layer = this.layerOf(file);
+		if (!layer) {
+			return true;
+		}
+		const moved = moveModelLayer(layer, changes);
+		if (!moved) {
+			this.removeLayer(file);
+			return false;
+		}
+		if (moved !== layer) {
+			this.setLayer(moved);
+		}
+		return true;
+	}
+
+	// Removes the layers of the model in a file
+	removeLayer(file: string): void {
+		const { store } = this.deps;
+		const rest = store.state.modelLayers.filter((l) => fileKey(l.file) !== fileKey(file));
+		if (rest.length !== store.state.modelLayers.length) {
+			store.update({ modelLayers: rest });
+		}
+	}
+
+	//-------------------
+	// Helpers
+
+	// The folders of the project and of its compile databases
+	private roots(): string[] {
+		const folders = [...this.deps.roots(), ...this.deps.store.state.databases.map((d) => d.folder)];
+		return [...new Map(folders.map((f) => [fileKey(f), f])).values()];
+	}
+
+	// The selection of the user in a document: in the C++ editor of the document, else in the side view with no text editor
+	private selectionOf(doc: vscode.TextDocument): CodePlace | undefined {
+		const editor = this.deps.currentEditor();
+		const key = fileKey(doc.uri.fsPath);
+		const range = editor && fileKey(editor.document.uri.fsPath) === key ? editor.selection
+			: (this.deps.side.selectionPlace && fileKey(this.deps.side.selectionPlace.doc.uri.fsPath) === key ? this.deps.side.selectionPlace.range : undefined);
+		if (!range || range.isEmpty) {
+			return undefined;
+		}
+		return { line: range.start.line + 1, col: range.start.character, endLine: range.end.line + 1, endCol: range.end.character };
+	}
+
+	private layerOf(file: string): SideModel | undefined {
+		return this.deps.store.state.modelLayers.find((l) => fileKey(l.file) === fileKey(file));
+	}
+
+	// A view tool shows the layers of the model again, if the user hid them with the switch Model, because the user asked
+	// the model for them
+	private showLayers(): void {
+		if (!this.deps.store.state.isModelShown) {
+			this.deps.store.update({ isModelShown: true });
+		}
+	}
+
+	private setLayer(layer: SideModel): void {
+		const { store } = this.deps;
+		const others = store.state.modelLayers.filter((l) => fileKey(l.file) !== fileKey(layer.file));
+		const isEmpty = layer.blocks.length === 0 && layer.notes.length === 0 && layer.comments.length === 0 && layer.details.length === 0;
+		store.update({ modelLayers: isEmpty ? others : [...others, layer] });
+	}
+
+	private ready(): EngineClient {
+		const client = this.deps.engine();
+		if (!client || client.currentState !== 'ready') {
+			throw new Error('The DataFlow engine is not ready. Open a C++ file of the project in VS Code and wait until the side view shows its code. '
+				+ 'If DataFlow found no compile database, the user must run "DataFlow: Select Compile Database".');
+		}
+		return client;
+	}
+
+	// The document of a file, of the active C++ editor, or of the file of the side view. The file must be in the project.
+	private async document(file?: string): Promise<vscode.TextDocument> {
+		if (!file) {
+			const editor = this.deps.currentEditor();
+			if (editor && isCpp(editor.document)) {
+				return editor.document;
+			}
+			const shown = this.deps.side.file;
+			if (!shown) {
+				throw new Error('No C++ file is active in VS Code, and the side view shows no file. Give "file".');
+			}
+			const open = vscode.workspace.textDocuments.find((d) => fileKey(d.uri.fsPath) === fileKey(shown));
+			return open ?? vscode.workspace.openTextDocument(vscode.Uri.file(shown));
+		}
+		const roots = this.roots();
+		const candidates = path.isAbsolute(file) ? [file] : roots.map((r) => path.join(r, file));
+		const found = candidates.find((c) => existsSync(c));
+		if (!found) {
+			throw new Error(`DataFlow found no file ${file}${roots.length > 0 ? ` in ${roots.join(', ')}` : ''}.`);
+		}
+		if (!roots.some((r) => isInside(found, r))) {
+			throw new Error(`${found} is not in the project. DataFlow analyzes only the files of the project that is open in VS Code.`);
+		}
+		const open = vscode.workspace.textDocuments.find((d) => fileKey(d.uri.fsPath) === fileKey(found));
+		return open ?? vscode.workspace.openTextDocument(vscode.Uri.file(found));
+	}
+
+	private async prepare(file?: string): Promise<{ client: EngineClient; doc: vscode.TextDocument; file: string }> {
+		const client = this.ready();
+		const doc = await this.document(file);
+		if (!isCpp(doc)) {
+			throw new Error(`${doc.uri.fsPath} is not a C or C++ file.`);
+		}
+		this.deps.flushChange(doc);
+		return { client, doc, file: doc.uri.fsPath };
+	}
+
+	// A position in the function for the engine
+	private async selector(client: EngineClient, doc: vscode.TextDocument, fn: FunctionArg): Promise<{ line: number; col: number }> {
+		const file = doc.uri.fsPath;
+		if (fn.function) {
+			const name = fn.function;
+			const { functions } = await client.functions(file);
+			let matches = functions.filter((f) => f.qualifiedName === name);
+			if (matches.length === 0) {
+				matches = functions.filter((f) => f.name === name || f.macroCall === name || f.qualifiedName.endsWith(`::${name}`));
+			}
+			if (fn.line !== undefined && matches.length > 1) {
+				const atLine = matches.filter((f) => f.range.begin.line <= fn.line! && fn.line! <= f.range.end.line);
+				matches = atLine.length > 0 ? atLine : matches;
+			}
+			if (matches.length === 0) {
+				throw new Error(`No function ${name} in ${path.basename(file)}. Call list_functions.`);
+			}
+			if (matches.length > 1) {
+				throw new Error(`${matches.length} functions match ${name}: ${matches.map((m) => `${m.qualifiedName} on line ${m.range.begin.line}`).join(', ')}. Give "line" too.`);
+			}
+			return positionOf(matches[0]);
+		}
+		if (fn.line !== undefined) {
+			if (fn.line > doc.lineCount) {
+				throw new Error(`${path.basename(file)} has ${doc.lineCount} lines.`);
+			}
+			const text = doc.lineAt(fn.line - 1).text;
+			return { line: fn.line, col: toUtf8Column(text, Math.max(0, text.search(/\S/))) };
+		}
+		const place = this.deps.currentPlace();
+		if (place && fileKey(place.doc.uri.fsPath) === fileKey(file)) {
+			const pos = doc.validatePosition(place.pos);
+			return { line: pos.line + 1, col: toUtf8Column(doc.lineAt(pos.line).text, pos.character) };
+		}
+		throw new Error('Give "function" or "line".');
+	}
+
+	private async structureModel(file: string | undefined, fn: FunctionArg): Promise<{ doc: vscode.TextDocument; model: StructureModel & FileResult }> {
+		const { client, doc, file: f } = await this.prepare(file);
+		const at = await this.selector(client, doc, fn);
+		const model = await client.structure(f, at, { eventFunctions: this.deps.eventFunctions(doc.uri), asyncFunctions: this.deps.asyncFunctions(doc.uri) });
+		return { doc, model };
+	}
+
+	// Shows a place for the user, and opens the side view. The focus stays, for example in the terminal of the MCP client.
+	// With a C++ text editor on the screen, the text editor beside the side view shows the place. With no C++ text editor,
+	// for example with Claude Code in the other editor group, only the side view shows the place, and its cursor goes to
+	// the place.
+	private async reveal(doc: vscode.TextDocument, pos: vscode.Position, type = vscode.TextEditorRevealType.AtTop): Promise<void> {
+		const { side } = this.deps;
+		if (!side.hasCodeEditor) {
+			side.showPlace(doc, pos);
+			return;
+		}
+		const editor = await vscode.window.showTextDocument(doc, { viewColumn: side.editorColumn(), preserveFocus: true, preview: false });
+		editor.revealRange(new vscode.Range(pos, pos), type);
+		side.open();
+	}
+}

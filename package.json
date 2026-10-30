@@ -1,0 +1,583 @@
+{
+  "name": "dataflow",
+  "displayName": "DataFlow",
+  "description": "Shows the data flow, the logic, the hidden costs and the ripple of changes of C++ code in a view beside the editor.",
+  "version": "0.1.0",
+  "publisher": "local-dev",
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onLanguage:cpp",
+    "onLanguage:c",
+    "onWebviewPanel:dataflow.sideView"
+  ],
+  "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "DataFlow reads the compile commands of the project and parses its code."
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dataflow",
+          "title": "DataFlow",
+          "icon": "media/dataflow.svg"
+        }
+      ]
+    },
+    "views": {
+      "dataflow": [
+        {
+          "id": "dataflow.home",
+          "name": "DataFlow"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "dataflow.helloWorld",
+        "title": "Hello World",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.openSideView",
+        "title": "Open Side View",
+        "category": "DataFlow",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "dataflow.openProject",
+        "title": "Open Project…",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.openProjectFile",
+        "title": "Open File of the Project",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.openProjectFolder",
+        "title": "Open Project Folder…",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.openRecentProject",
+        "title": "Open Recent Project",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.closeProject",
+        "title": "Close Project",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.selectCompileCommands",
+        "title": "Select Compile Database",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.restartEngine",
+        "title": "Restart Engine",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.showLog",
+        "title": "Show Log",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.traceVariable",
+        "title": "Trace Variable",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.clearTrace",
+        "title": "Clear Trace",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.toggleLogicMap",
+        "title": "Toggle Logic Map",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.whyThisLine",
+        "title": "Why Does This Line Run",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.showCard",
+        "title": "Show Card at Cursor",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.resetChoices",
+        "title": "Reset Logic Map Choices",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.toggleHiddenCpp",
+        "title": "Toggle Hidden C++",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.toggleIncludes",
+        "title": "Toggle Include Hierarchy",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.toggleCalls",
+        "title": "Toggle Call Hierarchy",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.toggleThreads",
+        "title": "Toggle Threads and Races",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.reviewChanges",
+        "title": "Review Changes",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.clearReview",
+        "title": "Clear Review",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.ripple.selectTarget",
+        "title": "Select Target Branch",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.mcp.start",
+        "title": "Start MCP Server",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.mcp.stop",
+        "title": "Stop MCP Server",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.mcp.copySetup",
+        "title": "Copy MCP Setup",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.claude.connect",
+        "title": "Connect to Claude Code",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.claude.disconnect",
+        "title": "Disconnect from Claude Code",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.clearModel",
+        "title": "Remove Model Layers",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.toggleModelLayers",
+        "title": "Show or Hide Model Layers",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.showCalls",
+        "title": "Show Calls",
+        "category": "DataFlow"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "dataflow.mcp",
+        "label": "DataFlow"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "dataflow.traceVariable",
+        "key": "ctrl+alt+f",
+        "when": "editorTextFocus && editorLangId =~ /^(c|cpp|cuda-cpp)$/"
+      },
+      {
+        "command": "dataflow.toggleHiddenCpp",
+        "key": "ctrl+alt+h",
+        "when": "editorTextFocus && editorLangId =~ /^(c|cpp|cuda-cpp)$/"
+      },
+      {
+        "command": "dataflow.showCard",
+        "key": "ctrl+alt+k",
+        "when": "editorTextFocus && editorLangId =~ /^(c|cpp|cuda-cpp)$/"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "dataflow.openSideView",
+          "when": "editorLangId =~ /^(c|cpp|cuda-cpp)$/",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "dataflow.traceVariable",
+          "when": "editorLangId =~ /^(c|cpp|cuda-cpp)$/",
+          "group": "dataflow@1"
+        },
+        {
+          "command": "dataflow.whyThisLine",
+          "when": "editorLangId =~ /^(c|cpp|cuda-cpp)$/",
+          "group": "dataflow@2"
+        },
+        {
+          "command": "dataflow.showCalls",
+          "when": "editorLangId =~ /^(c|cpp|cuda-cpp)$/",
+          "group": "dataflow@3"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "dataflow.showCalls",
+          "when": "webviewId == 'dataflow.sideView' && dataflowCallable",
+          "group": "navigation@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "dataflow.openProjectFile",
+          "when": "dataflow.hasProject"
+        },
+        {
+          "command": "dataflow.closeProject",
+          "when": "dataflow.hasProject"
+        },
+        {
+          "command": "dataflow.openRecentProject",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DataFlow",
+      "properties": {
+        "dataflow.compileCommands": {
+          "type": [
+            "string",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "The path to `compile_commands.json`, to a folder that contains it, or to a qmake build folder. An array gives more than one database. A relative path starts at the workspace folder."
+        },
+        "dataflow.project.skipFolders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".*",
+            "node_modules",
+            "_deps",
+            "out",
+            "build",
+            "builds",
+            "build-*",
+            "build_*",
+            "build.*",
+            "cmake-build-*"
+          ],
+          "markdownDescription": "The names of the folders that the list of the files of a project skips, for example build folders. A `*` is any text, and a `?` is one character. The case of the letters is not important. The list also skips the `debug` and `release` folders next to the Makefiles of qmake."
+        },
+        "dataflow.engine.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "The path to dataflow-engine. If it is empty, DataFlow uses the engine of the extension."
+        },
+        "dataflow.engine.maxThreads": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "The number of parse threads. 0 uses half of the processor cores. The engine never uses more than 80% of the cores."
+        },
+        "dataflow.engine.cacheSize": {
+          "type": "integer",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 64,
+          "description": "The number of parsed files that the engine keeps in memory."
+        },
+        "dataflow.animations": {
+          "type": "string",
+          "enum": [
+            "on",
+            "off"
+          ],
+          "default": "on",
+          "description": "Animations in the side view, for example the pulse of Flow Lens and the wave of Change Ripple. If workbench.reduceMotion is on, DataFlow shows no animations."
+        },
+        "dataflow.logic.eventFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "Functions that send events, for example `fire_transition`. Logic Map shows a call of one of these functions as an event, if the call has a string literal argument that is not empty. Call Hierarchy shows each call of one of these functions as an event. A name with `::` is a qualified name."
+        },
+        "dataflow.logic.nullableFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "Functions that can return a null pointer, for example `get_if`. Logic Map shows a warning if the code dereferences the result with no null check on the path. The result can also be a `std::unique_ptr`, a `std::shared_ptr` or a `std::optional`."
+        },
+        "dataflow.logic.nullCheckFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "Functions that check a pointer from `dataflow.logic.nullableFunctions`, for example `is_valid`. In a condition, a call with the pointer is a null check: the pointer is not null if the call gives true."
+        },
+        "dataflow.flow.readFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "Functions that only read their arguments and their object, for example `log_value` or `Config::get`. Flow Lens shows a call of such a function as a read, not as a possible write. Use a qualified name with `::` or a simple name. The format functions of std, fmt and spdlog are reads already."
+        },
+        "dataflow.cost.categories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "copy",
+              "move",
+              "conversion",
+              "lifetime",
+              "destructor",
+              "allocation",
+              "lookup",
+              "state"
+            ]
+          },
+          "default": [
+            "copy",
+            "move",
+            "conversion",
+            "lifetime",
+            "destructor",
+            "allocation",
+            "lookup",
+            "state"
+          ],
+          "description": "The categories of Hidden C++ that show. The category lifetime contains temporaries and shadowed names."
+        },
+        "dataflow.cost.minCopyBytes": {
+          "type": "integer",
+          "default": 16,
+          "minimum": 0,
+          "description": "A copy of a trivially copyable type of this size in bytes or less does not show in Hidden C++."
+        },
+        "dataflow.ripple.asyncFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "std::async",
+            "QtConcurrent::run",
+            "tf::Executor::async"
+          ],
+          "scope": "resource",
+          "markdownDescription": "Functions that run a callable on a different thread and return its result, for example `std::async`. Change Ripple follows the result of a call of one of these functions, and marks the step as async. Flow Lens shows the callable of a data member trace on a different thread. Call Hierarchy shows the calls in the callable as calls on a different thread. Threads and races shows the callable as a worker thread. A name with `::` is a qualified name."
+        },
+        "dataflow.ripple.baseRef": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "The target branch of Change Ripple, if you did not select one with **Target** in the Change Ripple bar. Change Ripple compares the files with the merge base of `HEAD` and this ref. If the ref starts with `origin/` and does not exist, Change Ripple uses the local branch. If the ref is empty or does not exist, Change Ripple uses the default branch of the remote, then `origin/main`, `main`, `origin/master` or `master`."
+        },
+        "dataflow.ripple.maxDepth": {
+          "type": "integer",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 5,
+          "scope": "resource",
+          "description": "The number of caller levels that Change Ripple follows from a return value."
+        },
+        "dataflow.mcp.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Start the MCP server of DataFlow when the extension starts. A language model in an MCP client, for example Claude Code, can then read the analysis of the engine and show blocks, flows and notes in the side view. The agent mode of VS Code starts the server when it needs it."
+        },
+        "dataflow.mcp.port": {
+          "type": "integer",
+          "default": 47321,
+          "minimum": 0,
+          "maximum": 65535,
+          "scope": "application",
+          "description": "The port of the MCP server on 127.0.0.1. If a different program uses the port, the server takes a free port. 0 always takes a free port."
+        }
+      }
+    },
+    "colors": [
+      {
+        "id": "dataflow.definition",
+        "description": "DataFlow: the color of a definition.",
+        "defaults": {
+          "light": "#c97c0e",
+          "dark": "#f2b544",
+          "highContrast": "#ffb000",
+          "highContrastLight": "#8a5300"
+        }
+      },
+      {
+        "id": "dataflow.read",
+        "description": "DataFlow: the color of a read.",
+        "defaults": {
+          "light": "#2271c4",
+          "dark": "#5ab4f5",
+          "highContrast": "#5ab4f5",
+          "highContrastLight": "#0b4f9e"
+        }
+      },
+      {
+        "id": "dataflow.write",
+        "description": "DataFlow: the color of a write or a cost.",
+        "defaults": {
+          "light": "#d4522f",
+          "dark": "#ff7a5c",
+          "highContrast": "#ff7a5c",
+          "highContrastLight": "#9e2d10"
+        }
+      },
+      {
+        "id": "dataflow.check",
+        "description": "DataFlow: the color of a check or a safe use.",
+        "defaults": {
+          "light": "#23905d",
+          "dark": "#4ccb8a",
+          "highContrast": "#4ccb8a",
+          "highContrastLight": "#0e6b3d"
+        }
+      },
+      {
+        "id": "dataflow.problem",
+        "description": "DataFlow: the color of a problem.",
+        "defaults": {
+          "light": "#cf2f43",
+          "dark": "#ff5c6c",
+          "highContrast": "#ff5c6c",
+          "highContrastLight": "#a3101f"
+        }
+      },
+      {
+        "id": "dataflow.problemBackground",
+        "description": "DataFlow: the background of a use with a problem.",
+        "defaults": {
+          "light": "#cf2f4322",
+          "dark": "#ff5c6c2e",
+          "highContrast": "#ff5c6c40",
+          "highContrastLight": "#a3101f22"
+        }
+      },
+      {
+        "id": "dataflow.path",
+        "description": "DataFlow: the background of the current step of the path of Logic Map in the side view.",
+        "defaults": {
+          "light": "#0b77832a",
+          "dark": "#3cc2ce30",
+          "highContrast": "#ffd70040",
+          "highContrastLight": "#005a6630"
+        }
+      },
+      {
+        "id": "dataflow.pathLine",
+        "description": "DataFlow: the color of the path line and of the decisions of Logic Map in the side view.",
+        "defaults": {
+          "light": "#0b7783",
+          "dark": "#3cc2ce",
+          "highContrast": "#ffd700",
+          "highContrastLight": "#005a66"
+        }
+      },
+      {
+        "id": "dataflow.event",
+        "description": "DataFlow: the color of an event or an async boundary.",
+        "defaults": {
+          "light": "#7c4ddb",
+          "dark": "#a78bfa",
+          "highContrast": "#a78bfa",
+          "highContrastLight": "#5a2db8"
+        }
+      },
+      {
+        "id": "dataflow.model",
+        "description": "DataFlow: the color of the titles, the summaries and the notes of a language model.",
+        "defaults": {
+          "light": "#a1307f",
+          "dark": "#f07fc9",
+          "highContrast": "#f07fc9",
+          "highContrastLight": "#7a1f5f"
+        }
+      },
+      {
+        "id": "dataflow.modelComment",
+        "description": "DataFlow: the color of a comment of a language model on a line, if the model selected no color.",
+        "defaults": {
+          "light": "#2f5fd0",
+          "dark": "#7aa8ff",
+          "highContrast": "#9cbcff",
+          "highContrastLight": "#1f4fb8"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./ && tsc -p ./tsconfig.webview.json && node scripts/build-webviews.mjs",
+    "watch": "node scripts/build-webviews.mjs --watch",
+    "pretest": "npm run compile && node scripts/prepare-fixtures.mjs",
+    "test": "vscode-test",
+    "test:engine": "node scripts/prepare-fixtures.mjs && node --test test/engine/protocol.test.mjs",
+    "test:ui": "node scripts/prepare-fixtures.mjs && node --test test/ui/ui.test.mjs",
+    "build:engine": "node scripts/build-engine.mjs"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "@types/vscode": "1.120.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "esbuild": "^0.28.2",
+    "preact": "^11.0.2",
+    "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}

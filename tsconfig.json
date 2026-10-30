@@ -1,0 +1,29 @@
+{
+	"compilerOptions": {
+		// "Node16" makes CommonJS output because package.json has no "type": "module" field.
+		// The VS Code extension host loads "out/extension.js" with require().
+		"module": "Node16",
+		"target": "ES2022",
+		"lib": [
+			"ES2022"
+		],
+		// Load the global types from these "@types" packages.
+		// TypeScript 6 does not load all "@types" packages automatically.
+		"types": [
+			"node",
+			"mocha"
+		],
+		"rootDir": "src",
+		"outDir": "out",
+		// Source maps let the debugger stop at breakpoints in the TypeScript files.
+		"sourceMap": true,
+		"strict": true
+	},
+	// The script of the side view has its own type check in tsconfig.webview.json, and esbuild bundles it.
+	"include": [
+		"src"
+	],
+	"exclude": [
+		"src/webview-side"
+	]
+}

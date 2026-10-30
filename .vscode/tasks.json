@@ -1,0 +1,24 @@
+// This file defines the default build task, "npm: watch".
+// The task runs the TypeScript compiler in watch mode, and esbuild for the webview scripts.
+// Each time that you save a file, they compile the code again.
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "npm",
+			"script": "watch",
+			// Read the compiler errors in the task output and show them in the Problems view.
+			"problemMatcher": "$tsc-watch",
+			// The watch task does not stop. The problem matcher tells VS Code when each compilation is complete.
+			// Then F5 can open the second window.
+			"isBackground": true,
+			"presentation": {
+				"reveal": "never"
+			},
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		}
+	]
+}

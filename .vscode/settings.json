@@ -1,0 +1,9 @@
+{
+	// Do not show the compiled files in the search results.
+	"search.exclude": {
+		"out": true
+	},
+	// Do not show the automatic "tsc" tasks in the task list.
+	// The build task comes from the "watch" script in package.json.
+	"js/ts.tsc.autoDetect": "off"
+}

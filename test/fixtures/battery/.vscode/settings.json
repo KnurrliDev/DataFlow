@@ -1,0 +1,4 @@
+{
+  "dataflow.logic.eventFunctions": ["fire_transition"],
+  "dataflow.logic.nullableFunctions": ["get_if"]
+}
