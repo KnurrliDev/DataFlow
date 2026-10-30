@@ -12,6 +12,7 @@ import { findingText, LineText, toUtf8Column, variableAt } from '../lenses/flow'
 import { buildSideIncludes } from '../lenses/includes';
 import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../lenses/member';
 import { buildSideThreads } from '../lenses/threads';
+import { isCppFile } from '../review/git';
 import {
 	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex, withNote, withStatus,
 } from '../review/guide';
@@ -469,13 +470,17 @@ export class DataFlowMcpHost implements McpHost {
 	async showReviewPlan(plan: GuidePlanInput): Promise<object> {
 		const { store, side } = this.deps;
 		// the files of the steps: a path relative to the repository or to a folder of the project, or an absolute path
-		const files = new Map<string, { file: string; lineCount: number }>();
+		const files = new Map<string, { file: string; lineCount: number; problem?: string }>();
 		const steps = Array.isArray(plan.steps) ? plan.steps : [];
 		const given = new Set(steps.map((s) => (s && typeof s === 'object' ? (s as { file?: unknown }).file : undefined)).filter((f): f is string => typeof f === 'string'));
 		const current = this.deps.currentEditor()?.document.uri.fsPath ?? side.file;
 		for (const name of [...given, ...(current ? [current] : [])]) {
 			const full = this.projectFile(name);
 			if (!full) {
+				continue;
+			}
+			if (!isCppFile(full)) {
+				files.set(name, { file: full, lineCount: 0, problem: `${path.basename(full)} is not a C or C++ file. The side view shows only C and C++ files.` });
 				continue;
 			}
 			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full));

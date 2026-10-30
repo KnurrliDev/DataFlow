@@ -30,7 +30,7 @@ import { LayerKeeper } from './mcp/layers';
 import { McpManager } from './mcp/manager';
 import { createPrompts, createTools } from './mcp/tools';
 import { INCLUDE_FILE, isCppFile, openReviewRepository, ReviewDiff, ReviewRepository } from './review/git';
-import { MAX_REVIEW_FILES, type ReviewFilesInput } from './review/guide';
+import { MAX_REVIEW_FILES, moveGuide, type ReviewFilesInput } from './review/guide';
 import { CallSite, RippleModel, runRipple } from './review/ripple';
 import { targetCandidates, targetItems } from './review/targets';
 import { SideViewController } from './side/controller';
@@ -2335,6 +2335,11 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		vscode.commands.registerCommand('dataflow.claude.disconnect', () => disconnectClaude()),
 		vscode.commands.registerCommand('dataflow.clearModel', () => clearModel()),
 		vscode.commands.registerCommand('dataflow.toggleModelLayers', () => store.update({ isModelShown: !store.state.isModelShown })),
+		// the guided review: the same as the buttons of the side view
+		vscode.commands.registerCommand('dataflow.guide.next', () => store.state.guide && side.goToGuideStep(store.state.guide.current + 1)),
+		vscode.commands.registerCommand('dataflow.guide.previous', () => store.state.guide && side.goToGuideStep(store.state.guide.current - 1)),
+		vscode.commands.registerCommand('dataflow.guide.copySummary', () => side.copyGuideSummary()),
+		vscode.commands.registerCommand('dataflow.guide.close', () => store.update({ guide: undefined })),
 		// The tests use these commands, as the side view does. They are not in the Command Palette.
 		vscode.commands.registerCommand('dataflow.logic.setChoice', (key: string, value: string) => setChoice(key, value)),
 		vscode.commands.registerCommand('dataflow.cost.notUseful', (pattern: string) => notUseful(pattern)),
@@ -2376,9 +2381,14 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			if (current?.file === file && e.contentChanges.some((c) => c.range.start.line <= current.lastLine || c.text.includes('#'))) {
 				isIncludesDirty = true;
 			}
-			// the blocks and the notes of the model move with their code
+			// the blocks and the notes of the model, and the steps of the guided review, move with their code
 			if (!mcpHost.moveLayer(file, e.contentChanges)) {
 				log.info(`The blocks and the notes of the model in ${path.basename(file)} went away, because an edit replaced all their lines.`);
+			}
+			const guide = store.state.guide;
+			const movedGuide = guide && moveGuide(guide, file, e.contentChanges);
+			if (movedGuide && movedGuide !== guide) {
+				store.update({ guide: movedGuide });
 			}
 			clearTimeout(changeTimers.get(file));
 			changeTimers.set(file, setTimeout(() => sendChange(e.document), 250));
@@ -2430,7 +2440,16 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 	// a connection to Claude Code starts the server, and a window with no connection can offer it
 	void mcp.refreshClaude().then(() => offerClaudeConnection(), (error) => log.warn(`The connection to Claude Code is not available: ${error}`));
 
-	// the blocks and the notes of a model of the last session of the workspace
+	// the commands of the guided review show in the Command Palette only while a guide shows
+	let isGuideShown = false;
+	context.subscriptions.push(store.onDidChange((state) => {
+		if (!!state.guide !== isGuideShown) {
+			isGuideShown = !!state.guide;
+			void vscode.commands.executeCommand('setContext', 'dataflow.guideActive', isGuideShown);
+		}
+	}));
+
+	// the blocks and the notes of a model, and the guided review, of the last session of the workspace
 	const layers = new LayerKeeper(context.workspaceState, store, log);
 	context.subscriptions.push(layers);
 	layers.restore();

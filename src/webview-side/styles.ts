@@ -681,12 +681,12 @@ button.mnote { cursor: pointer; }
   border-top: 1px solid var(--vscode-panel-border, transparent); }
 .mcp-status .sub { overflow-wrap: anywhere; }
 
-/* the guided review: the bar, the lines of the current step, and the plan in the tab Guide. The color is the blue of the
-   chart colors of the theme, so it differs from the color of the model and of Change Ripple */
+/* the guided review: the bar, the lines of the current step, and the plan in the tab Guide. The color is the theme color
+   dataflow.reviewGuide, by default the blue of the chart colors */
 .rg-pill { display: inline-block; margin-right: 5px; padding: 0 5px; border-radius: 999px; font-size: 0.75em; font-weight: 600;
   font-style: normal; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1.5; vertical-align: 1px;
-  color: var(--vscode-charts-blue); background: color-mix(in srgb, var(--vscode-charts-blue) 16%, transparent); }
-.rg-bar { gap: 4px 8px; background: color-mix(in srgb, var(--vscode-charts-blue) 6%, transparent); }
+  color: var(--vscode-dataflow-reviewGuide); background: color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 16%, transparent); }
+.rg-bar { gap: 4px 8px; background: color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 6%, transparent); }
 .rg-bar .rg-pos { font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
 .rg-bar .lens[disabled], .rg-actions .lens[disabled] { opacity: 0.45; cursor: default; }
 .rg-bar .rg-title { padding: 0; border: 0; background: none; color: var(--vscode-foreground); font: inherit; font-weight: 600;
@@ -698,22 +698,22 @@ button.mnote { cursor: pointer; }
 .rg-mark.st-ok[aria-pressed="true"] { border-color: var(--vscode-charts-green); color: var(--vscode-charts-green); }
 .rg-mark.st-issue[aria-pressed="true"] { border-color: var(--vscode-dataflow-problem); color: var(--vscode-dataflow-problem); }
 .rg-mark.st-question[aria-pressed="true"] { border-color: var(--vscode-charts-yellow); color: var(--vscode-charts-yellow); }
-.row.rg-line, .row.rg-line .ends { background: color-mix(in srgb, var(--vscode-charts-blue) 11%, var(--vscode-editor-background)); }
-.row.rg-line .ln { box-shadow: inset -3px 0 0 var(--vscode-charts-blue); color: var(--vscode-editorLineNumber-activeForeground); }
-.row.rg-first, .row.rg-only { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-charts-blue) 55%, transparent); }
-.row.rg-last, .row.rg-only { box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--vscode-charts-blue) 55%, transparent); }
-.row.rg-only { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-charts-blue) 55%, transparent),
-  inset 0 -1px 0 color-mix(in srgb, var(--vscode-charts-blue) 55%, transparent); }
+.row.rg-line, .row.rg-line .ends { background: color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 11%, var(--vscode-editor-background)); }
+.row.rg-line .ln { box-shadow: inset -3px 0 0 var(--vscode-dataflow-reviewGuide); color: var(--vscode-editorLineNumber-activeForeground); }
+.row.rg-first, .row.rg-only { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 55%, transparent); }
+.row.rg-last, .row.rg-only { box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 55%, transparent); }
+.row.rg-only { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 55%, transparent),
+  inset 0 -1px 0 color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 55%, transparent); }
 .hint.rg-tag { padding: 0 6px; border-radius: 4px; font-size: 0.88em; font-style: normal; line-height: calc(var(--row-height) - 4px);
-  color: var(--vscode-charts-blue); background: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent); }
+  color: var(--vscode-dataflow-reviewGuide); background: color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 12%, transparent); }
 .rg-details .rg-progress { display: grid; gap: 4px; }
 .rg-track { display: block; height: 4px; border-radius: 2px; overflow: hidden;
-  background: color-mix(in srgb, var(--vscode-charts-blue) 18%, transparent); }
-.rg-track i { display: block; height: 100%; background: var(--vscode-charts-blue); transition: width 0.3s; }
+  background: color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 18%, transparent); }
+.rg-track i { display: block; height: 100%; background: var(--vscode-dataflow-reviewGuide); transition: width 0.3s; }
 .rg-steps { display: grid; gap: 4px; margin: 2px 0 0; padding: 0; list-style: none; }
 .rg-step { border: 1px solid var(--vscode-panel-border, transparent); border-left: 3px solid
-  color-mix(in srgb, var(--vscode-charts-blue) 35%, transparent); border-radius: 4px; }
-.rg-step.current { border-color: var(--vscode-focusBorder); border-left-color: var(--vscode-charts-blue);
+  color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 35%, transparent); border-radius: 4px; }
+.rg-step.current { border-color: var(--vscode-focusBorder); border-left-color: var(--vscode-dataflow-reviewGuide);
   background: var(--vscode-list-inactiveSelectionBackground); }
 .rg-step.st-ok { border-left-color: var(--vscode-charts-green); }
 .rg-step.st-issue { border-left-color: var(--vscode-dataflow-problem); }
@@ -722,7 +722,7 @@ button.mnote { cursor: pointer; }
   font: inherit; text-align: left; cursor: pointer; }
 .rg-head:hover .rg-step-title { color: var(--vscode-textLink-activeForeground); }
 .rg-num { flex: none; min-width: 1.6em; padding: 0 4px; border-radius: 999px; text-align: center; font-size: 0.85em; font-weight: 700;
-  color: var(--vscode-charts-blue); background: color-mix(in srgb, var(--vscode-charts-blue) 16%, transparent); }
+  color: var(--vscode-dataflow-reviewGuide); background: color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 16%, transparent); }
 .rg-num.st-ok { color: var(--vscode-charts-green); background: color-mix(in srgb, var(--vscode-charts-green) 16%, transparent); }
 .rg-num.st-issue { color: var(--vscode-dataflow-problem); background: color-mix(in srgb, var(--vscode-dataflow-problem) 16%, transparent); }
 .rg-num.st-question { color: var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 16%, transparent); }
@@ -732,11 +732,11 @@ button.mnote { cursor: pointer; }
 .rg-kind { flex: none; padding: 0 5px; border-radius: 4px; font-size: 0.8em; color: var(--vscode-descriptionForeground);
   background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); }
 .rg-kind.k-risk { color: var(--vscode-dataflow-problem); }
-.rg-kind.k-change { color: var(--vscode-charts-blue); }
+.rg-kind.k-change { color: var(--vscode-dataflow-reviewGuide); }
 .rg-place { flex: none; font-family: var(--vscode-editor-font-family); font-size: 0.85em; color: var(--vscode-descriptionForeground); }
 .rg-body { display: grid; gap: 6px; padding: 0 8px 8px 32px; }
 .rg-checks { margin: 0; padding-left: 18px; }
-.rg-checks li::marker { content: "☐  "; color: var(--vscode-charts-blue); }
+.rg-checks li::marker { content: "☐  "; color: var(--vscode-dataflow-reviewGuide); }
 .rg-note { padding: 4px 6px; border-radius: 4px; background: color-mix(in srgb, var(--vscode-dataflow-model) 7%, transparent); }
 .rg-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .rg-gap { flex: 1; }

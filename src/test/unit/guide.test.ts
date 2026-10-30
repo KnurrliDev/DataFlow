@@ -1,8 +1,9 @@
 import * as assert from 'assert';
 import * as path from 'path';
+import type { TextChange } from '../../lenses/blocks';
 import {
-	GuideFileLookup, guideFacts, guideProgress, guideSummary, MAX_GUIDE_STEPS, MAX_REVIEW_FILES, MAX_STEP_CHECKS, resolveGuidePlan, reviewFacts, stepIndex,
-	withCurrent, withNote, withStatus,
+	GuideFileLines, GuideFileLookup, guideFacts, guideProgress, guideSummary, MAX_GUIDE_STEPS, MAX_REVIEW_FILES, MAX_STEP_CHECKS, moveGuide, resolveGuidePlan,
+	restoreGuide, reviewFacts, stepIndex, storeGuide, withCurrent, withNote, withStatus,
 } from '../../review/guide';
 import type { SideGuide } from '../../side/protocol';
 
@@ -77,6 +78,56 @@ suite('Guided review', () => {
 		assert.match(resolveGuidePlan(many, lookup, { seq: 1 }).problems[0], /steps at most/);
 		// with no file in the first step and no default file, the step has no file
 		assert.deepStrictEqual(resolveGuidePlan({ steps: [step('No file', undefined, [1, 1])] }, lookup, { seq: 1 }).problems, ['Step 1 has no "file".']);
+	});
+
+	test('A step on a file that the lookup refuses gets the problem of the lookup', () => {
+		const refusing: GuideFileLookup = (f) => (f === 'CMakeLists.txt' ? { file: path.join(ROOT, f), lineCount: 0, problem: 'CMakeLists.txt is not a C or C++ file.' } : lookup(f));
+		const { guide, problems } = resolveGuidePlan({ steps: [step('Read the build', 'CMakeLists.txt', [1, 2])] }, refusing, { seq: 1 });
+		assert.strictEqual(guide, undefined);
+		assert.deepStrictEqual(problems, ['Step 1: CMakeLists.txt is not a C or C++ file.']);
+	});
+
+	test('An edit moves the steps of its file, and a step whose lines the edit deleted keeps the line of the edit', () => {
+		const { guide } = resolveGuidePlan(plan, lookup, { seq: 1 });
+		assert.ok(guide);
+		const change = (startLine: number, startChar: number, endLine: number, endChar: number, text: string): TextChange =>
+			({ range: { start: { line: startLine, character: startChar }, end: { line: endLine, character: endChar } }, text });
+		// two new lines above all steps of battery.cpp. The step in types.hpp stays
+		const added = moveGuide(guide, CPP, [change(10, 0, 10, 0, 'a\nb\n')]);
+		assert.deepStrictEqual(added.steps.map((s) => [s.first, s.last]), [[71, 73], [103, 113], [88, 88]]);
+		// a change in one line moves no step, so the guide stays the same object
+		assert.strictEqual(moveGuide(guide, CPP, [change(69, 4, 69, 8, 'x')]), guide);
+		// an edit of a different file moves nothing
+		assert.strictEqual(moveGuide(guide, path.join(ROOT, 'src', 'main.cpp'), [change(0, 0, 0, 0, 'a\n')]), guide);
+		// the edit deletes the lines 100 to 115, with the lines of step 2: the step keeps line 100
+		const deleted = moveGuide(guide, CPP, [change(99, 0, 115, 0, '')]);
+		assert.deepStrictEqual(deleted.steps.map((s) => [s.first, s.last]), [[69, 71], [100, 100], [88, 88]]);
+	});
+
+	test('A stored guide comes back at the nearest place with the texts of its lines, and a step of a file that is gone goes away', () => {
+		const { guide } = resolveGuidePlan(plan, lookup, { seq: 1 });
+		assert.ok(guide);
+		const text = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`);
+		const files: Record<string, string[]> = { [CPP]: text(209), [HPP]: text(194) };
+		const lines: GuideFileLines = (f) => (files[f] ? { text: (l) => files[f][l - 1], count: files[f].length } : undefined);
+		const stored = storeGuide(withCurrent(withStatus(guide, 0, 'ok'), 2), lines);
+		assert.deepStrictEqual(stored.texts[0], { first: 'line 69', last: 'line 71' });
+		// three new lines at the top of battery.cpp in the next session: the steps of battery.cpp move down by three
+		files[CPP] = ['new 1', 'new 2', 'new 3', ...text(209)];
+		const back = restoreGuide(stored, lines);
+		assert.ok(back);
+		assert.deepStrictEqual(back.steps.map((s) => [s.first, s.last, s.status]), [[72, 74, 'ok'], [104, 114, 'todo'], [88, 88, 'todo']]);
+		assert.strictEqual(back.current, 2);
+		// a text with no match keeps the lines in the file
+		files[HPP] = text(50);
+		assert.deepStrictEqual(restoreGuide(stored, lines)?.steps[2].first, 50);
+		// types.hpp is gone: its step goes away, and the current step stays on the step before it
+		delete files[HPP];
+		const fewer = restoreGuide(stored, lines);
+		assert.deepStrictEqual(fewer?.steps.map((s) => s.title), ['Check the new limit', 'Follow the result to process()']);
+		assert.strictEqual(fewer?.current, 1);
+		delete files[CPP];
+		assert.strictEqual(restoreGuide(stored, lines), undefined);
 	});
 
 	test('Long texts get shorter, and a step keeps a maximum of five checks', () => {

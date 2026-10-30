@@ -18,7 +18,8 @@ This document tells how to change, run, test and release the code of DataFlow. [
 | `src/` | The extension code. VS Code calls `activate()` and `deactivate()` in `src/extension.ts`. |
 | `src/side/` | The side view in the extension. It has the webview panel, the scroll sync, the theme colors and the rows of the file. It also has the layers of Flow Lens, Logic Map and Hidden C++, and the story of Change Ripple. Include Hierarchy, Call Hierarchy and Threads and races have their data in `src/lenses/includes.ts`, `src/lenses/calls.ts` and `src/lenses/threads.ts`. |
 | `src/webview-side/` | The code of the side view in the webview, with Preact |
-| `src/mcp/` | The MCP server. `server.ts`: the protocol over HTTP. `tools.ts`: the tools and the prompt. `host.ts`: the data and the changes of the view. `manager.ts`: the start, the token and the setup. `bridge.ts`: the bridge for clients that start programs. `claude.ts`: the plugin and the settings of the connection to Claude Code. The logical blocks of a model have their data in `src/lenses/blocks.ts`. |
+| `src/mcp/` | The MCP server. `server.ts`: the protocol over HTTP. `tools.ts`: the tools and the prompts. `host.ts`: the data and the changes of the view. `manager.ts`: the start, the token and the setup. `bridge.ts`: the bridge for clients that start programs. `claude.ts`: the plugin and the settings of the connection to Claude Code. The logical blocks of a model have their data in `src/lenses/blocks.ts`. `layers.ts` keeps the layers of the model and the guided review for the next session. |
+| `src/review/` | Change Ripple: the diff against the target branch (`git.ts`), the target branches (`targets.ts`) and the ripple (`ripple.ts`). The guided review has its data in `guide.ts`. |
 | `scripts/` | `build-engine.mjs` builds the engine. `build-webviews.mjs` bundles the script of the side view with esbuild. `prepare-fixtures.mjs` prepares the fixture projects for the tests. `docs-screenshots.mjs` makes the screenshots of the documents. `package-vsix.mjs` makes the VSIX package. |
 | `engine/` | The analysis engine in C++ |
 | `media/` | The icon of DataFlow |
@@ -53,7 +54,7 @@ To open the second window without the debugger, run `open-editor.bat` in the roo
 
 1. Type `npm test`. This command runs the unit tests and the tests on the fixture projects.
 2. Type `npm run test:engine`. This command runs the protocol tests of the engine.
-3. Type `npm run compile`, then `npm run test:ui`. This command runs the tests of the side view. Each script of `spikes/ui/` starts the copy of VS Code and does work in the side view. It reads the elements of the webview through the remote debugging protocol. The tests take about 5 minutes.
+3. Type `npm run compile`, then `npm run test:ui`. This command runs the tests of the side view. Each script of `spikes/ui/` starts the copy of VS Code and does work in the side view. It reads the elements of the webview through the remote debugging protocol. The tests take about 4 minutes.
 
 Do not use the mouse or the keyboard during the tests of the side view, because the scripts use the command palette.
 
@@ -77,7 +78,7 @@ The screenshots in `docs/images` show the fixture projects in the copy of VS Cod
 
 1. Type `npm run compile`.
 2. Type `node scripts/prepare-fixtures.mjs`.
-3. Type `node scripts/docs-screenshots.mjs`. The script takes about 4 minutes.
+3. Type `node scripts/docs-screenshots.mjs`. The script takes about 5 minutes.
 
 To make only some screenshots, give the folder and the names of the screenshots, for example `node scripts/docs-screenshots.mjs docs/images flow-lens logic-map`.
 

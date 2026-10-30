@@ -1,4 +1,5 @@
 import * as path from 'path';
+import type { TextChange } from '../lenses/blocks';
 import type { SideGuide, SideGuideKind, SideGuideStatus, SideGuideStep } from '../side/protocol';
 import type { DiffLine } from './git';
 
@@ -21,6 +22,7 @@ export const MAX_REVIEW_FILES = 50;
 const MAX_DIFF_LINES = 400;
 
 const fileName = (file: string) => file.split(/[\\/]/).pop() ?? file;
+const fileKey = (file: string) => (process.platform === 'win32' ? path.normalize(file).toLowerCase() : path.normalize(file));
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isText = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 
@@ -92,8 +94,9 @@ export interface GuidePlanInput {
 	steps?: unknown;
 }
 
-// The file of a step: its full path and its number of lines. Undefined if the project has no such file
-export type GuideFileLookup = (file: string) => { file: string; lineCount: number } | undefined;
+// The file of a step: its full path and its number of lines, or the reason why a step cannot use it, for example a file
+// that is not a C or C++ file. Undefined if the project has no such file
+export type GuideFileLookup = (file: string) => { file: string; lineCount: number; problem?: string } | undefined;
 
 // Checks the plan of the model. A step with no file uses the file of the step before it, or else the default file. The
 // result has a problem for each wrong step, so the model can correct all of them in one call
@@ -126,6 +129,8 @@ export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup,
 			problems.push(`Step ${n} has no "file".`);
 		} else if (!found) {
 			problems.push(`Step ${n}: the file ${given} is not in the project.`);
+		} else if (found.problem) {
+			problems.push(`Step ${n}: ${found.problem}`);
 		} else {
 			lastFile = found.file;
 		}
@@ -133,7 +138,7 @@ export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup,
 		const isPair = Array.isArray(lines) && lines.length === 2 && lines.every((l) => Number.isInteger(l));
 		if (!isPair) {
 			problems.push(`Step ${n}: "lines" must be two whole numbers, the first and the last line.`);
-		} else if (found && (lines[0] < 1 || lines[0] > lines[1] || lines[1] > found.lineCount)) {
+		} else if (found && !found.problem && (lines[0] < 1 || lines[0] > lines[1] || lines[1] > found.lineCount)) {
 			problems.push(`Step ${n}: the lines ${lines[0]} to ${lines[1]} are not in ${fileName(found.file)}, which has ${found.lineCount} lines.`);
 		}
 		if (raw.kind !== undefined && !GUIDE_KINDS.includes(raw.kind as SideGuideKind)) {
@@ -142,7 +147,7 @@ export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup,
 		if (raw.checks !== undefined && (!Array.isArray(raw.checks) || !raw.checks.every((c) => typeof c === 'string'))) {
 			problems.push(`Step ${n}: "checks" must be a list of texts.`);
 		}
-		if (problems.length > 0 || !found || !isPair) {
+		if (problems.length > 0 || !found || found.problem || !isPair) {
 			return;
 		}
 		const checks = ((raw.checks as string[] | undefined) ?? []).filter(isText).slice(0, MAX_STEP_CHECKS).map((c) => clip(c.trim(), MAX_CHECK));
@@ -201,6 +206,104 @@ export function withNote(guide: SideGuide, index: number, note: string): SideGui
 	const text = note.trim();
 	return i === undefined ? guide : changeStep(guide, i, { note: text ? clip(text, MAX_GUIDE_NOTE) : undefined });
 }
+
+//-------------------
+// Edits and sessions
+
+// The lines of a range after a change of the text, as the model layers move. A line in the change goes to the start of
+// the change if it is the first line of the range and the change starts after the start of the line. Else it goes to
+// the last line of the new text. Lines from 1
+function moveRange(first: number, last: number, change: TextChange): [number, number] {
+	const { start, end } = change.range;
+	const added = change.text.split('\n').length - 1;
+	const delta = added - (end.line - start.line);
+	const map = (line: number, isFirst: boolean): number => {
+		const l = line - 1;
+		if (l < start.line) {
+			return line;
+		}
+		if (l > end.line) {
+			return line + delta;
+		}
+		return (isFirst && l === start.line && start.character > 0 ? start.line : start.line + added) + 1;
+	};
+	const from = map(first, true);
+	return [from, Math.max(from, map(last, false))];
+}
+
+// Moves the lines of the steps in a file with the changes of an edit. A step whose lines the edit deleted keeps the line
+// of the change, so the plan keeps its steps. Returns the same guide if no step moved
+export function moveGuide(guide: SideGuide, file: string, changes: readonly TextChange[]): SideGuide {
+	const key = fileKey(file);
+	let isMoved = false;
+	const steps = guide.steps.map((s) => {
+		if (fileKey(s.file) !== key) {
+			return s;
+		}
+		let [first, last] = [s.first, s.last];
+		for (const change of changes) {
+			[first, last] = moveRange(first, last, change);
+		}
+		if (first === s.first && last === s.last) {
+			return s;
+		}
+		isMoved = true;
+		return { ...s, first, last };
+	});
+	return isMoved ? { ...guide, steps } : guide;
+}
+
+// The lines of a file in a session: the text of a line from 1, and the number of lines. Undefined if the file is gone
+export type GuideFileLines = (file: string) => { text: (line: number) => string | undefined; count: number } | undefined;
+
+// A guide for a later session of VS Code: the guide, and the text of the first and the last line of each step, with no
+// space at the start and the end
+export interface StoredGuide {
+	guide: SideGuide;
+	texts: { first?: string; last?: string }[];
+}
+
+export function storeGuide(guide: SideGuide, lines: GuideFileLines): StoredGuide {
+	return {
+		guide,
+		texts: guide.steps.map((s) => {
+			const l = lines(s.file);
+			return { first: l?.text(s.first)?.trim(), last: l?.text(s.last)?.trim() };
+		}),
+	};
+}
+
+// Finds the steps of a stored guide in the text of a new session. A step moves to the nearest place where its first and
+// its last line have their stored texts. A step that the text does not have keeps its lines in the file. A step of a
+// file that is gone goes away. Returns undefined if no step stays
+export function restoreGuide(stored: StoredGuide, lines: GuideFileLines): SideGuide | undefined {
+	const steps: SideGuideStep[] = [];
+	let current = stored.guide.current;
+	stored.guide.steps.forEach((s, i) => {
+		const l = lines(s.file);
+		if (!l || l.count < 1) {
+			if (i < stored.guide.current) {
+				current -= 1;
+			}
+			return;
+		}
+		const texts = stored.texts[i] ?? {};
+		const isSame = (line: number, text: string | undefined) => text !== undefined && l.text(line)?.trim() === text;
+		let shift: number | undefined;
+		for (let d = 0; d < l.count && shift === undefined; d++) {
+			shift = (d === 0 ? [0] : [d, -d]).find((x) => s.first + x >= 1 && s.last + x <= l.count && isSame(s.first + x, texts.first) && isSame(s.last + x, texts.last));
+		}
+		const first = Math.min(Math.max(1, s.first + (shift ?? 0)), l.count);
+		steps.push({ ...s, first, last: Math.min(Math.max(first, s.last + (shift ?? 0)), l.count) });
+	});
+	if (steps.length === 0) {
+		return undefined;
+	}
+	return { ...stored.guide, steps, current: Math.min(Math.max(0, current), steps.length - 1) };
+}
+
+//-------------------
+// Progress and summary
 
 const STATUS_TEXT: Record<SideGuideStatus, string> = { todo: 'not reviewed', ok: 'OK', issue: 'issue', question: 'question' };
 

@@ -1034,11 +1034,15 @@ export class SideViewController implements vscode.Disposable {
 			this.store.update({ guide: next });
 		}
 		const step = next.steps[next.current];
-		await this.openPlace(step.file, step.first);
+		try {
+			await this.openPlace(step.file, step.first);
+		} catch {
+			void vscode.window.showWarningMessage(`DataFlow cannot open ${step.name}, the file of step ${next.current + 1} of the guided review.`);
+		}
 	}
 
 	// The summary of the guided review on the clipboard, for example for a comment on the pull request
-	private async copyGuideSummary(): Promise<void> {
+	async copyGuideSummary(): Promise<void> {
 		const guide = this.store.state.guide;
 		if (!guide) {
 			return;

@@ -203,6 +203,26 @@
         "category": "DataFlow"
       },
       {
+        "command": "dataflow.guide.next",
+        "title": "Next Review Step",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.guide.previous",
+        "title": "Previous Review Step",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.guide.copySummary",
+        "title": "Copy Review Summary",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.guide.close",
+        "title": "Close Guided Review",
+        "category": "DataFlow"
+      },
+      {
         "command": "dataflow.showCalls",
         "title": "Show Calls",
         "category": "DataFlow"
@@ -275,6 +295,22 @@
         {
           "command": "dataflow.openRecentProject",
           "when": "false"
+        },
+        {
+          "command": "dataflow.guide.next",
+          "when": "dataflow.guideActive"
+        },
+        {
+          "command": "dataflow.guide.previous",
+          "when": "dataflow.guideActive"
+        },
+        {
+          "command": "dataflow.guide.copySummary",
+          "when": "dataflow.guideActive"
+        },
+        {
+          "command": "dataflow.guide.close",
+          "when": "dataflow.guideActive"
         }
       ]
     },
@@ -561,6 +597,16 @@
           "dark": "#7aa8ff",
           "highContrast": "#9cbcff",
           "highContrastLight": "#1f4fb8"
+        }
+      },
+      {
+        "id": "dataflow.reviewGuide",
+        "description": "DataFlow: the color of the guided review: the bar, the lines of the current step and the steps of the plan.",
+        "defaults": {
+          "light": "charts.blue",
+          "dark": "charts.blue",
+          "highContrast": "charts.blue",
+          "highContrastLight": "charts.blue"
         }
       }
     ]

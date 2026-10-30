@@ -69,7 +69,7 @@ try {
 		try { page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page' && t.url.includes('workbench')); } catch { /* not ready */ }
 		if (!page) { await sleep(500); }
 	}
-	const wb = await connect(page.webSocketDebuggerUrl);
+	let wb = await connect(page.webSocketDebuggerUrl);
 	await wb.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false });
 	const key = async (k, code, vk, modifiers = 0) => {
 		await wb.send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk, modifiers });
@@ -253,7 +253,33 @@ try {
 	await shot('window');
 	result.view = (await tool('get_view')).review;
 
-	// the button Copy summary, then Close review removes the guide
+	// the command Previous Review Step goes to step 3
+	await command('DataFlow: Previous Review Step');
+	await until(async () => (await guideState()).current === 3, 'step 3 after the command');
+	result.afterCommand = (await guideState()).current;
+	await sleep(1500); // the state of the workspace keeps the guide after a short pause
+
+	// a reload of the window: the guide comes back with its current step and its marks
+	await command('Developer: Reload Window');
+	wb.ws.close();
+	side.ws.close();
+	side = undefined;
+	await sleep(3000);
+	for (let i = 0; i < 80 && !side; i++) {
+		try { side = await findSide(); } catch { /* the window starts again */ }
+		if (!side) { await sleep(500); }
+	}
+	if (!side) { throw new Error('the side view did not come back after the reload'); }
+	const page2 = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page' && t.url.includes('workbench'));
+	wb = await connect(page2.webSocketDebuggerUrl);
+	await wb.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false });
+	await until(async () => !!(await guideState()).bar, 'guide after the reload', 160);
+	await sleep(800);
+	result.afterReload = await guideState();
+
+	// the button Copy summary, then Close review removes the guide. The title in the bar opens the tab Guide
+	await inSide(`doc.querySelector('.rg-bar .rg-title')?.click(); return true;`);
+	await until(() => inSide(`return !!doc.querySelector('.rg-details');`), 'tab Guide');
 	await inSide(`[...doc.querySelectorAll('.rg-footer button')].find((b) => b.textContent.includes('Copy summary'))?.click(); return true;`);
 	await sleep(500);
 	await inSide(`[...doc.querySelectorAll('.rg-details button')].find((b) => b.textContent.includes('Close review'))?.click(); return true;`);

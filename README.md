@@ -18,7 +18,7 @@ The side view shows the file of the active C++ editor with the colors of your th
 | Threads and races | The code that runs on a different thread, the shared data, and the protection of each access |
 | Change Ripple | The code that the changes of your branch affect, as a story for a review |
 
-DataFlow also has an MCP server. A language model reads the facts of the engine through the tools of the server. Then the model shows logical blocks, notes, comments and details in the side view. The engine gives the lines and the data, and the model adds the words.
+DataFlow also has an MCP server. A language model reads the facts of the engine through the tools of the server. Then the model shows logical blocks, notes, comments and details in the side view. The engine gives the lines and the data, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other.
 
 DataFlow works on Windows 64-bit with VS Code 1.120 or later. Your project needs a compile database, for example the `compile_commands.json` file of CMake or a qmake build folder.
 
@@ -110,6 +110,12 @@ The view tools of the MCP server put the words of the model into the side view. 
 ![A card with examples for the expression FINISHED(...).](docs/images/model-detail.png)
 
 `show_flow` starts Flow Lens on a variable, as a click does. The screenshot at the top shows such a trace. `clear` removes the layers of the model. The read tools give the data of the lenses to the model: `get_view`, `list_functions`, `get_structure`, `get_flow`, `get_calls`, `get_threads`, `get_hidden` and `get_includes`.
+
+### Guided review
+
+Name the files or the folders to review, for example "Do a guided review of src/power". The model makes a plan of steps with `get_review` and `show_review_plan`. The side view shows one step after the other: its lines in the code, what to look at, and the questions to answer. Mark each step as OK, issue or question, and ask the model about it. With `review_step`, the model goes to a step and adds its answer or a finding. [Guided review](docs/tools.md#guided-review)
+
+![A guided review at step 4 of 4: the lines of the step in the code, the plan in the tab Guide with the marks, and a note of the model on an issue.](docs/images/guided-review.png)
 
 ## Documents
 

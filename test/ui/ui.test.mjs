@@ -105,6 +105,39 @@ test('Model layers: five levels of blocks, comments in colors, the bar MODEL, a 
 	assert.deepEqual([r.tabInProcess?.fn, r.tabInProcess?.blocks], ['process()', 7], JSON.stringify(r.tabInProcess));
 });
 
+test('Guided review: the files of a folder, a plan of the model, the marks, the notes, a command and the guide after a reload', { timeout: 600000 }, async () => {
+	const r = await run('side-guide-snapshot.mjs');
+	assert.ok(r.prompts.includes('guided-review'), JSON.stringify(r.prompts));
+	// get_review gives the C and C++ files of the folder, the changed file first with its diff, and the paths that do not
+	// exist
+	assert.match(r.facts.files[0], /^src\/battery\.cpp \d+ changed 69$/, JSON.stringify(r.facts));
+	assert.ok(r.facts.files.length >= 2 && r.facts.files.slice(1).every((f) => !f.includes('changed')), JSON.stringify(r.facts.files));
+	assert.deepEqual(r.facts.notFound, ['tests']);
+	assert.deepEqual(r.facts.diff, ['-      |       if (cost < 1e-5) {', '+   69 |       if (cost < 1e-4) {']);
+	// no ripple: Change Ripple stays off, and the side view shows no story
+	assert.deepEqual(r.noRipple, { ripplePressed: 'false', story: false });
+	// the plan: the bar, the lines of step 1, its tag and its checks
+	assert.deepEqual(r.plan.steps.map((s) => s.file), Array(4).fill('src/battery.cpp'));
+	assert.deepEqual(r.step1.lines, [69, 70, 71]);
+	assert.equal(r.step1.tag, 'review1/4 Check the new limit');
+	assert.equal(r.step1.checks.length, 2);
+	// the mark OK and Next in the bar, then a note and the marks of the model
+	assert.deepEqual([r.step2.current, r.step2.statuses[0]], [2, 'st-ok']);
+	assert.match(r.afterNote.note ?? '', /empty res/);
+	assert.deepEqual(r.step4.statuses, ['st-ok', 'st-question', 'st-todo', 'st-issue']);
+	assert.equal(r.step4.progress, '3 of 4 steps reviewed: 1 issue, 1 question');
+	// get_view gives the step that the user looks at, and the marks
+	assert.equal(r.view.currentStep, 4);
+	assert.deepEqual(r.view.steps.map((s) => s.status), ['ok', 'question', 'todo', 'issue']);
+	// the command Previous Review Step, and the guide after a reload of the window
+	assert.equal(r.afterCommand, 3);
+	assert.equal(r.afterReload.current, 3);
+	assert.deepEqual(r.afterReload.statuses, ['st-ok', 'st-question', 'st-todo', 'st-issue']);
+	assert.equal(r.afterReload.lines[0], 101);
+	// Close review removes the bar and the lines of the step
+	assert.equal(r.closed, true);
+});
+
 test('Flow Lens: the rails, the dimmed lines, the hover card with its curve, a click trace and the details column', { timeout: 600000 }, async () => {
 	const r = await run('side-flow-snapshot.mjs');
 	assert.ok(r.bestFit.rails > 0 && r.bestFit.dim > 0, JSON.stringify(r.bestFit).slice(0, 300));

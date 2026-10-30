@@ -2,12 +2,13 @@
 
 DataFlow has an MCP server (Model Context Protocol). A language model in an MCP client can read the analysis of the engine and change the side view. Claude Code and the agent mode of VS Code are examples of MCP clients.
 
-The model can show the logical blocks of a function with names and summaries, and start Flow Lens on a variable. It can also color lines with notes, add comments to single lines, and add details to code. The engine gives the facts, and the model adds the words.
+The model can show the logical blocks of a function with names and summaries, and start Flow Lens on a variable. It can also color lines with notes, add comments to single lines, and add details to code. The engine gives the facts, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other.
 
 - [Connect Claude Code](#connect-claude-code)
 - [Connect a different client](#connect-a-different-client)
 - [Ask the model](#ask-the-model)
 - [What the side view shows](#what-the-side-view-shows)
+- [Guided review](#guided-review)
 - [The tools](#the-tools)
 - [Security and privacy](#security-and-privacy)
 - [Settings](#settings)
@@ -73,6 +74,7 @@ Ask the model about the code in words. The model selects the tools. These are ex
 - "Add a short comment to each line of process() that is hard to read."
 - "Give examples for the selected expression." First, select the expression in the side view or in the editor.
 - "Can two threads use the same data in this file at the same time?"
+- "Do a guided review of src/power and include/power/plan.hpp."
 - "Remove your notes from the side view."
 
 The server also has the prompt **explain-function**. It tells the model the steps to explain a function in logical blocks. Its argument `function` is optional. The default is the function at the cursor. The prompt tells the model to do these steps:
@@ -82,6 +84,8 @@ The server also has the prompt **explain-function**. It tells the model the step
 3. Call `show_blocks`.
 4. Explain the function in some short paragraphs, with the ids of the blocks.
 5. Add comments to lines that are hard to read, and details to expressions that need a longer explanation.
+
+The server also has the prompt **guided-review**. It tells the model the steps of a guided review of the files and the folders in its argument `paths`. The optional argument `focus` tells the model what to look at first, for example threads or error handling. [Guided review](#guided-review) tells more.
 
 ## What the side view shows
 
@@ -129,9 +133,42 @@ DataFlow calculates the data that goes into each block and comes out of it:
 - For a write through an element of a container, "out" uses the reads of the container. Thus it can contain a write that each path writes again.
 - For a write of a captured variable in a lambda, a later line that reads the name counts. The reason is that the reads are in the function that contains the lambda.
 
+## Guided review
+
+In a guided review, the model makes a plan to review the files and the folders that you name. The side view shows the plan one step after the other. Each step shows its lines in the code, a text with what to look at and why, and the questions that you answer.
+
+![A guided review at step 4 of 4: the lines of the step in the code, the plan in the tab Guide with the marks, and a note of the model on an issue.](images/guided-review.png)
+
+### Start a guided review
+
+Ask the model for a review of files or folders, for example "Do a guided review of src/power and include/power/plan.hpp". You can also use the prompt **guided-review** of DataFlow with the paths. In Claude Code, type `/` and select the prompt.
+
+The model does these steps:
+
+1. It calls `get_review` with the paths. DataFlow gives the C and C++ files under the paths. If the git repository has a target branch, a changed file also has its diff against the merge base. Change Ripple does not run, and the side view does not change.
+2. It reads the code with the read tools, for example `get_structure` and `get_flow`.
+3. It calls `show_review_plan` with the steps. The side view goes to the lines of step 1.
+4. It explains step 1, and waits for you.
+
+### Go through the steps
+
+- The bar **REVIEW** under the toolbar shows the number and the title of the current step. To go to a different step, click **Next ›** or **‹ Back**. The side view goes to the lines of the step. If a C++ text editor shows, it also goes to the lines. To open the tab **Guide**, click the title.
+- The lines of the current step have a blue background, and a tag with the number and the title of the step.
+- The tab **Guide** of the details column shows the plan: the title, the summary of the model, your progress, and each step with its kind and its place. The current step also shows its text, its questions and the note of the model. To go to a step, click it.
+- To mark a step, click **OK**, **Issue** or **Question** in the bar or in the tab Guide. To remove the mark, click it again.
+- Ask the model about the current step, or ask for the next step. The model reads the current step and your marks with `get_view`. With `review_step`, it goes to a step and adds its answer or a finding as a note.
+- To put the summary of the review on the clipboard, click **Copy summary**. The summary is Markdown, for example for a comment on a pull request. It has each step with its place, its mark and the note of the model.
+- To remove the guide, click **Close review**. A new plan of the model replaces the old plan.
+
+These commands do the same as the buttons: **DataFlow: Next Review Step**, **DataFlow: Previous Review Step**, **DataFlow: Copy Review Summary** and **DataFlow: Close Guided Review**. They show in the Command Palette while a guide shows. You can give them keys in the keyboard shortcuts of VS Code.
+
+During an edit, the steps move with their code. After a reload of the window, the guide comes back at the same step with your marks. Each step goes to the nearest place where its first and its last line have the same text as before.
+
+The color of the guide is the theme color `dataflow.reviewGuide`. The default is the blue of the chart colors of your color theme.
+
 ## The tools
 
-The read tools give the facts of the engine and do not change the view. The view tools change the side view.
+The read tools give the facts of the engine and of git, and do not change the view. The view tools change the side view.
 
 | Tool | Kind | Function |
 | --- | --- | --- |
@@ -143,12 +180,15 @@ The read tools give the facts of the engine and do not change the view. The view
 | [`get_threads`](#get_threads) | read | The data of Threads and races |
 | [`get_hidden`](#get_hidden) | read | The data of Hidden C++ |
 | [`get_includes`](#get_includes) | read | The data of Include Hierarchy, with the translation units of the compile database that include the file |
+| [`get_review`](#get_review) | read | The C and C++ files under the paths of a guided review, with the diff of each changed file against the target branch |
 | [`show_blocks`](#show_blocks) | view | Shows the logical blocks of a function, with a maximum of five levels. A new call replaces the blocks of its function. The blocks of the other functions of the file stay. |
 | [`show_flow`](#show_flow) | view | Starts Flow Lens on a variable or a data member, as a click does |
 | [`highlight`](#highlight) | view | Colors ranges of lines or blocks, with a note for each range |
 | [`comment_lines`](#comment_lines) | view | Adds a short comment to single lines, in the color of the comments or in a color of the model |
 | [`add_detail`](#add_detail) | view | Adds a detail to an expression, a line or the selection of the user: an explanation or examples in a card on the code |
 | [`clear`](#clear) | view | Removes the blocks, the notes, the comments and the details |
+| [`show_review_plan`](#show_review_plan) | view | Shows the plan of a guided review, at its first step |
+| [`review_step`](#review_step) | view | Goes to a step of the guided review, and adds a note or a mark of the model |
 
 Lines start at 1. Many tools use these parameters:
 
@@ -342,6 +382,59 @@ Removes the blocks, the notes, the comments and the details of the model from th
 | `file` | text | The file. The default is all files. |
 
 Example request: "Remove your blocks and notes from the side view."
+
+The guide of a guided review stays. A new plan replaces it, and **Close review** removes it.
+
+### get_review
+
+Gives the files that the user wants to review: the C and C++ files under the paths, with their number of lines. The changed files come first. If the git repository of the project has a target branch, a changed file also has its diff against the merge base, with the line numbers of the working tree. The target branch is the branch that you selected for Change Ripple, else the automatic target branch. A folder gives its C and C++ files, also in its subfolders, but not in build folders. The result has a maximum of 50 files.
+
+The engine does not analyze the files for this tool, and Change Ripple does not run. The model reads the files with the other read tools.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `paths` | list of texts | Necessary. The files and the folders: paths relative to the folder of the project or of the repository, or absolute paths. |
+
+The result also gives the paths that do not exist (`notFound`) and the files that are not C or C++ files (`notCpp`). With no git repository or no target branch, the files have no diff, and `notice` tells why.
+
+Example request: "Do a guided review of src/power."
+
+### show_review_plan
+
+Shows the plan of a guided review in the side view, and goes to the lines of step 1. A new plan replaces the old plan.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `title` | text | A short title of the review. DataFlow cuts a title after 80 characters. The default is "Review of the changes". |
+| `summary` | text | One to three sentences: what the code or the changes do. DataFlow cuts a summary after 1000 characters. |
+| `steps` | list | Necessary. The steps in the order of the review, from 1 to 20 steps. |
+
+Each step has these fields:
+
+| Field | Type | Function |
+| --- | --- | --- |
+| `title` | text | Necessary. A short title in the imperative, for example "Check the new limit". DataFlow cuts a title after 80 characters. |
+| `file` | text | The file of the step: a path relative to the repository, as `get_review` gives it, or an absolute path. It must be a C or C++ file. The default is the file of the step before. |
+| `lines` | two integers | Necessary. The first and the last line of the step. |
+| `text` | text | Necessary. What the reviewer looks at in this step and why. It can use a small part of Markdown: paragraphs, lists, `code`, **bold** and *italic*. DataFlow cuts a text after 2000 characters. |
+| `checks` | list of texts | The questions that the reviewer answers in this step, a maximum of 5. DataFlow cuts a question after 200 characters. |
+| `kind` | text | `change` (changed lines), `ripple` (code that a change reaches), `context` (code that explains a change), `risk` (a possible problem) or `test` (the tests of the change). |
+
+If a step has a problem, for example lines that are not in the file, the view does not change, and the model gets each problem.
+
+Example request: "Make a review plan for these files."
+
+### review_step
+
+Goes to a step of the guided review in the side view, as the buttons of the user do. The model can also add a note to the step, for example an answer or a finding, and mark the step.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `step` | integer | Necessary. The number of the step, from 1. |
+| `note` | text | The note of the model for the step, with a small part of Markdown. An empty text removes the note. DataFlow cuts a note after 2000 characters. |
+| `status` | text | The mark of the step: `todo`, `ok`, `issue` or `question`. |
+
+Example request: "Go to the next step, and mark this step as an issue."
 
 ## Security and privacy
 

@@ -646,6 +646,63 @@ try {
 			await s.shot('change-ripple', await s.sideBox());
 		});
 	}
+
+	// the guided review on the review fixture: the plan of a model for the folder src, with the marks and the notes
+	if (isWanted('guided-review')) {
+		const review = path.join(repo, 'build', 'fixtures', 'battery-review');
+		const reviewCpp = path.join(review, 'src', 'battery.cpp');
+		const text = readFileSync(reviewCpp, 'utf8').split(/\r?\n/);
+		const at = (s) => text.findIndex((l) => l.includes(s)) + 1;
+		const changed = at('if (cost < 1e-4)');
+		const start = at('if (charge.is_dirty && !home_battery_ctl.charging_future)');
+		await session('guide', review, reviewCpp, changed, { 'git.enabled': true }, async (s) => {
+			await s.openSide('DataFlow: Open Side View');
+			await s.splitAt(EDITOR_WIDTH);
+			await s.until(() => s.inSide(`return /Engine: ready/.test(doc.querySelector('.status')?.textContent ?? '');`), 'ready engine', 160);
+			await s.setLenses([]);
+			const tool = await s.startMcp();
+			await tool('get_review', { paths: ['src'] });
+			await tool('show_review_plan', {
+				title: 'Review of the new cost limit',
+				summary: 'The solver now accepts a plan with a cost under 1e-4 instead of 1e-5. The result goes through the executor to process(), which makes the charge requests.',
+				steps: [
+					{
+						title: 'Check the new limit', file: 'src/battery.cpp', lines: [changed, changed + 2], kind: 'change',
+						text: 'The solver now accepts a plan with a cost under `1e-4`, ten times the old limit. A plan converges earlier, but it can be **less exact**.',
+						checks: ['Is 1e-4 small enough for the price data?', 'Does a test cover a cost between 1e-5 and 1e-4?'],
+					},
+					{
+						title: 'Follow the result out of the solver', lines: [at('opt.last_cost = cost;'), at('return res;')], kind: 'ripple',
+						text: '`res` gets the cost only on the path of the limit. The function returns it to the lambda in `process()`, which runs on the executor.',
+						checks: ['Can the loop end with an empty res?'],
+					},
+					{
+						title: 'See where process() uses the result', lines: [at('if (home_battery_ctl.charging_future && FINISHED('), at('fire_transition(home_battery_ctl, "_planned");')],
+						kind: 'ripple',
+						text: '`process()` gets the result through `charging_future`. With the new limit, more plans converge, so this branch makes **requests** more often.',
+						checks: ['Does make_requests() accept a less exact plan?'],
+					},
+					{
+						title: 'Check the shared state of the solver', lines: [start, start + 2], kind: 'risk',
+						text: 'The solver runs on a worker thread and writes `charge.is_dirty`. `process()` reads it before it checks the future.',
+						checks: ['Is the access to is_dirty safe?'],
+					},
+				],
+			});
+			await s.until(() => s.inSide(`return !!doc.querySelector('.rg-bar') && doc.querySelectorAll('.rows > .row.rg-line').length > 0;`), 'guide');
+			await tool('review_step', { step: 1, status: 'ok' });
+			await tool('review_step', {
+				step: 2, status: 'question',
+				note: 'The loop ends with an empty `res` if the cost stays at or above `1e-4`. Then `process()` takes the branch of no converged schedule.',
+			});
+			await tool('review_step', {
+				step: 4, status: 'issue',
+				note: `The worker thread writes \`charge.is_dirty\` on line ${at('charge.is_dirty = false;')}, and \`process()\` reads it on line ${start} with no lock. **Swap the conditions** to check the future first.`,
+			});
+			await sleep(1500);
+			await s.shot('guided-review', await s.sideBox());
+		});
+	}
 } finally {
 	rmSync(temp, { recursive: true, force: true });
 }
