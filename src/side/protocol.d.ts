@@ -570,8 +570,40 @@ export interface SideMcp {
 	error?: string;
 }
 
-// A tab of the details column: the tab of a lens, or the tab of the layers of a model
-export type SideDetailsTab = SideLens | 'model';
+// A guided review: the plan of a language model to review the changes of a branch, one step after the other. The model
+// sends the plan through the MCP server. The user goes from step to step in the side view, or asks the model. Lines
+// start at 1.
+export interface SideGuide {
+	title: string;
+	summary?: string; // what the changes do, in the words of the model
+	client?: string; // the name of the MCP client, for example claude-code
+	target?: string; // the target branch of the review, for example main
+	steps: SideGuideStep[];
+	current: number; // the index of the step that the side view shows
+	seq: number; // a new plan gets a new number
+}
+
+// The mark of the user, or of the model, on a step
+export type SideGuideStatus = 'todo' | 'ok' | 'issue' | 'question';
+
+// The kind of a step, for its chip: a changed line, code that a change reaches, code around it, a risk, or a test
+export type SideGuideKind = 'change' | 'ripple' | 'context' | 'risk' | 'test';
+
+export interface SideGuideStep {
+	title: string;
+	file: string;
+	name: string; // the name of the file
+	first: number;
+	last: number;
+	text: string; // what to look at and why: a small part of Markdown, see side/details.ts
+	checks: string[]; // the questions that the reviewer answers in this step
+	kind?: SideGuideKind;
+	status: SideGuideStatus;
+	note?: string; // a note of the model on the step, for example the answer to a question of the user
+}
+
+// A tab of the details column: the tab of a lens, the tab of the layers of a model, or the tab of a guided review
+export type SideDetailsTab = SideLens | 'model' | 'guide';
 
 // The card of the command "Show Card at Cursor": a reference of Flow Lens, an item of Hidden C++, or the hints at the
 // end of a long line
@@ -610,6 +642,7 @@ export type ToSide =
 	| { type: 'story'; story: SideStory | null }
 	| { type: 'why'; why: SideWhy } // the answer to the action 'why'
 	| { type: 'model'; model: SideModel | null }
+	| { type: 'guide'; guide: SideGuide | null }
 	| { type: 'details'; lens: SideDetailsTab }; // opens the details column at the tab
 
 // The actions of the lenses. The extension does them, as for the commands of the lenses.
@@ -638,7 +671,11 @@ export type SideAction =
 	| { type: 'includersShown'; file: string } // the tab Included by shows a file. The extension asks the engine for the source files that include it
 	| { type: 'parseMemberFile'; file: string } // adds the accesses of a different source file of the class to the member trace
 	| { type: 'parseMemberFiles' } // the user put a function in the center of Call Hierarchy. The extension asks VS Code for its callers in other files
-	| { type: 'clearModel' }; // removes the blocks and the notes of the model in the file of the side view
+	| { type: 'clearModel' } // removes the blocks and the notes of the model in the file of the side view
+	| { type: 'guideGo'; index: number } // shows a step of the guided review
+	| { type: 'guideStatus'; index: number; status: SideGuideStatus } // the mark of the user on a step
+	| { type: 'guideCopy' } // puts the summary of the guided review on the clipboard
+	| { type: 'guideClose' }; // removes the guided review
 
 export type FromSide =
 	| { type: 'ready' }

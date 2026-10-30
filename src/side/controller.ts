@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { EngineClient, FileResult } from '../engine/client';
 import type { ReviewState } from '../lenses/ripple';
+import { guideSummary, withCurrent, withStatus } from '../review/guide';
 import { CostLayerState, LogicPathState, RippleLayerState, StateStore, TraceState } from '../state/store';
 import { buildSideCost } from './costLayer';
 import { buildSideFlow, buildSideMemberFlow } from './flowLayer';
@@ -11,7 +12,7 @@ import {
 	BRACKET_LEVELS, BRACKET_STYLE, LEXICAL_KEYS, plainRows, SEMANTIC_MODIFIERS, SEMANTIC_TYPES, semanticStyleIndex, shiftSpans, toRows,
 } from './model';
 import type {
-	FromSide, SideAction, SideBrackets, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideFrame, SideIncluders, SideIncludes,
+	FromSide, SideAction, SideBrackets, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideFrame, SideGuide, SideIncluders, SideIncludes,
 	SideLogic, SideModel, SideRipple, SideThreads, SideRow, SideSettings, SideStory, SideStyle, SideViewState, SideWhy, ToSide,
 } from './protocol';
 import { buildSideRipple, buildSideStory, fileKey, lineRanges, storyLines } from './storyLayer';
@@ -113,6 +114,7 @@ export class SideViewController implements vscode.Disposable {
 	private lastThreadsLayer?: SideThreads;
 	private lastModel: SideModel | null = null;
 	private lastModelLayers?: SideModel[];
+	private lastGuide?: SideGuide;
 	private pendingModel?: SideModel; // a layer that an edit moved. It waits for the rows of the new text
 	private lastReview?: ReviewState;
 	private lastRippleLayer?: RippleLayerState;
@@ -226,6 +228,9 @@ export class SideViewController implements vscode.Disposable {
 				}
 				if (state.modelLayers !== this.lastModelLayers) {
 					this.postModel();
+				}
+				if (state.guide !== this.lastGuide) {
+					this.postGuide();
 				}
 				if (state.review !== this.lastReview || state.rippleLayer !== this.lastRippleLayer) {
 					void this.loadStory();
@@ -508,6 +513,20 @@ export class SideViewController implements vscode.Disposable {
 			case 'openPlace':
 				void this.openPlace(message.file, message.line, message.col);
 				break;
+			case 'guideGo':
+				void this.goToGuideStep(message.index);
+				break;
+			case 'guideStatus':
+				if (this.store.state.guide) {
+					this.store.update({ guide: withStatus(this.store.state.guide, message.index, message.status) });
+				}
+				break;
+			case 'guideCopy':
+				void this.copyGuideSummary();
+				break;
+			case 'guideClose':
+				this.store.update({ guide: undefined });
+				break;
 			case 'openDefinition':
 				void this.openDefinition(message.file, message.line, message.col);
 				break;
@@ -631,6 +650,7 @@ export class SideViewController implements vscode.Disposable {
 		this.post({ type: 'styles', styles: this.styles, brackets: BRACKETS, traceable: TRACEABLE, callable: CALLABLE });
 		this.post({ type: 'frame', frame: this.frame() });
 		this.post({ type: 'story', story: this.lastStory });
+		this.postGuide();
 		const model = this.model;
 		if (!model) {
 			return;
@@ -995,6 +1015,36 @@ export class SideViewController implements vscode.Disposable {
 		this.pendingModel = undefined;
 		this.lastModel = layer;
 		this.post({ type: 'model', model: this.lastModel });
+	}
+
+	// The guided review. It is the same in each file, so the side view keeps it when the file changes
+	private postGuide(): void {
+		this.lastGuide = this.store.state.guide;
+		this.post({ type: 'guide', guide: this.lastGuide ?? null });
+	}
+
+	// Shows a step of the guided review: the guide goes to the step, and the text editor and the side view go to its lines
+	async goToGuideStep(index: number): Promise<void> {
+		const guide = this.store.state.guide;
+		if (!guide) {
+			return;
+		}
+		const next = withCurrent(guide, index);
+		if (next !== guide) {
+			this.store.update({ guide: next });
+		}
+		const step = next.steps[next.current];
+		await this.openPlace(step.file, step.first);
+	}
+
+	// The summary of the guided review on the clipboard, for example for a comment on the pull request
+	private async copyGuideSummary(): Promise<void> {
+		const guide = this.store.state.guide;
+		if (!guide) {
+			return;
+		}
+		await vscode.env.clipboard.writeText(guideSummary(guide));
+		vscode.window.setStatusBarMessage('DataFlow: The summary of the review is on the clipboard.', 4000);
 	}
 
 	// The include hierarchy of the file of the side view. The hierarchy of a different file shows nothing.

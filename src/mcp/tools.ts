@@ -1,6 +1,7 @@
 import {
 	COMMENT_COLORS, MAX_BLOCK_LEVELS, MAX_COMMENTS, type ModelBlockInput, type ModelCommentInput, type ModelDetailInput, type ModelNoteInput,
 } from '../lenses/blocks';
+import { GUIDE_KINDS, GUIDE_STATUSES, MAX_GUIDE_STEPS, MAX_STEP_CHECKS, type GuidePlanInput } from '../review/guide';
 import type { McpPrompt, McpTool } from './server';
 
 // The tools and the prompt of the MCP server of DataFlow. The read tools give the facts of the engine. The view tools
@@ -27,6 +28,9 @@ export interface McpHost {
 	comment(file: string | undefined, comments: ModelCommentInput[], append: boolean): Promise<object>;
 	detail(file: string | undefined, detail: ModelDetailInput): Promise<object>;
 	clear(file?: string): Promise<object>;
+	review(paths: unknown): Promise<object>;
+	showReviewPlan(plan: GuidePlanInput): Promise<object>;
+	reviewStep(step: number, note: unknown, status: string | undefined): Promise<object>;
 }
 
 export const INSTRUCTIONS = [
@@ -37,6 +41,8 @@ export const INSTRUCTIONS = [
 	'If no C++ editor shows, the cursor of get_view is the cursor of the side view, where the user clicked, and the view tools move only the side view.',
 	'If the user selected code and asks for details, an explanation or examples of it, call get_view for the selection, then add_detail with no line.',
 	'The side view marks your titles, summaries, notes, comments and details as text of a model. The lines and the data of each block come from the engine, so use the data of the results in your answers.',
+	'For a guided review of the files or the folders that the user names, call get_review with their paths, read the code with the other tools, '
+	+ 'then call show_review_plan with a plan of steps, and walk the user through the plan with review_step. The prompt guided-review gives the steps.',
 ].join(' ');
 
 const FILE = { type: 'string', description: 'The C++ file: an absolute path, or a path relative to the workspace folder. Default: the file of the active editor, or else the file of the side view.' };
@@ -114,6 +120,11 @@ class Args {
 
 	fn(): FunctionArg {
 		return { function: this.text('function'), line: this.line('line') };
+	}
+
+	// the value as the client gives it. The host checks it
+	raw(key: string): unknown {
+		return this.args[key];
 	}
 
 	flag(key: string): boolean {
@@ -243,6 +254,55 @@ export function createTools(host: McpHost): McpTool[] {
 		tool('clear', 'Remove the model layers',
 			'Removes the blocks, the notes, the comments and the details of the model from the DataFlow side view.',
 			{ file: { ...FILE, description: 'The file. Default: all files.' } }, [], false, (a) => host.clear(a.text('file'))),
+		tool('get_review', 'Get the files to review',
+			'The C and C++ files under the paths that the user wants to review, with their number of lines, the changed files first. If the git repository of the project has a target branch, '
+			+ 'a changed file also has its diff against the merge base, with the line numbers of the working tree. The engine does not analyze the files for this tool: '
+			+ 'read them with list_functions, get_structure, get_flow, get_calls and get_threads. Then make the plan of a guided review for show_review_plan.',
+			{
+				paths: {
+					type: 'array', minItems: 1, items: { type: 'string' },
+					description: 'The files and the folders that the user wants to review, as the user names them: paths relative to the folder of the project or of the repository, or absolute paths. '
+						+ 'A folder gives its C and C++ files, also in its subfolders, except build folders.',
+				},
+			},
+			['paths'], true, (a) => host.review(a.raw('paths'))),
+		tool('show_review_plan', 'Show a review plan',
+			'Shows a guided review in the DataFlow side view: a plan of steps that walks the user through the changes of the branch, in the order that a reviewer reads them. '
+			+ 'The side view goes to the lines of step 1 and shows its text and its checks. The user goes to the next step with a button, or asks you. A new plan replaces the old plan. Call get_review first.',
+			{
+				title: { type: 'string', description: 'A short title of the review, for example "Review of the new limit". Maximum 80 characters.' },
+				summary: { type: 'string', description: 'One to three sentences: what the changes do. Maximum 1000 characters.' },
+				steps: {
+					type: 'array', minItems: 1, maxItems: MAX_GUIDE_STEPS, description: 'The steps, in the order of the review.',
+					items: object({
+						title: { type: 'string', description: 'A short title in the imperative, for example "Check the new limit". Maximum 80 characters.' },
+						file: { type: 'string', description: 'The file of the step: a path relative to the repository, as get_review gives it, or an absolute path. Default: the file of the step before.' },
+						lines: LINES,
+						text: {
+							type: 'string',
+							description: 'What the reviewer looks at in this step and why, in 2 to 5 sentences. A small part of Markdown: paragraphs, lists, `code` and **bold**. Maximum 2000 characters.',
+						},
+						checks: {
+							type: 'array', maxItems: MAX_STEP_CHECKS, items: { type: 'string' },
+							description: 'The questions that the reviewer answers in this step, for example "Can cost be negative here?".',
+						},
+						kind: {
+							type: 'string', enum: [...GUIDE_KINDS],
+							description: 'change: changed lines. ripple: code that a change reaches. context: code that explains a change. risk: a possible problem. test: the tests of the change.',
+						},
+					}, ['title', 'lines', 'text']),
+				},
+			},
+			['steps'], false, (a) => host.showReviewPlan({ title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps') })),
+		tool('review_step', 'Go to a review step',
+			'Shows a step of the guided review in the DataFlow side view, as the buttons of the user do. Give "note" to add your explanation, an answer or a finding to the step: '
+			+ 'the side view shows it under the text of the step. Give "status" to mark the step. get_view gives the step that the user looks at and the marks of the user.',
+			{
+				step: { type: 'integer', minimum: 1, description: 'The number of the step, from 1.' },
+				note: { type: 'string', description: 'Your note for the step: a small part of Markdown. An empty text removes the note. Maximum 2000 characters.' },
+				status: { type: 'string', enum: [...GUIDE_STATUSES], description: 'The mark of the step.' },
+			},
+			['step'], false, (a) => host.reviewStep(a.requiredLine('step'), a.raw('note'), a.text('status'))),
 	];
 }
 
@@ -261,6 +321,29 @@ export function createPrompts(): McpPrompt[] {
 			'4. Explain the function in a few short paragraphs, with the block ids in parentheses.',
 			'5. If a line is hard to read, call comment_lines with a short comment for it. For a longer explanation of an expression, call add_detail.',
 			'Use the facts of the tool results for the data, the threads and the exits. If a statement is not clear, say so.',
+		].join('\n'),
+	}, {
+		name: 'guided-review',
+		title: 'Review files step by step',
+		description: 'Makes a plan to review the files and the folders that you name, shows it in the DataFlow side view, and walks you through it.',
+		arguments: [
+			{ name: 'paths', description: 'The files and the folders to review, for example "src/power include/power/plan.hpp".', required: true },
+			{ name: 'focus', description: 'What the review looks at first, for example threads or error handling. Default: all.', required: false },
+		],
+		text: (args) => [
+			`Review ${args.paths ? `these files and folders: ${args.paths}.` : 'the files and the folders that I name.'} Go through the review with me, one step after the other. Use the DataFlow tools:`,
+			'1. Call get_review with the paths. It gives the C and C++ files, and the diff of each changed file against the target branch of the repository.',
+			'2. Read the code: call list_functions for the files, and get_structure for the functions with changes, or for the main functions of a file with no changes. '
+			+ 'Where the data, the callers or the threads matter, call get_flow, get_calls or get_threads.',
+			'3. Make a plan of 3 to 10 steps, in the order that a reviewer reads the code: first the changed lines or the entry points, then the code that they use or that uses them, '
+			+ 'then the risks, for example threads, error paths and missing checks, then the tests.',
+			...(args.focus ? [`   Look first at: ${args.focus}.`] : []),
+			'   Give each step a short title in the imperative, the file and the lines, a text with what to look at and why, and one to three questions in "checks".',
+			'4. Call show_review_plan. The side view shows step 1.',
+			'5. Explain step 1 in a few sentences. Then stop, and wait for me.',
+			'6. When I ask for the next step, call get_view: it gives the step that I look at and my marks. Explain that step, or call review_step to go to the next step. '
+			+ 'If you find a problem, add it with review_step as a note with the status issue.',
+			'Use the facts of the tool results. If you are not sure of a fact, say so.',
 		].join('\n'),
 	}];
 }

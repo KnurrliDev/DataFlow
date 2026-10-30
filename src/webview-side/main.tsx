@@ -1,14 +1,15 @@
 import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type {
-	FromSide, SideCallList, SideCalls, SideCommand, SideCost, SideDetailsTab, SideFlow, SideFrame, SideIncluders, SideIncludes, SideLens, SideLogic,
-	SideModel, SideRipple, SideRow, SideSettings, SideStory, SideThreads, SideWhy, ToSide,
+	FromSide, SideCallList, SideCalls, SideCommand, SideCost, SideDetailsTab, SideFlow, SideFrame, SideGuide, SideIncluders, SideIncludes, SideLens,
+	SideLogic, SideModel, SideRipple, SideRow, SideSettings, SideStory, SideThreads, SideWhy, ToSide,
 } from '../side/protocol';
 import { CallListPanel } from './calllist';
 import { CallDetails, CallGraph, CallView } from './calls';
 import { CodeView } from './CodeView';
 import { CostDetails, CostGroup } from './cost';
 import { FlowDetails, VariableChips } from './flow';
+import { GuideBar, GuideDetails } from './guide';
 import { IncludeDetails } from './includes';
 import { BAR_WARNINGS, LogicDetails, LogicGroup, PLAY_STEP_MS, PlayProps } from './logic';
 import { ModelBar, ModelDetails } from './model';
@@ -48,6 +49,7 @@ interface ViewState {
 	story: SideStory | null;
 	model: SideModel | null; // the blocks and the notes of a language model in the file
 	modelSel?: string; // the selected block of the model
+	guide: SideGuide | null; // the guided review: the plan of a model to review the changes of the branch
 	why?: SideWhy;
 	traceable: Set<number>;
 	callable: Set<number>; // the style indices of functions and methods: their menu has "Show Calls"
@@ -60,7 +62,7 @@ interface ViewState {
 const DETAIL_LENSES: SideLens[] = ['flow', 'logic', 'cost', 'includes', 'calls', 'threads'];
 const LENS_NAMES: Record<SideDetailsTab, string> = {
 	flow: 'Flow Lens', logic: 'Logic Map', cost: 'Hidden C++', review: 'Change Ripple', includes: 'Includes', calls: 'Calls', threads: 'Threads',
-	model: 'Model',
+	model: 'Model', guide: 'Guide',
 };
 
 // The model has blocks or notes in the file
@@ -152,7 +154,7 @@ function Toolbar({ state, isStory, isDetailsShown, onDetails }: { state: ViewSta
 				{lensButton('threads', 'c-ripple')}
 				{lensButton('review', 'c-ripple ring', 'Review the changes of the branch: the code that the changes can affect, as a story.')}
 			</div>
-			{!isStory && (DETAIL_LENSES.some((lens) => lenses?.[lens]) || hasModelLayers(state.model)) && (
+			{!isStory && (DETAIL_LENSES.some((lens) => lenses?.[lens]) || hasModelLayers(state.model) || !!state.guide) && (
 				<button type="button" class="lens" aria-pressed={isDetailsShown} onClick={onDetails} title="Show or hide the details column">
 					Details
 				</button>
@@ -246,7 +248,7 @@ function App() {
 	const saved = vscode.getState();
 	const [state, setState] = useState<ViewState>({
 		lineCount: 0, rows: [], maxColumns: 0, settings: DEFAULT_SETTINGS, flow: null, logic: null, cost: null, includes: null, ripple: null,
-		story: null, calls: null, threads: null, model: null, callView: { focus: -1, depth: 1, showLibrary: false }, isCallGraphOpen: false,
+		story: null, calls: null, threads: null, model: null, guide: null, callView: { focus: -1, depth: 1, showLibrary: false }, isCallGraphOpen: false,
 		traceable: new Set(), callable: new Set(), callList: null,
 		isDetailsOpen: saved?.isDetailsOpen ?? true, detailsLens: saved?.detailsLens ?? 'flow',
 	});
@@ -380,6 +382,9 @@ function App() {
 					// the selected block stays while the model has it
 					setState((s) => ({ ...s, model: message.model, modelSel: message.model?.blocks.some((b) => b.id === s.modelSel) ? s.modelSel : undefined }));
 					break;
+				case 'guide':
+					setState((s) => ({ ...s, guide: message.guide }));
+					break;
 				case 'details':
 					// for example the command "Why Does This Line Run"
 					openDetails(message.lens);
@@ -487,7 +492,13 @@ function App() {
 	const detailLenses: SideDetailsTab[] = [
 		...DETAIL_LENSES.filter((lens) => state.frame?.lenses[lens]),
 		...(hasModelLayers(state.model) ? ['model' as const] : []),
+		...(state.guide ? ['guide' as const] : []),
 	];
+	// the lines of the current step of the guided review, if the step is in the file of the side view
+	const guideStep = state.guide?.steps[state.guide.current];
+	const guideLines = guideStep && sameFileName(guideStep.file, state.file)
+		? { first: guideStep.first, last: guideStep.last, label: `${state.guide!.current + 1}/${state.guide!.steps.length} ${guideStep.title}` }
+		: undefined;
 	const detailsLens = detailLenses.includes(state.detailsLens) ? state.detailsLens : detailLenses[0];
 
 	// The tab Calls or the graph shows the callers. Only then the extension asks the call hierarchy of VS Code for the
@@ -522,6 +533,7 @@ function App() {
 	return (
 		<div class={state.frame?.animate === false ? 'app no-motion' : 'app'}>
 			<Toolbar state={state} isStory={isStory} isDetailsShown={isDetailsShown} onDetails={toggleDetails} />
+			{state.guide && <GuideBar guide={state.guide} onOpen={() => openDetails('guide')} />}
 			{!isStory && (flow || isLogicOn || cost) && (
 				<div class="lensbar lens-groups">
 					{flow && <FlowGroup flow={flow} />}
@@ -561,6 +573,7 @@ function App() {
 						threadItem={threadItem}
 						ripple={ripple}
 						model={shownModel}
+						guideLines={guideLines}
 						why={state.why}
 						stepLine={stepLine}
 						reveal={playStep !== undefined && steps[playStep] ? { line: steps[playStep].line, seq: playStep } : undefined}
@@ -624,6 +637,7 @@ function App() {
 						{detailsLens === 'threads' && (
 							<ThreadDetails threads={threads} selected={threadItem?.key} text={lineTextOf} onSelect={(key) => setState((s) => ({ ...s, threadSel: key }))} />
 						)}
+						{detailsLens === 'guide' && <GuideDetails guide={state.guide} />}
 						{detailsLens === 'model' && (
 							<ModelDetails model={state.model} isShown={!!shownModel} fn={state.frame?.fn} fnRange={state.frame?.fnRange} mcp={state.frame?.mcp}
 								selected={state.modelSel}

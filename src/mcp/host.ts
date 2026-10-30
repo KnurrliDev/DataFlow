@@ -12,10 +12,13 @@ import { findingText, LineText, toUtf8Column, variableAt } from '../lenses/flow'
 import { buildSideIncludes } from '../lenses/includes';
 import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../lenses/member';
 import { buildSideThreads } from '../lenses/threads';
+import {
+	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex, withNote, withStatus,
+} from '../review/guide';
 import type { SideViewController } from '../side/controller';
 import type { CodePlace } from '../side/details';
 import { functionTitle } from '../side/names';
-import type { SideModel } from '../side/protocol';
+import type { SideGuideStatus, SideModel } from '../side/protocol';
 import type { StateStore } from '../state/store';
 import type { FunctionArg, McpHost } from './tools';
 
@@ -43,6 +46,9 @@ export interface HostDeps {
 	// the callers of the function at a position from the call hierarchy of VS Code. Lines from 1, a column of UTF-8 bytes
 	// from 1. undefined if no provider answers for C++, 'failed' if the provider failed
 	incomingCalls(file: string, line: number, col: number): Promise<ExternalCaller[] | undefined | 'failed'>;
+	// the C and C++ files under the paths that the user wants to review, with their changes against the target branch of
+	// the git repository, or the reason why no file is available. Paths are absolute, or relative to the project
+	reviewFiles(paths: string[]): Promise<ReviewFilesInput | { message: string }>;
 }
 
 const CPP_LANGUAGES = new Set(['c', 'cpp', 'cuda-cpp']);
@@ -78,6 +84,9 @@ export function nameColumn(text: string, name: string): number {
 }
 
 export class DataFlowMcpHost implements McpHost {
+	// the folder and the target branch of the last get_review, for the relative paths of a plan
+	private lastReview?: { root: string; target?: string };
+
 	constructor(private readonly deps: HostDeps) {}
 
 	//-------------------
@@ -117,6 +126,7 @@ export class DataFlowMcpHost implements McpHost {
 				})),
 				notes: layer.notes.length, comments: layer.comments.length, details: layer.details.map((d) => `${d.id} ${d.title} (${d.line}-${d.endLine})`),
 			} : null,
+			review: state.guide ? guideFacts(state.guide) : null,
 			engine: state.engine,
 			project: { folders: this.roots(), compileDatabases: state.databases.map((d) => d.makefile ?? d.path) },
 		};
@@ -434,6 +444,111 @@ export class DataFlowMcpHost implements McpHost {
 		const had = !!this.layerOf(doc.uri.fsPath);
 		this.removeLayer(doc.uri.fsPath);
 		return { removed: had ? 1 : 0 };
+	}
+
+	//-------------------
+	// Guided review
+
+	// The files that the user wants to review: the C and C++ files under the paths, with the diff of each changed file
+	async review(paths: unknown): Promise<object> {
+		if (!Array.isArray(paths) || paths.length === 0 || !paths.every((p) => typeof p === 'string' && p.trim().length > 0)) {
+			throw new Error('Give "paths": the files and the folders that the user wants to review.');
+		}
+		const files = await this.deps.reviewFiles(paths.map((p: string) => p.trim()));
+		if ('message' in files) {
+			throw new Error(files.message);
+		}
+		this.lastReview = { root: files.root, target: files.target };
+		if (files.files.length === 0) {
+			throw new Error(`The paths have no C or C++ file.${files.missing.length > 0 ? ` These paths do not exist: ${files.missing.join(', ')}.` : ''}`);
+		}
+		return reviewFacts(files);
+	}
+
+	// Shows the plan of a guided review in the side view, at its first step
+	async showReviewPlan(plan: GuidePlanInput): Promise<object> {
+		const { store, side } = this.deps;
+		// the files of the steps: a path relative to the repository or to a folder of the project, or an absolute path
+		const files = new Map<string, { file: string; lineCount: number }>();
+		const steps = Array.isArray(plan.steps) ? plan.steps : [];
+		const given = new Set(steps.map((s) => (s && typeof s === 'object' ? (s as { file?: unknown }).file : undefined)).filter((f): f is string => typeof f === 'string'));
+		const current = this.deps.currentEditor()?.document.uri.fsPath ?? side.file;
+		for (const name of [...given, ...(current ? [current] : [])]) {
+			const full = this.projectFile(name);
+			if (!full) {
+				continue;
+			}
+			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
+			const found = { file: doc.uri.fsPath, lineCount: doc.lineCount };
+			files.set(name, found);
+			files.set(found.file, found);
+		}
+		const { guide, problems } = resolveGuidePlan(plan, (f) => files.get(f), {
+			defaultFile: current, seq: (store.state.guide?.seq ?? 0) + 1, client: this.deps.client(), target: this.lastReview?.target,
+		});
+		if (!guide) {
+			throw new Error(`The view did not change.\n${problems.join('\n')}`);
+		}
+		store.update({ guide });
+		await side.goToGuideStep(0);
+		side.showDetails('guide');
+		const root = this.lastReview?.root;
+		const rel = (f: string) => (root && isInside(f, root) ? path.relative(root, f).replace(/\\/g, '/') : f);
+		return {
+			title: guide.title,
+			steps: guide.steps.map((s, i) => ({ step: i + 1, title: s.title, file: rel(s.file), lines: [s.first, s.last] })),
+			shown: 1,
+			note: 'The side view shows step 1. The user goes to the next step with the button Next, or asks you. get_view gives the step that the user looks at.',
+		};
+	}
+
+	// Goes to a step of the guided review, and adds a note or a mark to it
+	async reviewStep(step: number, note: unknown, status: string | undefined): Promise<object> {
+		const { store, side } = this.deps;
+		const guide = store.state.guide;
+		if (!guide) {
+			throw new Error('No guided review shows. Call show_review_plan first.');
+		}
+		const index = step - 1;
+		if (stepIndex(guide, index) === undefined) {
+			throw new Error(`The review has ${guide.steps.length} steps. Give a step from 1 to ${guide.steps.length}.`);
+		}
+		if (status !== undefined && !GUIDE_STATUSES.includes(status as SideGuideStatus)) {
+			throw new Error(`"status" must be one of ${GUIDE_STATUSES.join(', ')}.`);
+		}
+		if (note !== undefined && typeof note !== 'string') {
+			throw new Error('"note" must be a text.');
+		}
+		let next = guide;
+		if (typeof note === 'string') {
+			next = withNote(next, index, note);
+		}
+		if (status) {
+			next = withStatus(next, index, status as SideGuideStatus);
+		}
+		if (next !== guide) {
+			store.update({ guide: next });
+		}
+		await side.goToGuideStep(index);
+		side.showDetails('guide');
+		const s = next.steps[index];
+		return { step, title: s.title, file: s.file, lines: [s.first, s.last], status: s.status, progress: guideProgress(next) };
+	}
+
+	// The full path of a file of a step: an absolute path, or a path relative to the root of the last get_review or to a
+	// folder of the project
+	private projectFile(name: string): string | undefined {
+		if (path.isAbsolute(name)) {
+			return existsSync(name) ? name : undefined;
+		}
+		const root = this.lastReview?.root;
+		for (const folder of [...(root ? [root] : []), ...this.roots()]) {
+			const full = path.join(folder, name);
+			if (existsSync(full)) {
+				return full;
+			}
+		}
+		return undefined;
 	}
 
 	// Moves the lines of the blocks and the notes of the model in a file with the changes of an edit. Returns false if

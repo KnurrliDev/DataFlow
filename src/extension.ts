@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import { CompileDbInfo, CompileDbManager } from './cdb/manager';
 import { findProjectFiles, isInside, MAX_PROJECT_FILES, SKIP_FOLDERS } from './cdb/project';
 import { ProjectSettings } from './cdb/settings';
-import { readFile } from 'fs/promises';
+import { readFile, stat } from 'fs/promises';
 import { HomeView } from './home';
 import {
 	CallGraphModel, CostModel, EngineClient, EngineFunction, FlowModel, FlowOptions, FunctionSelector, LogicModel, LogicOptions, MemberEntry,
@@ -30,6 +30,7 @@ import { LayerKeeper } from './mcp/layers';
 import { McpManager } from './mcp/manager';
 import { createPrompts, createTools } from './mcp/tools';
 import { INCLUDE_FILE, isCppFile, openReviewRepository, ReviewDiff, ReviewRepository } from './review/git';
+import { MAX_REVIEW_FILES, type ReviewFilesInput } from './review/guide';
 import { CallSite, RippleModel, runRipple } from './review/ripple';
 import { targetCandidates, targetItems } from './review/targets';
 import { SideViewController } from './side/controller';
@@ -1784,6 +1785,71 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		return pick?.ref;
 	};
 
+	// The C and C++ files under the paths that the user wants to review, for the guided review of the MCP server, with the
+	// changes of each file against the target branch. No ripple runs, and the side view does not change. A path is
+	// absolute, or relative to the git repository, to the folder of the review or to a folder of the project. The changed
+	// files come first
+	const reviewFiles = async (paths: string[]): Promise<ReviewFilesInput | { message: string }> => {
+		const folder = reviewFolder();
+		if (!folder) {
+			return { message: 'Open a folder of the project, or select a project with "DataFlow: Open Project".' };
+		}
+		let repo: ReviewRepository | undefined;
+		try {
+			repo = await openReviewRepository(folder);
+		} catch {
+			// a folder with no git repository: the files have no changes
+		}
+		const root = repo?.root ?? folder.fsPath;
+		const bases = [...new Map([root, folder.fsPath, ...projectRoots()].map((b) => [fileKey(b), b])).values()];
+		const found: string[] = [];
+		const missing: string[] = [];
+		const skipped: string[] = [];
+		for (const p of paths) {
+			const full = path.isAbsolute(p) ? (existsSync(p) ? p : undefined) : bases.map((b) => path.join(b, p)).find((f) => existsSync(f));
+			if (!full) {
+				missing.push(p);
+			} else if ((await stat(full)).isDirectory()) {
+				found.push(...await findProjectFiles(full, MAX_REVIEW_FILES + 1, skipFolders()));
+			} else if (isCppFile(full)) {
+				found.push(full);
+			} else {
+				skipped.push(p);
+			}
+		}
+		let target: string | undefined;
+		let diff: ReviewDiff | undefined;
+		let notice: string | undefined;
+		if (!repo) {
+			notice = 'The folder has no git repository, so the files have no changes.';
+		} else {
+			try {
+				target = (await selectedTarget(repo)) ?? await automaticTarget(repo, folder);
+				if (target) {
+					diff = await repo.diff(target);
+				} else {
+					notice = 'The repository has no target branch, so the files have no changes. "DataFlow: Select Target Branch" selects one.';
+				}
+			} catch (error) {
+				notice = `The changes are not available: ${error instanceof Error ? error.message : String(error)}`;
+			}
+		}
+		const hunks = new Map((diff?.files ?? []).map((f) => [fileKey(f.uri.fsPath), f.hunks]));
+		const files = [...new Map(found.map((f) => [fileKey(f), f])).values()]
+			.sort((a, b) => Number(hunks.has(fileKey(b))) - Number(hunks.has(fileKey(a))));
+		// the text of an editor, else the file on disk. Only the files of the result need their lines
+		const lineCount = async (file: string): Promise<number> => {
+			const doc = vscode.workspace.textDocuments.find((d) => fileKey(d.uri.fsPath) === fileKey(file));
+			return doc ? doc.lineCount : (await readFile(file, 'utf8')).split(/\r?\n/).length;
+		};
+		return {
+			root, target, base: diff?.label, missing, skipped, notice,
+			files: await Promise.all(files.map(async (file, i) => ({
+				file, lineCount: i < MAX_REVIEW_FILES ? await lineCount(file) : 0, hunks: hunks.get(fileKey(file)) ?? [],
+			}))),
+		};
+	};
+
 	// Selects the target branch of the repository of the review, then reviews again. The tests give the target. The
 	// target '' is Automatic.
 	const selectTarget = async (target?: string): Promise<void> => {
@@ -2086,6 +2152,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		},
 		client: (): string | undefined => mcp.clientName,
 		incomingCalls: (file, line, col) => editorIncomingCalls(file, line, col),
+		reviewFiles: (paths) => reviewFiles(paths),
 	});
 	const mcp: McpManager = new McpManager(context, store, log, createTools(mcpHost), createPrompts(), () => projectRoots());
 	context.subscriptions.push(mcp);

@@ -47,6 +47,7 @@ export interface CodeViewProps {
 	threadItem?: SideThreadItem; // the selected item of Threads and races
 	ripple: SideRipple | null;
 	model: SideModel | null; // the blocks and the notes of a language model
+	guideLines?: { first: number; last: number; label: string }; // the lines of the current step of a guided review
 	why?: SideWhy; // the last answer to the question why a line runs
 	stepLine?: number; // the line of a step of the path: the step of "Play path", or the step under the mouse
 	reveal?: { line: number; seq: number }; // the view scrolls to the line if it is not visible. seq changes for each step
@@ -65,6 +66,14 @@ export interface CodeViewProps {
 	onThreadHint: () => void; // the user clicked a tag of Threads and races
 	onModelTag: (block?: string) => void; // the user clicked a title or a note of the model
 	onRendered: (rows: number) => void; // called after each render, for the time of the render
+}
+
+// The place of a line in the current step of a guided review, for the border around the lines of the step
+function reviewStepOf(lines: { first: number; last: number } | undefined, line: number): RowProps['reviewStep'] {
+	if (!lines || line < lines.first || line > lines.last) {
+		return undefined;
+	}
+	return lines.first === lines.last ? 'only' : line === lines.first ? 'first' : line === lines.last ? 'last' : 'mid';
 }
 
 interface RowProps {
@@ -104,6 +113,8 @@ interface RowProps {
 	isInactive: boolean; // a condition of the preprocessor skips the line
 	isPathStep: boolean; // the line of a step of the path of Logic Map
 	isStep: boolean; // the line of the current step of the path
+	reviewStep?: 'first' | 'mid' | 'last' | 'only'; // the line is in the current step of a guided review
+	reviewTag?: string; // the step of a guided review, on its first line
 	lead?: SideFlowColor; // the color of the guide line from the dot to the first reference
 	leadY: number;
 }
@@ -130,7 +141,7 @@ function Row(props: RowProps) {
 	const classes = `row${props.isCursor ? ' cursor' : ''}${props.isDim ? ' dim' : ''}${props.isInactive ? ' inactive' : ''}${
 		props.isPathStep ? ' path-step' : ''}${props.isStep ? ' step' : ''}${
 		props.ripple ? ` ${props.ripple}` : ''}${props.threadLane ? ` lane-${props.threadLane}` : ''}${
-		props.noteKind ? ` note-${props.noteKind}` : ''}`;
+		props.noteKind ? ` note-${props.noteKind}` : ''}${props.reviewStep ? ` rg-line rg-${props.reviewStep}` : ''}`;
 	const shortTexts = props.isShortEnds ? endTexts(props.hints, props.logicHints) : [];
 	return (
 		<div class={classes} data-line={line}>
@@ -146,8 +157,9 @@ function Row(props: RowProps) {
 				</span>
 			)}
 			<span class="code">{parts}</span>
-			{(props.modelTags || props.flowTags || props.includeHints || props.callHints || props.threadHints || props.chips || props.rippleHints) && (
+			{(props.reviewTag || props.modelTags || props.flowTags || props.includeHints || props.callHints || props.threadHints || props.chips || props.rippleHints) && (
 				<span class="tags">
+					{props.reviewTag && <span class="hint rg-tag"><span class="rg-pill">review</span>{props.reviewTag}</span>}
 					{props.modelTags?.map((t) => (t.kind === 'comment' ? (
 						<button type="button" class={`hint model-tag k-comment${commentClass(t.color)}`} title={t.title} onClick={() => props.onModelTag(t.block)}>
 							{t.text}
@@ -823,6 +835,8 @@ export function CodeView(props: CodeViewProps) {
 				isInactive={!!props.inactive?.some(([a, b]) => a <= line && line <= b)}
 				isPathStep={logicDecos.steps.has(line)}
 				isStep={line === props.stepLine}
+				reviewStep={reviewStepOf(props.guideLines, line)}
+				reviewTag={props.guideLines?.first === line ? props.guideLines.label : undefined}
 				lead={decorations.leads.get(line)}
 				leadY={leadY}
 			/>,

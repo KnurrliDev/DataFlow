@@ -7,7 +7,7 @@ import type { LogicView, LogicWarning } from '../lenses/logic';
 import type { ReviewState } from '../lenses/ripple';
 import type { PathStep } from '../logic/paths';
 import type { DiffLine } from '../review/git';
-import type { SideCalls, SideIncluders, SideIncludes, SideMcp, SideModel, SideThreads } from '../side/protocol';
+import type { SideCalls, SideGuide, SideIncluders, SideIncludes, SideMcp, SideModel, SideThreads } from '../side/protocol';
 import type { RippleModel } from '../review/ripple';
 
 export type Lens = 'flow' | 'logic' | 'cost' | 'review' | 'includes' | 'calls' | 'threads';
@@ -99,6 +99,7 @@ export interface DataFlowState {
 	rippleLayer?: RippleLayerState; // the ripple of the last review
 	modelLayers: SideModel[]; // the blocks and the notes of a language model, one layer for each file
 	isModelShown: boolean; // the layers of the model show in the code view. The switch Model of the toolbar hides them
+	guide?: SideGuide; // the guided review: the plan of a model to review the changes of the branch
 	mcp: SideMcp; // the MCP server of DataFlow
 	sideMode: SideMode;
 	message?: string;
