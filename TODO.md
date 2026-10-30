@@ -171,14 +171,3 @@ The user decided to skip the beta. The first items of the side view and of the M
 ## Platforms and development
 
 - [ ] **Only Windows x64 was built and tested.**
-
-## Found in TBT
-
-These items are in the TBT repository, not in DataFlow.
-
-- [ ] **`include/TBT/execute.hpp` line 32 is ill-formed.**
-  `Awaitable<T>::await_suspend` calls `values_->set_done()`, but `CoStateValues` is incomplete at this point. The expression does not depend on a template parameter, so the program is ill-formed, no diagnostic required. MSVC accepts it. Clang rejects it, and GCC probably also rejects it.
-  Possible fix: define `await_suspend` after the definition of `CoStateValues`.
-
-- [ ] **CMake Tools left a stopped configure in `TBT/build`.**
-  When the TBT window opened, CMake Tools started a configure with "Visual Studio 18 2026". The configure stopped in the compiler check. It left `CMakeCache.txt` and `CMakeFiles/` next to the project files of Visual Studio 2022. Delete these two items before the next build with Visual Studio 2022 in this folder.

@@ -9,3 +9,5 @@ test/fixtures/**/build*/
 # example code from another project. it stays local and is not committed
 example/
 *.vsix
+# the copy of the engine for the VSIX package. scripts/package-vsix.mjs makes it and removes it
+engine/bin/

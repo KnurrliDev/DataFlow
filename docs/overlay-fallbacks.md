@@ -57,7 +57,7 @@ The proposed API `editorInsets` puts a webview between 2 lines of the text edito
 - VS Code 1.143.1 has this API.
 - The Marketplace does not accept an extension that uses a proposed API.
 - The extension must have `"enabledApiProposals": ["editorInsets"]` in `package.json`.
-- A stable build of VS Code lets the extension use the API only with the command line switch `--enable-proposed-api local-dev.dataflow`. The key `enable-proposed-api` in `argv.json` does the same for one installation.
+- A stable build of VS Code lets the extension use the API only with the command line switch `--enable-proposed-api KnurrliDev.dataflow`. The key `enable-proposed-api` in `argv.json` does the same for one installation.
 - On a stable build, the Extension Development Host does not turn on proposed APIs. Add the switch to the arguments in `.vscode/launch.json`.
 - The API is not new, but it is still a proposal. Microsoft can change it or remove it in a new release.
 

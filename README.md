@@ -24,7 +24,7 @@ DataFlow works on Windows 64-bit with VS Code 1.120 or later. Your project needs
 
 ## Quickstart with Claude Code
 
-1. Build DataFlow, and start VS Code with it. [Install DataFlow](docs/install.md) tells how.
+1. Download the VSIX file of the [latest release](https://github.com/KnurrliDev/DataFlow/releases/latest). In VS Code, install it with **Extensions: Install from VSIX…**. [Install DataFlow](docs/install.md) also tells how to build DataFlow from the source code.
 2. Install the Claude Code extension in VS Code.
 3. Open the folder of a C++ project with a compile database.
 4. Open a C++ file. DataFlow starts and asks if it can connect to Claude Code. Click **Connect**.
@@ -113,10 +113,11 @@ The view tools of the MCP server put the words of the model into the side view. 
 
 ## Documents
 
-- [Install DataFlow](docs/install.md): the necessary software, the build of the engine and the extension, and the first start
+- [Install DataFlow](docs/install.md): the VSIX package, the build from the source code, and the first start
 - [Use DataFlow](docs/usage.md): the side view, each lens, the commands and the settings
 - [Use the MCP tools](docs/tools.md): the connection to Claude Code and to other clients, and each tool with its parameters
-- [Develop DataFlow](docs/development.md): the files, the debugger, the tests and the screenshots
+- [Develop DataFlow](docs/development.md): the files, the debugger, the tests, the screenshots and the releases
+- [Changelog](CHANGELOG.md): the changes of each release
 
 ## License
 

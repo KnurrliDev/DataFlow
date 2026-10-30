@@ -3,7 +3,16 @@
   "displayName": "DataFlow",
   "description": "Shows the data flow, the logic, the hidden costs and the ripple of changes of C++ code in a view beside the editor.",
   "version": "0.1.0",
-  "publisher": "local-dev",
+  "publisher": "KnurrliDev",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KnurrliDev/DataFlow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/KnurrliDev/DataFlow/issues"
+  },
+  "homepage": "https://github.com/KnurrliDev/DataFlow#readme",
   "engines": {
     "vscode": "^1.120.0"
   },
@@ -564,7 +573,8 @@
     "test": "vscode-test",
     "test:engine": "node scripts/prepare-fixtures.mjs && node --test test/engine/protocol.test.mjs",
     "test:ui": "node scripts/prepare-fixtures.mjs && node --test test/ui/ui.test.mjs",
-    "build:engine": "node scripts/build-engine.mjs"
+    "build:engine": "node scripts/build-engine.mjs",
+    "package": "node scripts/package-vsix.mjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -572,6 +582,7 @@
     "@types/vscode": "1.120.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^4.1.0",
     "esbuild": "^0.28.2",
     "preact": "^11.0.2",
     "typescript": "^6.0.3"

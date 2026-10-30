@@ -32,7 +32,7 @@ suite('A project that is not open in VS Code', () => {
 
 	suiteSetup(async function () {
 		this.timeout(60000);
-		api = await vscode.extensions.getExtension<DataFlowApi>('local-dev.dataflow')!.activate();
+		api = await vscode.extensions.getExtension<DataFlowApi>('KnurrliDev.dataflow')!.activate();
 		// the state of the window can keep the project of an earlier test run
 		await vscode.commands.executeCommand('dataflow.closeProject');
 	});

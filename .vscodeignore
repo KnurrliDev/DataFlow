@@ -6,6 +6,8 @@ out/test/**
 docs/**
 example/**
 engine/**
+# the copy of the engine that scripts/package-vsix.mjs makes for the package
+!engine/bin/**
 spikes/**
 test/**
 scripts/**
@@ -17,3 +19,6 @@ tsconfig.webview.json
 **/*.map
 **/*.ts
 **/.vscode-test.*
+.clang-format
+TODO.md
+open-editor.bat

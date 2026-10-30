@@ -15,7 +15,7 @@ export async function waitFor(condition: () => boolean, timeoutMs: number, descr
 // Opens a file, activates DataFlow, and waits for the engine.
 export async function activateDataFlow(file: string): Promise<DataFlowApi> {
 	await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
-	const ext = vscode.extensions.getExtension<DataFlowApi>('local-dev.dataflow');
+	const ext = vscode.extensions.getExtension<DataFlowApi>('KnurrliDev.dataflow');
 	if (!ext) {
 		throw new Error('VS Code did not find the DataFlow extension.');
 	}

@@ -1,21 +1,44 @@
 # Install DataFlow
 
-DataFlow is not in the Visual Studio Marketplace. To use it, build the engine and the extension from the source code. Then start VS Code with DataFlow.
+There are two methods to install DataFlow:
+
+- Install the VSIX package of a release. The package contains the extension and the engine.
+- Build the engine and the extension from the source code.
+
+DataFlow is not in the Visual Studio Marketplace.
 
 - [Supported systems](#supported-systems)
-- [What you need](#what-you-need)
-- [Get the libraries for the engine](#get-the-libraries-for-the-engine)
-- [Get the source code](#get-the-source-code)
-- [Build the engine](#build-the-engine)
-- [Build the extension](#build-the-extension)
-- [Start VS Code with DataFlow](#start-vs-code-with-dataflow)
+- [Install the VSIX](#install-the-vsix)
+- [Build from the source code](#build-from-the-source-code)
 - [Open your first project](#open-your-first-project)
 
 ## Supported systems
 
-DataFlow works on Windows 64-bit. The build of the engine uses Visual Studio 2022 and the Windows archive of LLVM. At this time, DataFlow has no tested build for Linux or macOS. The script `open-editor.bat` is only for Windows.
+DataFlow works on Windows 64-bit. The VSIX package is only for Windows x64. The build of the engine uses Visual Studio 2022 and the Windows archive of LLVM. At this time, DataFlow has no tested build for Linux or macOS.
 
-## What you need
+## Install the VSIX
+
+You need VS Code 1.120 or later.
+
+1. Open the [releases of DataFlow](https://github.com/KnurrliDev/DataFlow/releases) on GitHub.
+2. Download the file `dataflow-win32-x64-<version>.vsix` of the latest release.
+3. In VS Code, open the Extensions view. Click **…** at the top of the view, then click **Install from VSIX…**, and select the file. You can also install the file with a command in a terminal:
+
+   ```bat
+   code --install-extension dataflow-win32-x64-0.1.0.vsix
+   ```
+
+4. Open a C++ project. [Open your first project](#open-your-first-project) tells how.
+
+To update DataFlow, install the VSIX of the new release. VS Code replaces the old version.
+
+Your project must build on the computer. The engine parses the code with the compile commands of the project, and it uses the headers of the compiler and of the libraries of the project, for example of Visual Studio and Qt.
+
+## Build from the source code
+
+Use this method to change DataFlow, or to use code that is not in a release. The script `open-editor.bat` is only for Windows. To make a VSIX package from the source code, see [Make a release](development.md#make-a-release).
+
+### What you need
 
 For the extension:
 
@@ -34,7 +57,7 @@ For each C++ project:
 
 - A compile database: a `compile_commands.json` file from CMake, the build folder of qmake, or the compile database that Qt Creator writes for clangd
 
-## Get the libraries for the engine
+### Get the libraries for the engine
 
 Put LLVM, zlib and zstd in one folder. The default folder is `.cache\dataflow` in your home folder:
 
@@ -68,7 +91,7 @@ To use a different folder, set the environment variable `DATAFLOW_DEPS_DIR` to t
    cmake --install build/zstd
    ```
 
-## Get the source code
+### Get the source code
 
 1. Open a terminal in the folder for the repository.
 2. Get the repository:
@@ -84,7 +107,7 @@ To use a different folder, set the environment variable `DATAFLOW_DEPS_DIR` to t
    npm install
    ```
 
-## Build the engine
+### Build the engine
 
 Run this command in the root folder of the repository:
 
@@ -114,7 +137,7 @@ cmake --build build/engine -j <jobs>
 
 The result is `build/engine/dataflow-engine.exe`. The build also copies the builtin headers of Clang to `build/engine/lib/clang/23/include`. The engine reads them from this folder.
 
-## Build the extension
+### Build the extension
 
 Run this command in the root folder of the repository:
 
@@ -124,7 +147,7 @@ npm run compile
 
 The command compiles the TypeScript code into the folder `out`, and it bundles the script of the side view.
 
-## Start VS Code with DataFlow
+### Start VS Code with DataFlow
 
 1. Run `open-editor.bat` in the root folder of the repository. To open a folder in the new window, give the folder as an argument:
 
@@ -148,7 +171,7 @@ DataFlow uses the engine in `build/engine` of the repository. To use an engine i
 
 ## Open your first project
 
-1. In the window with DataFlow, open the folder of a C++ project with a compile database. DataFlow finds these compile databases:
+1. In VS Code with DataFlow, open the folder of a C++ project with a compile database. DataFlow finds these compile databases:
    - The `compile_commands.json` file of CMake. CMake writes this file for the Ninja generators and the Makefile generators if `CMAKE_EXPORT_COMPILE_COMMANDS` is `ON`.
    - The build folder of qmake, with its Makefile.
    - The `.qtc_clangd/compile_commands.json` file that Qt Creator writes for clangd.

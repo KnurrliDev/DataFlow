@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 
 // The extension ID has the format "<publisher>.<name>". The values come from package.json.
-const EXTENSION_ID = 'local-dev.dataflow';
+const EXTENSION_ID = 'KnurrliDev.dataflow';
 const COMMAND_ID = 'dataflow.helloWorld';
 
 // These tests run in a VS Code window that the "vscode-test" command starts.

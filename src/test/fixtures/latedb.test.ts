@@ -24,7 +24,7 @@ suite('A compile database that comes after the start', () => {
 
 	suiteSetup(async function () {
 		this.timeout(60000);
-		api = await vscode.extensions.getExtension<DataFlowApi>('local-dev.dataflow')!.activate();
+		api = await vscode.extensions.getExtension<DataFlowApi>('KnurrliDev.dataflow')!.activate();
 	});
 
 	test('A new database starts the engine, and a change of the database starts it again', async function () {
