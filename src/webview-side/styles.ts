@@ -455,6 +455,41 @@ button.badge:hover { background: color-mix(in srgb, var(--c) 26%, transparent); 
 .call-text { overflow: hidden; text-overflow: ellipsis; white-space: pre; font-family: var(--vscode-editor-font-family); font-size: 0.92em;
   color: var(--vscode-descriptionForeground); }
 .call-list-empty, .call-list-foot { margin: 0; padding: 4px 10px 6px; }
+/* the panel of "Outline": the head with the bases and the layout, a filter, and the groups of the members */
+.outline-panel { position: fixed; z-index: 20; display: flex; flex-direction: column; box-sizing: border-box; width: min(640px, calc(100vw - 16px));
+  max-height: min(70vh, 560px); border: 1px solid var(--vscode-editorHoverWidget-border); border-radius: 6px;
+  color: var(--vscode-editorHoverWidget-foreground); background: var(--vscode-editorHoverWidget-background);
+  box-shadow: 0 4px 16px var(--vscode-widget-shadow, transparent); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
+.ol-head { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 6px 10px; border-bottom: 1px solid var(--vscode-editorHoverWidget-border); }
+.ol-title-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ol-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.ol-template { font-weight: normal; color: var(--vscode-descriptionForeground); }
+.ol-layout { display: flex; flex-direction: column; gap: 3px; }
+.ol-bar { position: relative; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--vscode-dataflow-read) 45%, transparent); overflow: hidden; }
+.ol-hole { position: absolute; top: 0; bottom: 0; background: var(--vscode-editorWarning-foreground); }
+.ol-filter { box-sizing: border-box; width: 100%; padding: 2px 6px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 2px;
+  color: var(--vscode-input-foreground); background: var(--vscode-input-background); font: inherit; }
+.ol-filter:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.ol-body { min-height: 0; overflow: auto; padding: 2px 0 4px; }
+.ol-group-head { display: flex; align-items: baseline; gap: 6px; width: 100%; padding: 3px 10px 1px; border: 0; background: none; color: inherit; font: inherit;
+  font-weight: 600; text-align: left; cursor: pointer; }
+.ol-group-head:hover { background: var(--vscode-list-hoverBackground); }
+.ol-group-head:focus-visible, .ol-item:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.ol-twisty { width: 1em; color: var(--vscode-descriptionForeground); }
+.ol-item { display: grid; grid-template-columns: 1.2em minmax(0, 1fr) auto; align-items: baseline; gap: 6px; width: 100%; padding: 1px 10px 1px 22px;
+  border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.ol-item:hover { background: var(--vscode-list-hoverBackground); }
+.ol-access { color: var(--vscode-descriptionForeground); text-align: center; }
+.ol-label { overflow: hidden; text-overflow: ellipsis; white-space: pre; font-size: 0.92em; }
+.ol-tags { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.ol-mark, .ol-section { --c: var(--vscode-descriptionForeground); }
+.ol-section { --c: var(--vscode-dataflow-event); }
+.ol-annotation { --c: var(--vscode-dataflow-event); max-width: 18em; overflow: hidden; text-overflow: ellipsis; }
+.ol-padding { --c: var(--vscode-editorWarning-foreground); }
+.ol-offset { font-size: 0.85em; color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.ol-def { font-size: 0.85em; color: var(--vscode-textLink-foreground); white-space: nowrap; cursor: pointer; }
+.ol-def:hover { text-decoration: underline; }
+.ol-foot { margin: 0; padding: 4px 10px 6px; }
 .call-list-foot { border-top: 1px solid var(--vscode-editorHoverWidget-border); }
 .call-sites .badge { cursor: pointer; }
 .no-motion .scard, .no-motion .scard::before, .no-motion .scard::after, .no-motion .srow, .no-motion .slink::before { transition: none; }

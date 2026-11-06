@@ -39,6 +39,7 @@ import { MAX_REVIEW_FILES, moveGuide, type ReviewFilesInput } from './review/gui
 import { CallSite, RippleModel, runRipple } from './review/ripple';
 import { targetCandidates, targetItems } from './review/targets';
 import { SideViewController } from './side/controller';
+import { typeDefinitionLine } from './side/outline';
 import type { SideAction, SideCallListSite, SideViewState } from './side/protocol';
 import { Lens, LogicPathState, StateStore } from './state/store';
 import { StatusBar } from './statusbar';
@@ -1686,6 +1687,79 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		}
 	};
 
+	// The file with the definition of a type that the translation unit only declares: the definition provider of VS Code
+	// finds it, else a search of the headers of the project
+	const HEADER = /\.(h|hh|hpp|hxx|h\+\+|inl|ipp|tpp)$/i;
+	const definitionHeaderOf = async (doc: vscode.TextDocument, pos: vscode.Position, name: string): Promise<string | undefined> => {
+		try {
+			let timer: NodeJS.Timeout | undefined;
+			const limit = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), 10000); });
+			const result = await Promise.race([Promise.resolve(vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[] | undefined>(
+				'vscode.executeDefinitionProvider', doc.uri, pos)), limit]).finally(() => clearTimeout(timer));
+			const first = result?.[0];
+			if (first) {
+				return 'targetUri' in first ? first.targetUri.fsPath : first.uri.fsPath;
+			}
+		} catch {
+			// a provider that fails gives no file
+		}
+		const headers = (await Promise.all(projectRoots().map((r) => findProjectFiles(r, MAX_PROJECT_FILES, skipFolders())))).flat().filter((f) => HEADER.test(f));
+		for (const file of headers) {
+			try {
+				if (typeDefinitionLine(await readFile(file, 'utf8'), name) >= 0) {
+					return file;
+				}
+			} catch {
+				// a file that is gone
+			}
+		}
+		return undefined;
+	};
+
+	// "Outline": the outline of the class, the struct, the union or the enum of the name at a place, in a panel of the
+	// side view. The menu of the side view gives the place of the click, else the place is the cursor. A type with no
+	// definition in the translation unit gets the outline of the header of its definition
+	let outlineSeq = 0;
+	const showOutline = async (arg?: unknown): Promise<void> => {
+		const menu = arg && typeof arg === 'object' ? arg as { line?: unknown; col?: unknown } : undefined;
+		const menuDoc = side.document;
+		const isFromMenu = !!menu && Number.isInteger(menu.line) && Number.isInteger(menu.col) && !!menuDoc;
+		const place = isFromMenu ? { doc: menuDoc!, pos: new vscode.Position(Math.max(0, (menu!.line as number) - 1), menu!.col as number) } : currentPlace();
+		const client = engine;
+		if (!place || !isCpp(place.doc)) {
+			vscode.window.setStatusBarMessage('DataFlow: Put the cursor on the name of a class, or right-click the name in the side view.', 4000);
+			return;
+		}
+		if (!client || client.currentState !== 'ready') {
+			vscode.window.setStatusBarMessage('DataFlow: Wait for the engine.', 4000);
+			return;
+		}
+		const doc = place.doc;
+		const lineText = doc.lineAt(place.pos.line).text;
+		const seq = ++outlineSeq;
+		try {
+			let result = await client.outline(doc.uri.fsPath, { line: place.pos.line + 1, col: toUtf8Column(lineText, place.pos.character) });
+			if (!result.outline && result.declaration) {
+				const header = await definitionHeaderOf(doc, place.pos, result.declaration.name);
+				if (header) {
+					result = await client.outline(header, { name: result.declaration.name });
+				}
+			}
+			if (seq !== outlineSeq) {
+				return;
+			}
+			if (!result.outline) {
+				const word = wordAt(lineText, place.pos.character) || 'The name';
+				vscode.window.setStatusBarMessage(result.declaration ? `DataFlow found no definition of ${result.declaration.name}.`
+					: `DataFlow: ${word} is not a class, a struct, a union or an enum.`, 4000);
+				return;
+			}
+			side.showOutline({ ...result.outline, seq, isFromMenu });
+		} catch (error) {
+			vscode.window.setStatusBarMessage(`DataFlow: The engine gave no outline: ${error}`, 4000);
+		}
+	};
+
 	// "Show Calls": the calls of the function of the name at a place. The menu of the side view gives the place of the
 	// click, else the place is the cursor. The calls in the file come at once from the call graph of the engine. The
 	// calls in other files come later from the call hierarchy of VS Code, if a C/C++ extension gives it. A newer list
@@ -2472,6 +2546,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		vscode.commands.registerCommand('dataflow.toggleCalls', () => toggleLens('calls')),
 		// the menu of the side view gives the place of the click as the argument
 		vscode.commands.registerCommand('dataflow.showCalls', (arg?: unknown) => showCallList(arg)),
+		vscode.commands.registerCommand('dataflow.showOutline', (arg?: unknown) => showOutline(arg)),
 		vscode.commands.registerCommand('dataflow.side.goToDefinition', () => side.goToDefinitionAtCursor()),
 		vscode.commands.registerCommand('dataflow.side.back', () => side.goBack()),
 		vscode.commands.registerCommand('dataflow.side.forward', () => side.goForward()),

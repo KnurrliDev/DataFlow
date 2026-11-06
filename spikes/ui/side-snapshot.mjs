@@ -276,6 +276,55 @@ try {
 			await sleep(250);
 		}
 		result.goto.back = await sideFile();
+
+		// A right-click on HomeBatteryCtrl: the menu of VS Code has Outline, and the panel shows the members with the layout.
+		// The filter keeps the members with "charg". A click on a member moves the side view, and Escape closes the panel
+		await inSide(`const s = doc.querySelector('.scroller'); s.scrollLeft = 0; s.scrollTop = ${line - 10} * parseFloat(s.style.getPropertyValue('--row-height')); return true;`);
+		await sleep(800);
+		await inSide(`const span = ${name}; const r = span.getBoundingClientRect();
+			span.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 4, clientY: r.top + r.height / 2 }));
+			return true;`);
+		await sleep(1000);
+		const item = await wb.evaluate(`(() => {
+			const items = [...document.querySelectorAll('.monaco-menu .action-item')];
+			const item = items.find((i) => i.textContent.trim() === 'Outline');
+			if (!item) { return { labels: items.map((i) => i.textContent.trim()) }; }
+			const r = item.getBoundingClientRect();
+			return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+		})()`);
+		result.outline = { menu: item.labels ?? 'Outline' };
+		if (item.x !== undefined) {
+			for (const type of ['mousePressed', 'mouseReleased']) {
+				await wb.send('Input.dispatchMouseEvent', { type, x: item.x, y: item.y, button: 'left', clickCount: 1 });
+			}
+			for (let i = 0; i < 40 && !await inSide(`return !!doc.querySelector('.outline-panel');`); i++) {
+				await sleep(250);
+			}
+			await sleep(400);
+			const panel = () => inSide(`const p = doc.querySelector('.outline-panel'); if (!p) { return null; }
+				return { title: p.querySelector('.ol-title')?.textContent, layout: p.querySelector('.ol-layout span')?.textContent ?? '',
+					hasBar: !!p.querySelector('.ol-bar'), groups: [...p.querySelectorAll('.ol-group-head')].map((g) => g.textContent),
+					items: p.querySelectorAll('.ol-item').length };`);
+			result.outline.panel = await panel();
+			await shot('outline');
+			await inSide(`const f = doc.querySelector('.outline-panel .ol-filter'); f.value = 'charg'; f.dispatchEvent(new Event('input', { bubbles: true })); return true;`);
+			await sleep(400);
+			result.outline.filtered = await inSide(`return [...doc.querySelectorAll('.outline-panel .ol-item .ol-label')].map((l) => l.textContent);`);
+			await inSide(`doc.querySelector('.outline-panel .ol-item').click(); return true;`);
+			for (let i = 0; i < 40 && await sideFile() !== 'types.hpp'; i++) {
+				await sleep(250);
+			}
+			result.outline.file = await sideFile();
+			result.outline.isOpen = await inSide(`return !!doc.querySelector('.outline-panel');`);
+			await inSide(`doc.defaultView.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`);
+			await sleep(400);
+			result.outline.afterEscape = await inSide(`return !!doc.querySelector('.outline-panel');`);
+			await inSide(`doc.querySelector('.scroller').dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 3 })); return true;`);
+			for (let i = 0; i < 40 && await sideFile() !== 'battery.cpp'; i++) {
+				await sleep(250);
+			}
+			result.outline.back = await sideFile();
+		}
 	}
 
 	result.dirty = await wb.evaluate(`!!document.querySelector('.tab.dirty')`);

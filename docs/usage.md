@@ -73,6 +73,25 @@ To go back to the place before the jump, push Alt+Left while the side view has t
 
 The definition providers of VS Code find the definition first, for example the C/C++ extension or clangd. If no provider finds a definition, the engine finds it in the translation unit. For a function with its definition in a different source file, the engine then finds the declaration.
 
+### Outline of a type
+
+To see the outline of a class, a struct, a union or an enum, right-click its name in the side view, and click **Outline**. The name of a constructor or of a type alias also works. The context menu of the text editor also has **Outline**.
+
+A panel below the click shows the type:
+
+- The head: the kind, the name, the template parameters and the bases. A click on a base shows its definition.
+- The layout: the size, the alignment and the bytes of padding. The bar shows the holes of padding in yellow. A type that depends on a template parameter has no layout.
+- The members in groups, in the sequence of the source: data members, functions, types, enumerators, Qt properties, friends and using declarations.
+- For each member: the access (`+` public, `#` protected, `-` private), and the type or the signature. The marks show, for example, `virtual`, `override`, `static` or `= delete`.
+- For each data member: the offset and the size in bytes. A data member with padding after it has the mark `+N pad`.
+- The text of `UPROPERTY(...)` and `UFUNCTION(...)` of Unreal Engine, and the signals and the slots of Qt.
+- The members that a macro makes, for example `GENERATED_BODY()` of Unreal Engine, are in a closed group "Made by GENERATED_BODY".
+- The members of each base are in a closed group "Inherited from ...". A type of a library hides its internal names that start with `_`.
+
+To find a member, type in the filter field. The filter compares the names and the types. A click on a member moves the side view to the member, as for Ctrl+click. Ctrl+click on a function shows its definition. The arrow keys go from member to member. To close the panel, push Escape, or click outside of the panel.
+
+If the translation unit has only a declaration of the type, for example `class Battery;`, DataFlow looks for the header of the definition. The definition provider of VS Code finds the header, else a search of the headers of the project finds it.
+
 ### The side view with no text editor
 
 The side view also works when no text editor shows its file. For example, the panel of Claude Code can be in front of the C++ editor.
@@ -459,6 +478,7 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | **DataFlow: Toggle Call Hierarchy** | | Turns Call Hierarchy on or off. |
 | **DataFlow: Toggle Threads and Races** | | Turns Threads and races on or off. |
 | **DataFlow: Show Calls** | | Shows all calls of the function at the cursor in a list. |
+| **DataFlow: Outline** | | Shows the outline of the class, the struct, the union or the enum at the cursor. See [Outline of a type](#outline-of-a-type). |
 | **DataFlow: Go to Definition in the Side View** | F12 in the side view | Goes to the definition of the name at the cursor of the side view. See [Go to a definition](#go-to-a-definition). |
 | **DataFlow: Go Back in the Side View** | Alt+Left in the side view | Goes to the place before the last jump of the side view. |
 | **DataFlow: Go Forward in the Side View** | Alt+Right in the side view | Goes to the place that the last **Go Back** left. |

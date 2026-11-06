@@ -15,7 +15,7 @@ import {
 } from './model';
 import type {
 	FromSide, SideAction, SideBrackets, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideFrame, SideGuide, SideIncluders, SideIncludes,
-	SideLogic, SideModel, SideRipple, SideThreads, SideRow, SideSettings, SideStory, SideStyle, SideViewState, SideWhy, ToSide,
+	SideLogic, SideModel, SideOutline, SideRipple, SideThreads, SideRow, SideSettings, SideStory, SideStyle, SideViewState, SideWhy, ToSide,
 } from './protocol';
 import { buildSideRipple, buildSideStory, fileKey, lineRanges, storyLines } from './storyLayer';
 import { editorLineHeight, fontFeatureSettings, ScrollGuard } from './sync';
@@ -43,6 +43,9 @@ const TRACEABLE = ['variable', 'parameter', 'property'].flatMap((type) => Array.
 	(_, bits) => semanticStyleIndex(SEMANTIC_TYPES.indexOf(type as never), bits)));
 // The style indices of functions and methods, with each set of modifiers. The menu of their names has "Show Calls"
 const CALLABLE = ['function', 'method'].flatMap((type) => Array.from({ length: 1 << SEMANTIC_MODIFIERS.length },
+	(_, bits) => semanticStyleIndex(SEMANTIC_TYPES.indexOf(type as never), bits)));
+// The style indices of classes, enums and type aliases, with each set of modifiers. The menu of their names has "Outline"
+const TYPE_NAMES = ['class', 'enum', 'type'].flatMap((type) => Array.from({ length: 1 << SEMANTIC_MODIFIERS.length },
 	(_, bits) => semanticStyleIndex(SEMANTIC_TYPES.indexOf(type as never), bits)));
 // The style indices of all names. Ctrl+click on a name goes to its definition
 const NAVIGABLE = SEMANTIC_TYPES.flatMap((_, type) => Array.from({ length: 1 << SEMANTIC_MODIFIERS.length },
@@ -148,6 +151,7 @@ export class SideViewController implements vscode.Disposable {
 	lastShortEnds: { lines: number[]; width: number } = { lines: [], width: 0 };
 	lastCard?: { kind: SideCardKind | null; line: number }; // the last answer to the command "Show Card at Cursor"
 	lastCallList: SideCallList | null = null; // the last list of "Show Calls"
+	lastOutline: SideOutline | null = null; // the last panel of "Outline"
 	// the card of the command "Show Card at Cursor" is open. A move of the cursor and a new file close it
 	private isCardOpen = false;
 	private viewCursor?: { doc: vscode.TextDocument; pos: vscode.Position }; // the cursor of the side view, see cursorPlace
@@ -385,6 +389,15 @@ export class SideViewController implements vscode.Disposable {
 		this.post({ type: 'callList', list });
 	}
 
+	// Shows the panel of "Outline" in the side view. null closes it
+	showOutline(outline: SideOutline | null): void {
+		this.lastOutline = outline;
+		if (outline && !this.panel) {
+			this.open();
+		}
+		this.post({ type: 'outline', outline });
+	}
+
 	// The ranges of lines that the side view shows as inactive, for the tests
 	get inactiveRanges(): readonly [number, number][] | undefined {
 		return this.model?.inactive;
@@ -557,6 +570,9 @@ export class SideViewController implements vscode.Disposable {
 			case 'goForward':
 				void this.goForward();
 				break;
+			case 'outlineGo':
+				void this.outlineGo(message.file, message.line, message.col, message.toDefinition ?? false);
+				break;
 			case 'openEditor':
 				void this.focusEditor();
 				break;
@@ -674,7 +690,10 @@ export class SideViewController implements vscode.Disposable {
 	// Sends the full state, for example when the webview starts again after it was hidden
 	private sendAll(): void {
 		this.post({ type: 'settings', settings: this.settings() });
-		this.post({ type: 'styles', styles: this.styles, brackets: BRACKETS, traceable: TRACEABLE, callable: CALLABLE, navigable: NAVIGABLE, includeFile: INCLUDE_FILE });
+		this.post({
+			type: 'styles', styles: this.styles, brackets: BRACKETS, traceable: TRACEABLE, callable: CALLABLE, typeNames: TYPE_NAMES, navigable: NAVIGABLE,
+			includeFile: INCLUDE_FILE,
+		});
 		this.post({ type: 'frame', frame: this.frame() });
 		this.post({ type: 'story', story: this.lastStory });
 		this.postGuide();
@@ -847,7 +866,10 @@ export class SideViewController implements vscode.Disposable {
 		}
 		this.styles = result.styles;
 		this.stylesError = result.error;
-		this.post({ type: 'styles', styles: this.styles, brackets: BRACKETS, traceable: TRACEABLE, callable: CALLABLE, navigable: NAVIGABLE, includeFile: INCLUDE_FILE });
+		this.post({
+			type: 'styles', styles: this.styles, brackets: BRACKETS, traceable: TRACEABLE, callable: CALLABLE, typeNames: TYPE_NAMES, navigable: NAVIGABLE,
+			includeFile: INCLUDE_FILE,
+		});
 	}
 
 	// Without an extension that gives semantic tokens, for example the C/C++ extension or clangd, the text editor shows
@@ -1177,11 +1199,31 @@ export class SideViewController implements vscode.Disposable {
 	// "Show Calls", as the text editor shows the references. More than one definition gives a list
 	async goToDefinition(line: number, col: number, isCallable: boolean): Promise<void> {
 		const model = this.model;
-		if (!model) {
+		if (model) {
+			await this.goToDefinitionIn(model.doc, model.doc.validatePosition(new vscode.Position(Math.max(0, line - 1), Math.max(0, col))), isCallable);
+		}
+	}
+
+	// A click on a member in the panel of "Outline": the side view goes to the member, as for Ctrl+click. The column is a
+	// UTF-8 column from 1, as the engine gives it. toDefinition: Ctrl+click on a function with no known definition, so the
+	// definition providers find it
+	private async outlineGo(file: string, line: number, byteCol: number, toDefinition: boolean): Promise<void> {
+		let doc: vscode.TextDocument;
+		try {
+			doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+		} catch {
 			return;
 		}
-		const doc = model.doc;
-		const at = doc.validatePosition(new vscode.Position(Math.max(0, line - 1), Math.max(0, col)));
+		const row = Math.min(Math.max(0, line - 1), doc.lineCount - 1);
+		const pos = new vscode.Position(row, toUtf16Column(doc.lineAt(row).text, byteCol));
+		if (toDefinition) {
+			await this.goToDefinitionIn(doc, pos, false);
+		} else {
+			await this.jumpTo({ file, line: pos.line, col: pos.character });
+		}
+	}
+
+	private async goToDefinitionIn(doc: vscode.TextDocument, at: vscode.Position, isCallable: boolean): Promise<void> {
 		const wordRange = doc.getWordRangeAtPosition(at);
 		const word = wordRange ? doc.getText(wordRange) : 'the name';
 		const found = await this.definitionPlaces(doc, at);

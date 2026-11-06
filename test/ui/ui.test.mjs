@@ -37,7 +37,7 @@ async function run(script) {
 	}
 }
 
-test('side view: the colors, the guides, the scroll sync in both directions, the cursor with no text editor, Show Calls, Ctrl+click and the restore after a reload', { timeout: 600000 }, async () => {
+test('side view: the colors, the guides, the scroll sync in both directions, the cursor with no text editor, Show Calls, Ctrl+click, Outline and the restore after a reload', { timeout: 600000 }, async () => {
 	const r = await run('side-snapshot.mjs');
 	assert.ok(r.spans > 100, `${r.spans} spans`);
 	assert.match(r.status, /^Engine: ready/);
@@ -77,6 +77,16 @@ test('side view: the colors, the guides, the scroll sync in both directions, the
 	assert.equal(g.cursor, g.declLine, JSON.stringify(g));
 	assert.equal(g.statusAfter, g.statusBefore, JSON.stringify(g));
 	assert.equal(g.back, 'battery.cpp', JSON.stringify(g));
+	// a right-click on a type: the menu of VS Code has Outline, and the panel shows the members with the layout. The filter
+	// keeps the matching members, a click on a member moves the side view, the panel stays, and Escape closes it
+	const o = r.outline;
+	assert.equal(o.menu, 'Outline', JSON.stringify(o));
+	assert.equal(o.panel?.title, 'struct HomeBatteryCtrl', JSON.stringify(o));
+	assert.match(o.panel.layout, /^\d+ bytes · align \d+/, JSON.stringify(o));
+	assert.equal(o.panel.hasBar, true);
+	assert.deepEqual([o.panel.groups, o.panel.items], [['▾Data members10'], 10], JSON.stringify(o));
+	assert.ok(o.filtered.length > 0 && o.filtered.length < 10 && o.filtered.every((t) => /charg/i.test(t)), JSON.stringify(o.filtered));
+	assert.deepEqual([o.file, o.isOpen, o.afterEscape, o.back], ['types.hpp', true, false, 'battery.cpp'], JSON.stringify(o));
 	assert.match(r.afterReload, /^battery\.cpp, \d+ spans$/);
 	assert.equal(r.dirty, false);
 });

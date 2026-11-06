@@ -56,6 +56,7 @@ export interface CodeViewProps {
 	animate: boolean;
 	traceable: Set<number>; // the style indices of variables and parameters
 	callable: Set<number>; // the style indices of functions and methods
+	typeNames: Set<number>; // the style indices of classes, enums and type aliases
 	navigable: Set<number>; // the style indices of names: Ctrl+click goes to their definition
 	includeFile: number; // the style index of a string: on an #include line, the file of the include
 	onContextPoint: (x: number, y: number) => void; // the place of a click of the menu, in the window
@@ -446,8 +447,9 @@ export function CodeView(props: CodeViewProps) {
 		return { line, col: rowEl.querySelector('.ln')?.contains(node) ? 0 : length };
 	};
 
-	// The menu of the name of a function gets "Show Calls" with the place of the name. VS Code reads the data-vscode-context
-	// of the element of the click and of its parents after this handler, so the handler sets the place here
+	// The menu of the name of a function gets "Show Calls", and the menu of the name of a class, an enum or a type alias
+	// gets "Outline", with the place of the name. VS Code reads the data-vscode-context of the element of the click and of
+	// its parents after this handler, so the handler sets the place here
 	const onContextMenu = (e: MouseEvent) => {
 		const el = scroller.current;
 		if (!el) {
@@ -457,8 +459,10 @@ export function CodeView(props: CodeViewProps) {
 		const token = target.closest('[data-s]') as HTMLElement | null;
 		const rowEl = target.closest('.rows > .row') as HTMLElement | null;
 		const line = Number(rowEl?.dataset.line);
-		const isCallable = !!token && !!rowEl && line > 0 && props.callable.has(Number(token.dataset.s));
-		el.dataset.vscodeContext = JSON.stringify(isCallable ? { dataflowCallable: true, line, col: columnAt(rowEl!, e.clientX, e.clientY) } : {});
+		const style = Number(token?.dataset.s);
+		const isName = !!token && !!rowEl && line > 0;
+		const kind = isName && props.callable.has(style) ? 'dataflowCallable' : isName && props.typeNames.has(style) ? 'dataflowType' : undefined;
+		el.dataset.vscodeContext = JSON.stringify(kind ? { [kind]: true, line, col: columnAt(rowEl!, e.clientX, e.clientY) } : {});
 		props.onContextPoint(e.clientX, e.clientY);
 	};
 

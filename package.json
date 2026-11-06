@@ -233,6 +233,11 @@
         "category": "DataFlow"
       },
       {
+        "command": "dataflow.showOutline",
+        "title": "Outline",
+        "category": "DataFlow"
+      },
+      {
         "command": "dataflow.side.goToDefinition",
         "title": "Go to Definition in the Side View",
         "category": "DataFlow"
@@ -311,6 +316,11 @@
           "command": "dataflow.showCalls",
           "when": "editorLangId =~ /^(c|cpp|cuda-cpp)$/",
           "group": "dataflow@3"
+        },
+        {
+          "command": "dataflow.showOutline",
+          "when": "editorLangId =~ /^(c|cpp|cuda-cpp)$/",
+          "group": "dataflow@4"
         }
       ],
       "webview/context": [
@@ -318,6 +328,11 @@
           "command": "dataflow.showCalls",
           "when": "webviewId == 'dataflow.sideView' && dataflowCallable",
           "group": "navigation@1"
+        },
+        {
+          "command": "dataflow.showOutline",
+          "when": "webviewId == 'dataflow.sideView' && dataflowType",
+          "group": "navigation@2"
         }
       ],
       "commandPalette": [

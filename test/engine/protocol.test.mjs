@@ -2803,6 +2803,131 @@ test('finds the definition of the name at a position: a type, a macro, a functio
 	}
 });
 
+test('gives the outline of a class: the bases, the members in the source, the annotations, the layout and the inherited members', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-outline-'));
+	const header = path.join(dir, 'outline.h');
+	const source = path.join(dir, 'main.cpp');
+	const headerText = [
+		'#pragma once',
+		'#define UPROPERTY(...)',
+		'#define GENERATED_MEMBERS() int generated_ = 0; void generated_fn();',
+		'#define signals public',
+		'#define slots',
+		'#define Q_PROPERTY(...)',
+		'struct Unknown;',
+		'struct Device {',
+		'  virtual ~Device() = default;',
+		'  virtual void tick(double dt) = 0;',
+		'  int id_ = 0;',
+		'};',
+		'class Battery final : public Device {',
+		' public:',
+		'  enum class State : unsigned char { IDLE, CHARGING = 4 };',
+		'  using Kw = double;',
+		'  explicit Battery(double capacity);',
+		'  void tick(double dt) override;',
+		'  static int count();',
+		'  double charge(double kw) const noexcept;',
+		'  UPROPERTY(EditAnywhere, Category = "Power")',
+		'  double capacity_ = 13.5;',
+		'  GENERATED_MEMBERS()',
+		' private:',
+		'  bool isDirty_ = false;',
+		'  State state_ = State::IDLE;',
+		'  friend struct Inspector;',
+		'};',
+		'class Widget {',
+		'  Q_PROPERTY(int value READ value WRITE setValue)',
+		' public:',
+		'  int value() const;',
+		' public slots:',
+		'  void setValue(int v);',
+		' signals:',
+		'  void valueChanged(int v);',
+		'};',
+		'',
+	].join('\n');
+	const sourceText = [
+		'#include "outline.h"',
+		'Battery::Battery(double capacity) : capacity_(capacity) {}',
+		'void Battery::tick(double dt) { capacity_ -= dt; }',
+		'int df_use(Unknown* unknown) {',
+		'  Battery b(1.0);',
+		'  using Alias = Battery;',
+		'  Alias* p = &b;',
+		'  return Battery::count() + (p != nullptr) + (unknown != nullptr);',
+		'}',
+		'',
+	].join('\n');
+	writeFileSync(header, headerText);
+	writeFileSync(source, sourceText);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file: source, arguments: ['clang++', '-std=c++20', '-c', source] }]));
+	const at = (line, word) => ({ line, col: sourceText.split('\n')[line - 1].indexOf(word) + 1 });
+	const lineOf = (text) => headerText.split('\n').findIndex((l) => l.includes(text)) + 1;
+	const key = (file) => path.resolve(file).toLowerCase();
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		const init = await own.send('initialize', { compileCommands: [db], maxThreads: 1, cacheSize: 2 });
+		assert.equal(init.error, undefined, JSON.stringify(init.error));
+		const outline = async (params) => {
+			const res = await own.send('dataflow/outline', { file: source, ...params });
+			assert.equal(res.error, undefined, JSON.stringify(res.error));
+			assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+			return res.result;
+		};
+
+		// the class at the name of a variable declaration
+		const { outline: o } = await outline(at(5, 'Battery'));
+		assert.deepEqual([o.name, o.kind, o.isFinal, o.isAbstract, key(o.file), o.line], ['Battery', 'class', true, false, key(header), lineOf('class Battery')]);
+		assert.deepEqual(o.bases.map((b) => [b.name, b.access, b.isVirtual, b.offset]), [['Device', 'public', false, 0]]);
+		const m = Object.fromEntries(o.members.map((x) => [x.name, x]));
+		assert.deepEqual(o.members.map((x) => `${x.kind} ${x.name}`), [
+			'type State', 'type Kw', 'constructor Battery', 'method tick', 'method count', 'method charge', 'field capacity_',
+			'field generated_', 'method generated_fn', 'field isDirty_', 'field state_', 'friend Inspector',
+		]);
+		assert.equal(m.State.text, 'enum class');
+		assert.deepEqual([m.Battery.marks, m.Battery.definition?.line, key(m.Battery.definition?.file ?? '')], [['explicit'], 2, key(source)]);
+		assert.deepEqual([m.tick.marks, m.tick.definition?.line], [['override'], 3]);
+		assert.deepEqual([m.count.marks, m.count.definition], [['static'], undefined]);
+		assert.deepEqual([m.charge.text, m.charge.marks], ['double charge(double kw) const', ['noexcept']]);
+		assert.deepEqual([m.capacity_.text, m.capacity_.annotation, m.capacity_.access], ['double = 13.5', 'UPROPERTY(EditAnywhere, Category = "Power")', 'public']);
+		assert.deepEqual([m.generated_.macro, m.generated_fn.macro], ['GENERATED_MEMBERS', 'GENERATED_MEMBERS']);
+		assert.deepEqual([m.isDirty_.text, m.isDirty_.access], ['bool = false', 'private']);
+		// the layout: the base first, then the data members. The bytes after state_ are padding
+		assert.deepEqual([m.capacity_.offset, m.capacity_.size, m.isDirty_.offset, m.state_.offset, m.state_.size], [16, 8, 28, 29, 1]);
+		assert.equal(o.layout.size, 32);
+		assert.ok(o.layout.holes.some((h) => h.offset === 30 && h.size === 2), JSON.stringify(o.layout));
+		assert.equal(o.layout.padding, o.layout.holes.reduce((s, h) => s + h.size, 0));
+		// the members of the base
+		assert.deepEqual(o.inherited.map((g) => [g.base, g.members.map((x) => `${x.kind} ${x.name}`)]),
+			[['Device', ['destructor ~Device', 'method tick', 'field id_']]]);
+
+		// a type alias of the class gives the class
+		assert.equal((await outline(at(7, 'Alias'))).outline?.name, 'Battery');
+		// a qualified name: an abstract struct, and a nested enum
+		const device = (await outline({ name: 'Device' })).outline;
+		assert.deepEqual([device.kind, device.isAbstract, device.layout.hasVPtr], ['struct', true, true]);
+		assert.deepEqual(device.members.map((x) => [x.name, x.marks ?? []]), [['~Device', ['virtual', '= default']], ['tick', ['virtual', 'pure']], ['id_', []]]);
+		const state = (await outline({ name: 'Battery::State' })).outline;
+		assert.deepEqual([state.kind, state.underlying, state.members.map((x) => [x.kind, x.name, x.text])],
+			['enum class', 'unsigned char', [['enumerator', 'IDLE', '0'], ['enumerator', 'CHARGING', '4']]]);
+		// the sections and the properties of qt
+		const widget = (await outline({ name: 'Widget' })).outline;
+		assert.deepEqual(widget.members.map((x) => [x.kind, x.name, x.section ?? '']),
+			[['property', 'value', ''], ['method', 'value', ''], ['method', 'setValue', 'slots'], ['method', 'valueChanged', 'signals']]);
+		assert.equal(widget.members[0].text, 'Q_PROPERTY(int value READ value WRITE setValue)');
+
+		// a type with no definition in the translation unit gives its declaration, and a function gives nothing
+		const unknown = await outline(at(4, 'Unknown'));
+		assert.deepEqual([unknown.outline, unknown.declaration?.name, unknown.declaration?.line], [null, 'Unknown', lineOf('struct Unknown;')]);
+		assert.equal((await outline(at(4, 'df_use'))).outline, null);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('sends status notifications', () => {
 	const states = engine.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params.state);
 	assert.ok(states.includes('parsing') && states.includes('ready'), states.join(','));

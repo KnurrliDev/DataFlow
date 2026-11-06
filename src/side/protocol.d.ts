@@ -300,6 +300,50 @@ export interface SideCallList {
 	isFromMenu: boolean; // the menu of the side view opened the list, so the list shows near the place of the click
 }
 
+// The outline of a class, a struct, a union or an enum, from the request dataflow/outline of the engine. Lines and
+// columns start at 1. Columns are UTF-8 bytes, as the engine gives them
+export interface SideOutlinePlace {
+	file: string;
+	line: number;
+	col: number;
+}
+
+export interface SideOutlineMember extends SideOutlinePlace {
+	kind: 'field' | 'method' | 'constructor' | 'destructor' | 'operator' | 'conversion' | 'type' | 'enumerator' | 'friend' | 'using' | 'property';
+	name: string;
+	text: string; // the type of a data member, the signature of a function, the value of an enumerator
+	access: string; // public, protected or private. Empty for an enumerator
+	marks?: string[]; // for example static, virtual, override, pure, const, noexcept or = delete
+	section?: string; // signals or slots of Qt
+	annotation?: string; // for example UPROPERTY(EditAnywhere) of Unreal Engine
+	macro?: string; // the macro that makes the member, for example GENERATED_BODY
+	definition?: SideOutlinePlace; // a function with its definition in a different place of the translation unit
+	offset?: number; // a data member of a type with a layout, in bytes
+	size?: number;
+}
+
+export interface SideOutlineData extends SideOutlinePlace {
+	name: string;
+	qualifiedName: string;
+	kind: string; // class, struct, union, enum or enum class
+	template: string; // for example template <class T>
+	underlying: string; // the underlying type of an enum with a fixed type
+	isFinal: boolean;
+	isAbstract: boolean;
+	isLibrary: boolean; // the type is in a system header
+	isTruncated: boolean; // the bases have more members than the outline shows
+	bases: { name: string; access: string; isVirtual: boolean; place?: SideOutlinePlace; offset?: number; size?: number }[];
+	members: SideOutlineMember[];
+	inherited: { base: string; members: SideOutlineMember[] }[];
+	layout: { size: number; align: number; padding: number; hasVPtr: boolean; holes: { offset: number; size: number }[] } | null;
+}
+
+// The panel of the menu "Outline"
+export interface SideOutline extends SideOutlineData {
+	seq: number; // each command makes a new panel
+	isFromMenu: boolean; // the menu of the side view opened the panel, so the panel shows near the place of the click
+}
+
 export interface SideCallListSite {
 	file: string;
 	line: number;
@@ -626,10 +670,15 @@ export type ToSide =
 	// The ranges of lines that a condition of the preprocessor skips, for example in #if 0. Each range is [first, last]
 	| { type: 'inactive'; file: string; ranges: [number, number][] }
 	// traceable: the style indices of variables and parameters. A click on them traces the variable. callable: the style
-	// indices of functions and methods. Their menu has "Show Calls". navigable: the style indices of all names. Ctrl+click
-	// on them goes to the definition. includeFile: the style index of a string, for the file of an #include
-	| { type: 'styles'; styles: SideStyle[]; brackets: SideBrackets; traceable: number[]; callable: number[]; navigable: number[]; includeFile: number }
+	// indices of functions and methods. Their menu has "Show Calls". typeNames: the style indices of classes, enums and
+	// type aliases. Their menu has "Outline". navigable: the style indices of all names. Ctrl+click on them goes to the
+	// definition. includeFile: the style index of a string, for the file of an #include
+	| {
+		type: 'styles'; styles: SideStyle[]; brackets: SideBrackets; traceable: number[]; callable: number[]; typeNames: number[]; navigable: number[];
+		includeFile: number;
+	}
 	| { type: 'callList'; list: SideCallList | null }
+	| { type: 'outline'; outline: SideOutline | null }
 	| { type: 'settings'; settings: SideSettings }
 	| { type: 'scrollTo'; line: number } // the first visible line
 	| { type: 'cursor'; line: number }
@@ -700,6 +749,9 @@ export type FromSide =
 	| { type: 'goToPlace'; file: string; line: number; col: number } // a click in the list of definitions. col is a UTF-16 column from 0
 	| { type: 'goBack' } // the mouse button Back: the place before the last jump of the side view
 	| { type: 'goForward' }
+	// a click on a member in the panel of "Outline", with a UTF-8 column from 1 as the engine gives it. toDefinition: Ctrl+click
+	// on a function with no known definition, so the extension asks the definition providers
+	| { type: 'outlineGo'; file: string; line: number; col: number; toDefinition?: boolean }
 	| SideAction;
 
 // The state that the webview keeps for the restore after a reload of the window

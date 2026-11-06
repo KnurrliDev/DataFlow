@@ -2,9 +2,10 @@ import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type {
 	FromSide, SideCallList, SideCalls, SideCommand, SideCost, SideDetailsTab, SideFlow, SideFrame, SideGuide, SideIncluders, SideIncludes, SideLens,
-	SideLogic, SideModel, SideRipple, SideRow, SideSettings, SideStory, SideThreads, SideWhy, ToSide,
+	SideLogic, SideModel, SideOutline, SideRipple, SideRow, SideSettings, SideStory, SideThreads, SideWhy, ToSide,
 } from '../side/protocol';
 import { CallListPanel } from './calllist';
+import { OutlinePanel } from './outline';
 import { CallDetails, CallGraph, CallView } from './calls';
 import { CodeView } from './CodeView';
 import { CostDetails, CostGroup } from './cost';
@@ -56,6 +57,8 @@ interface ViewState {
 	navigable: Set<number>; // the style indices of names: Ctrl+click goes to their definition
 	includeFile: number; // the style index of a string: on an #include line, the file of the include
 	callList: SideCallList | null; // the list of "Show Calls"
+	outline: SideOutline | null; // the panel of "Outline"
+	typeNames: Set<number>; // the style indices of classes, enums and type aliases: their menu has "Outline"
 	isDetailsOpen: boolean;
 	detailsLens: SideDetailsTab;
 }
@@ -251,7 +254,7 @@ function App() {
 	const [state, setState] = useState<ViewState>({
 		lineCount: 0, rows: [], maxColumns: 0, settings: DEFAULT_SETTINGS, flow: null, logic: null, cost: null, includes: null, ripple: null,
 		story: null, calls: null, threads: null, model: null, guide: null, callView: { focus: -1, depth: 1, showLibrary: false }, isCallGraphOpen: false,
-		traceable: new Set(), callable: new Set(), navigable: new Set(), includeFile: -1, callList: null,
+		traceable: new Set(), callable: new Set(), navigable: new Set(), includeFile: -1, callList: null, outline: null, typeNames: new Set(),
 		isDetailsOpen: saved?.isDetailsOpen ?? true, detailsLens: saved?.detailsLens ?? 'flow',
 	});
 	// the place of the last click of a menu in the code, for the list of "Show Calls"
@@ -312,11 +315,14 @@ function App() {
 					setTokenStyles(message.styles, message.brackets);
 					setState((s) => ({
 						...s, traceable: new Set(message.traceable), callable: new Set(message.callable), navigable: new Set(message.navigable),
-						includeFile: message.includeFile,
+						includeFile: message.includeFile, typeNames: new Set(message.typeNames),
 					}));
 					break;
 				case 'callList':
 					setState((s) => ({ ...s, callList: message.list }));
+					break;
+				case 'outline':
+					setState((s) => ({ ...s, outline: message.outline }));
 					break;
 				case 'settings':
 					setBracketColors(message.settings.bracketColors);
@@ -586,6 +592,7 @@ function App() {
 						animate={animate}
 						traceable={state.traceable}
 						callable={state.callable}
+						typeNames={state.typeNames}
 						navigable={state.navigable}
 						includeFile={state.includeFile}
 						onContextPoint={(x, y) => {
@@ -620,6 +627,10 @@ function App() {
 				{state.callList && (
 					<CallListPanel list={state.callList} point={state.callList.isFromMenu ? menuPoint.current : undefined}
 						onClose={() => setState((s) => ({ ...s, callList: null }))} />
+				)}
+				{state.outline && (
+					<OutlinePanel outline={state.outline} point={state.outline.isFromMenu ? menuPoint.current : undefined} gotoKey={state.settings.gotoKey}
+						onClose={() => setState((s) => ({ ...s, outline: null }))} />
 				)}
 				{detailsLens && isDetailsShown && (
 					<aside class={isCompact ? 'details overlay' : 'details'} aria-label={`Details of ${LENS_NAMES[detailsLens]}`}>

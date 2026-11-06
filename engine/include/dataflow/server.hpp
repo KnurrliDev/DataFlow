@@ -8,6 +8,7 @@
 #include <dataflow/includes.hpp>
 #include <dataflow/logic.hpp>
 #include <dataflow/member.hpp>
+#include <dataflow/outline.hpp>
 #include <dataflow/protocol.hpp>
 #include <dataflow/slice.hpp>
 #include <dataflow/structure.hpp>
@@ -746,6 +747,30 @@ namespace DataFlow {
             }
             return definition_to_json(name_definition(*_e.ast_, *_e.tokens_, *token));
           });
+    // the outline of the class, the struct, the union or the enum of the name at a position (line and col, from 1), or
+    // of a qualified name. a type with no definition in the translation unit gives its declaration
+    if (_method == "dataflow/outline")
+      return post_entry_request(_srv, *_id, *file, [params](TuEntry& _e) -> std::expected<JsonObject, std::string> {
+        clang::ASTContext& ctx    = _e.ast_->getASTContext();
+        const clang::TagDecl* tag = nullptr;
+        if (const auto name = Detail::get_string(&params, "name")) {
+          tag = Detail::tag_by_name(ctx, *name);
+        } else if (const auto line = params.getInteger("line"), col = params.getInteger("col");
+                   line && col && *line > 0 && *col > 0) {
+          Detail::update_tokens(_e);
+          if (const FileToken* token = definition_token(*_e.tokens_, uint32_t(*line), uint32_t(*col)))
+            if (const auto it = _e.tokens_->decls_.find(token->offset_); it != _e.tokens_->decls_.end())
+              tag = outline_tag(it->second);
+        }
+        if (!tag) return JsonObject{{"outline", nullptr}};
+        if (const clang::TagDecl* def = tag->getDefinition())
+          return JsonObject{{"outline", outline_to_json(build_outline(*def, ctx))}};
+        // the extension then looks for the header of the definition
+        JsonObject declaration =
+            Detail::outline_place_to_json(Detail::outline_place(ctx.getSourceManager(), tag->getLocation()));
+        declaration["name"] = tag->getQualifiedNameAsString();
+        return JsonObject{{"outline", nullptr}, {"declaration", std::move(declaration)}};
+      });
 
     Protocol::reply_error(*_id, Protocol::ec_method_not_found, "unknown method: " + _method);
   }  // dispatch

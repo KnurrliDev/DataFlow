@@ -1157,6 +1157,41 @@ suite('Go to definition in the side view', () => {
 		await waitFor(() => sideFile() === key(file()), 15000, () => `${api.side.file}`);
 	});
 
+	test('The menu "Outline" on a type shows its members in the sequence of the source, with the layout', async function () {
+		this.timeout(60000);
+		const line = lineIn(file(), 'std::optional<Requests> process(');
+		await vscode.commands.executeCommand('dataflow.showOutline', { line, col: colIn(file(), line, 'HomeBatteryCtrl') + 2 });
+		try {
+			await waitFor(() => api.side.lastOutline?.name === 'HomeBatteryCtrl', 30000, () => JSON.stringify(api.side.lastOutline?.name ?? null));
+			const o = api.side.lastOutline!;
+			assert.deepStrictEqual([o.kind, o.isFromMenu, key(o.file), o.line], ['struct', true, key(header()), lineIn(header(), 'struct HomeBatteryCtrl {')]);
+			assert.deepStrictEqual(o.members.map((m) => m.name), [
+				'state', 'operational_mode', 'electricityTariffSet', 'operational_settings', 'charging_future', 'planned_charge', 'meter_clk',
+				'is_charging_underway', 'reading_db', 'new_readings',
+			]);
+			assert.ok(o.layout && o.layout.size > 0 && o.members.every((m) => m.offset !== undefined), JSON.stringify(o.layout));
+
+			// a click on a member moves the side view to it, as Ctrl+click does, and Back comes back
+			const member = o.members.find((m) => m.name === 'is_charging_underway')!;
+			api.side.receive({ type: 'outlineGo', file: member.file, line: member.line, col: member.col });
+			await waitFor(() => sideFile() === key(header()) && api.side.cursorPlace?.pos.line === member.line - 1, 15000, () => `${api.side.file}`);
+			assert.strictEqual(key(editor.document.uri.fsPath), key(file()));
+			api.side.receive({ type: 'goBack' });
+			await waitFor(() => sideFile() === key(file()), 15000, () => `${api.side.file}`);
+		} finally {
+			api.side.showOutline(null);
+		}
+	});
+
+	test('The menu "Outline" on a name that is not a type shows no outline', async function () {
+		this.timeout(30000);
+		api.side.showOutline(null);
+		const line = lineIn(file(), 'std::optional<Requests> process(');
+		await vscode.commands.executeCommand('dataflow.showOutline', { line, col: colIn(file(), line, 'process') + 1 });
+		await sleep(1000);
+		assert.strictEqual(api.side.lastOutline, null);
+	});
+
 	test('More than one definition from a provider gives a list, and a click in it moves only the side view', async function () {
 		this.timeout(60000);
 		const main = path.join(path.dirname(file()), 'main.cpp');

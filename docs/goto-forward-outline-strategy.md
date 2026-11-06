@@ -8,7 +8,7 @@ This document proposes how to add three features to DataFlow. All three are poss
 | --- | --- | --- |
 | Go to definition | Ctrl+click on a name in the side view | The side view shows the file of the definition at the definition. |
 | Forward declarations | Turn on Include Hierarchy | For each include of the file: forward declarations can replace the include, or the line that needs the full type. |
-| Type outline | Right-click on the name of a class, a struct, a union or an enum, then click **Show Outline** | A panel with the bases, the data members, the functions, the nested types and the memory layout of the type. |
+| Type outline | Right-click on the name of a class, a struct, a union or an enum, then click **Outline** | A panel with the bases, the data members, the functions, the nested types and the memory layout of the type. |
 
 The result of the analysis for each feature:
 
@@ -165,7 +165,7 @@ The engine also finds uses that have no name in the text. Examples are a call th
 
 ### 6.1 Behavior
 
-- Right-click on the name of a class, a struct, a union or an enum in the side view. The menu has **Show Outline**. This also works on the name of a constructor and on a type alias of a class.
+- Right-click on the name of a class, a struct, a union or an enum in the side view. The menu has **Outline** (the label of the user). This also works on the name of a constructor and on a type alias of a class.
 - A panel over the code shows the type, below the place of the click:
   - The head: the kind, the qualified name, the template parameters, the bases and `final`.
   - The layout: `sizeof`, the alignment, the bytes of padding, and a bar of the memory with the data members.
@@ -174,7 +174,7 @@ The engine also finds uses that have no name in the text. Examples are a call th
   - For Unreal Engine, the text of `UPROPERTY(...)` and `UFUNCTION(...)`. For Qt, the signals, the slots and `Q_PROPERTY`.
   - A group "Inherited from Base" for each base, closed at the start.
 - A filter field, the arrow keys, Enter and Escape work as in the list of **Show Calls**.
-- A click on a member goes to its declaration. Ctrl+click goes to its definition (feature 1).
+- A click on a member moves the side view to its declaration, as Ctrl+click does (decision of the user). Ctrl+click on a function goes to its definition (feature 1).
 
 ### 6.2 Engine
 
@@ -217,7 +217,7 @@ The proposed order is A, B, C. Phases A and B use `name_at`. Phase C has the mos
 - Fixtures: a new header in `test/fixtures/battery` with pointer members, a reference parameter, an `enum class` and a nested type. In the Unreal fixture, a `TObjectPtr<AActor>` member.
 - Tests of the side view (`test/ui`):
   - Ctrl+click, with mouse events of the Chrome DevTools Protocol and the Ctrl modifier.
-  - The menu item **Show Outline** and its panel.
+  - The menu item **Outline** and its panel.
   - The badge and the hint of a forward declaration.
 - Unit tests: the steps of 4.3 with a fake provider, and the text of the forward declarations with namespaces.
 
@@ -234,7 +234,7 @@ The proposed order is A, B, C. Phases A and B use `name_at`. Phase C has the mos
 ## 11. Decisions of the user
 
 1. Ctrl+click: decided. The side view goes to the definition and keeps the focus. The side view has Back and Forward. In the file of a visible text editor, the cursor of that editor follows.
-2. Outline: a panel over the code (proposed), a tab in the details column, or the quick pick of VS Code?
-3. Outline: show the memory layout (proposed: yes)?
+2. Outline: decided. A panel over the code. A click on a member moves the side view, as Ctrl+click does. The menu label is **Outline**.
+3. Outline: decided. The panel shows the memory layout.
 4. Forward declarations: only show the result (proposed), or also the action **Replace**?
 5. The order of the phases: A, B, C (proposed)?

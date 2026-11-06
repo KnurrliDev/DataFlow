@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import * as vscode from 'vscode';
+import type { SideOutlineData, SideOutlinePlace } from '../side/protocol';
 import { RpcConnection } from './rpc';
 
 // The types of the engine protocol. Lines and columns start at 1.
@@ -673,6 +674,13 @@ export class EngineClient implements vscode.Disposable {
 	// UTF-8 bytes. A name with no definition in the translation unit gives its first declaration
 	definition(file: string, line: number, col: number, token?: vscode.CancellationToken): Promise<FileResult & DefinitionModel> {
 		return this.request('dataflow/definition', { file, line, col }, token);
+	}
+
+	// The outline of the class, the struct, the union or the enum of the name at a position (line and col from 1, col in
+	// UTF-8 bytes), or of a qualified name. A type with no definition in the translation unit gives its declaration
+	outline(file: string, at: { line: number; col: number } | { name: string }, token?: vscode.CancellationToken)
+		: Promise<FileResult & { outline: SideOutlineData | null; declaration?: SideOutlinePlace & { name: string } }> {
+		return this.request('dataflow/outline', { file, ...at }, token);
 	}
 
 	flow(file: string, fn: FunctionSelector, options: FlowOptions, token?: vscode.CancellationToken): Promise<FileResult & FlowModel & { cached?: boolean }> {
