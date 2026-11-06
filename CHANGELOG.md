@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - Include Hierarchy: the details of an include that forward declarations can replace fit in the details column. In 0.3.0, the long lines of the declarations made the details wider than the column, and **Copy** and **Check** were outside of the view.
 
