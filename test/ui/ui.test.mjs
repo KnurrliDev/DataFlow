@@ -37,7 +37,7 @@ async function run(script) {
 	}
 }
 
-test('side view: the colors, the guides, the scroll sync in both directions, the cursor with no text editor, Show Calls and the restore after a reload', { timeout: 600000 }, async () => {
+test('side view: the colors, the guides, the scroll sync in both directions, the cursor with no text editor, Show Calls, Ctrl+click and the restore after a reload', { timeout: 600000 }, async () => {
 	const r = await run('side-snapshot.mjs');
 	assert.ok(r.spans > 100, `${r.spans} spans`);
 	assert.match(r.status, /^Engine: ready/);
@@ -68,6 +68,15 @@ test('side view: the colors, the guides, the scroll sync in both directions, the
 	assert.match(c.status, new RegExp(`^Ln ${c.target},`), JSON.stringify(c));
 	assert.equal(c.isOpen, true);
 	assert.equal(c.afterEscape, false);
+	// with Ctrl down, a name gets the underline of a link. Ctrl+click goes to the definition in the side view only: the
+	// cursor of the text editor stays. The mouse button Back comes back
+	const g = r.goto;
+	assert.deepEqual(g.hover, { isLink: true, decoration: 'underline', cursor: 'pointer' }, JSON.stringify(g));
+	assert.equal(g.afterKeyUp, false, JSON.stringify(g));
+	assert.equal(g.file, 'types.hpp', JSON.stringify(g));
+	assert.equal(g.cursor, g.declLine, JSON.stringify(g));
+	assert.equal(g.statusAfter, g.statusBefore, JSON.stringify(g));
+	assert.equal(g.back, 'battery.cpp', JSON.stringify(g));
 	assert.match(r.afterReload, /^battery\.cpp, \d+ spans$/);
 	assert.equal(r.dirty, false);
 });

@@ -379,6 +379,21 @@ export interface LambdaAt {
 	range: { begin: { line: number; col: number }; end: { line: number; col: number } };
 }
 
+// A place of a definition. Line and col from 1, col in UTF-8 bytes. role: "definition" if the translation unit has the
+// definition, "declaration" if not, "file" for the file of an #include
+export interface DefinitionTarget {
+	file: string;
+	line: number;
+	col: number;
+	role: 'definition' | 'declaration' | 'file';
+}
+
+export interface DefinitionModel {
+	name: string; // the qualified name, the name of the macro, or the spelled file of the include
+	kind: string; // the kind of the token, for example "method", "class", "macro", or "string" for an include
+	targets: DefinitionTarget[];
+}
+
 // The data of dataflow/structure: the statements of a function and the accesses in its body. The logical blocks of a
 // model use them. engine/README.md describes the fields. Lines start at 1.
 export type StructureKind = 'decl' | 'expr' | 'if' | 'for' | 'while' | 'do' | 'switch' | 'block' | 'return' | 'break' | 'continue'
@@ -652,6 +667,12 @@ export class EngineClient implements vscode.Disposable {
 
 	functionAt(file: string, line: number, col: number, token?: vscode.CancellationToken): Promise<FileResult & { function: EngineFunction | null; lambda?: LambdaAt }> {
 		return this.request('dataflow/functionAt', { file, line, col }, token);
+	}
+
+	// The definition of the name at a position: a name, a macro or the file of an #include. Line and col from 1, col in
+	// UTF-8 bytes. A name with no definition in the translation unit gives its first declaration
+	definition(file: string, line: number, col: number, token?: vscode.CancellationToken): Promise<FileResult & DefinitionModel> {
+		return this.request('dataflow/definition', { file, line, col }, token);
 	}
 
 	flow(file: string, fn: FunctionSelector, options: FlowOptions, token?: vscode.CancellationToken): Promise<FileResult & FlowModel & { cached?: boolean }> {

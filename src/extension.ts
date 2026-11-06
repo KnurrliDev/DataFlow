@@ -2472,6 +2472,9 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		vscode.commands.registerCommand('dataflow.toggleCalls', () => toggleLens('calls')),
 		// the menu of the side view gives the place of the click as the argument
 		vscode.commands.registerCommand('dataflow.showCalls', (arg?: unknown) => showCallList(arg)),
+		vscode.commands.registerCommand('dataflow.side.goToDefinition', () => side.goToDefinitionAtCursor()),
+		vscode.commands.registerCommand('dataflow.side.back', () => side.goBack()),
+		vscode.commands.registerCommand('dataflow.side.forward', () => side.goForward()),
 		vscode.commands.registerCommand('dataflow.reviewChanges', () => runReview()),
 		vscode.commands.registerCommand('dataflow.clearReview', () => closeReview()),
 		// a menu can give an argument of a different type

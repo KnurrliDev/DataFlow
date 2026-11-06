@@ -53,6 +53,8 @@ interface ViewState {
 	why?: SideWhy;
 	traceable: Set<number>;
 	callable: Set<number>; // the style indices of functions and methods: their menu has "Show Calls"
+	navigable: Set<number>; // the style indices of names: Ctrl+click goes to their definition
+	includeFile: number; // the style index of a string: on an #include line, the file of the include
 	callList: SideCallList | null; // the list of "Show Calls"
 	isDetailsOpen: boolean;
 	detailsLens: SideDetailsTab;
@@ -71,7 +73,7 @@ const hasModelLayers = (model: SideModel | null) => !!model
 
 const DEFAULT_SETTINGS: SideSettings = {
 	rowHeight: 19, tabSize: 4, indentSize: 4, ligatures: '"liga" off, "calt" off', letterSpacing: 0, guides: true, activeGuide: true,
-	bracketColors: true,
+	bracketColors: true, gotoKey: 'ctrl',
 };
 
 const post = (message: FromSide) => vscode.postMessage(message);
@@ -249,7 +251,7 @@ function App() {
 	const [state, setState] = useState<ViewState>({
 		lineCount: 0, rows: [], maxColumns: 0, settings: DEFAULT_SETTINGS, flow: null, logic: null, cost: null, includes: null, ripple: null,
 		story: null, calls: null, threads: null, model: null, guide: null, callView: { focus: -1, depth: 1, showLibrary: false }, isCallGraphOpen: false,
-		traceable: new Set(), callable: new Set(), callList: null,
+		traceable: new Set(), callable: new Set(), navigable: new Set(), includeFile: -1, callList: null,
 		isDetailsOpen: saved?.isDetailsOpen ?? true, detailsLens: saved?.detailsLens ?? 'flow',
 	});
 	// the place of the last click of a menu in the code, for the list of "Show Calls"
@@ -308,7 +310,10 @@ function App() {
 					break;
 				case 'styles':
 					setTokenStyles(message.styles, message.brackets);
-					setState((s) => ({ ...s, traceable: new Set(message.traceable), callable: new Set(message.callable) }));
+					setState((s) => ({
+						...s, traceable: new Set(message.traceable), callable: new Set(message.callable), navigable: new Set(message.navigable),
+						includeFile: message.includeFile,
+					}));
 					break;
 				case 'callList':
 					setState((s) => ({ ...s, callList: message.list }));
@@ -581,9 +586,13 @@ function App() {
 						animate={animate}
 						traceable={state.traceable}
 						callable={state.callable}
+						navigable={state.navigable}
+						includeFile={state.includeFile}
 						onContextPoint={(x, y) => {
 							menuPoint.current = { x, y };
 						}}
+						onGoToDefinition={(line, col, isCallable) => post({ type: 'goToDefinition', line, col, isCallable })}
+						onHistory={(isBack) => post({ type: isBack ? 'goBack' : 'goForward' })}
 						onScroll={onScroll}
 						onSelect={(line, col) => post({ type: 'select', line, col })}
 						onSelectRange={(range) => post({ type: 'selectRange', ...range })}

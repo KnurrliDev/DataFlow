@@ -56,7 +56,11 @@ export interface CodeViewProps {
 	animate: boolean;
 	traceable: Set<number>; // the style indices of variables and parameters
 	callable: Set<number>; // the style indices of functions and methods
+	navigable: Set<number>; // the style indices of names: Ctrl+click goes to their definition
+	includeFile: number; // the style index of a string: on an #include line, the file of the include
 	onContextPoint: (x: number, y: number) => void; // the place of a click of the menu, in the window
+	onGoToDefinition: (line: number, col: number, isCallable: boolean) => void; // Ctrl+click on a name. col is a UTF-16 column from 0
+	onHistory: (isBack: boolean) => void; // the mouse buttons Back and Forward
 	onScroll: (line: number) => void; // the user scrolled. line is the first visible line
 	onSelect: (line: number, col: number) => void; // the user clicked a position
 	onSelectRange: (range: { line: number; col: number; endLine: number; endCol: number }) => void; // the user selected code
@@ -458,9 +462,89 @@ export function CodeView(props: CodeViewProps) {
 		props.onContextPoint(e.clientX, e.clientY);
 	};
 
+	// The key for "go to definition" with the mouse, as in the text editor: Ctrl (Cmd on macOS), or Alt if the key for more
+	// cursors is Ctrl. The handlers of the window read the current props through the ref
+	const goto = useRef({ key: settings.gotoKey, navigable: props.navigable, includeFile: props.includeFile, rows });
+	goto.current = { key: settings.gotoKey, navigable: props.navigable, includeFile: props.includeFile, rows };
+	const isGotoKey = (e: MouseEvent | KeyboardEvent) => {
+		const key = goto.current.key;
+		return key === 'alt' ? e.altKey : key === 'meta' ? e.metaKey : e.ctrlKey;
+	};
+
+	// The token that Ctrl+click goes from: a name, or the file of an #include. Undefined for other text
+	const gotoTarget = (target: EventTarget | null): { el: HTMLElement; rowEl: HTMLElement; line: number; style: number } | undefined => {
+		const el = target instanceof Element ? target.closest('[data-s]') as HTMLElement | null : null;
+		const rowEl = el?.closest('.rows > .row') as HTMLElement | null;
+		const line = Number(rowEl?.dataset.line);
+		if (!el || !rowEl || !(line > 0) || !el.closest('.code')) {
+			return undefined;
+		}
+		const { navigable, includeFile, rows: lines } = goto.current;
+		const style = Number(el.dataset.s);
+		const isInclude = style === includeFile && /^\s*#\s*(include|import)\b/.test(lines[line - 1]?.text ?? '');
+		return navigable.has(style) || isInclude ? { el, rowEl, line, style } : undefined;
+	};
+
+	// While the key is down, the name under the mouse gets an underline and a hand pointer, as a link in the text editor
+	const linkEl = useRef<HTMLElement | null>(null);
+	const mouseAt = useRef<{ x: number; y: number } | undefined>(undefined);
+	const setLink = (el: HTMLElement | null) => {
+		if (linkEl.current !== el) {
+			linkEl.current?.classList.remove('goto-link');
+			el?.classList.add('goto-link');
+			linkEl.current = el;
+		}
+	};
+	const onMouseMove = (e: MouseEvent) => {
+		mouseAt.current = { x: e.clientX, y: e.clientY };
+		setLink(isGotoKey(e) ? gotoTarget(e.target)?.el ?? null : null);
+	};
+	const onMouseLeave = () => {
+		mouseAt.current = undefined;
+		setLink(null);
+	};
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			const at = mouseAt.current;
+			setLink(at && isGotoKey(e) ? gotoTarget(document.elementFromPoint(at.x, at.y))?.el ?? null : null);
+		};
+		const onBlur = () => setLink(null);
+		window.addEventListener('keydown', onKey);
+		window.addEventListener('keyup', onKey);
+		window.addEventListener('blur', onBlur);
+		return () => {
+			window.removeEventListener('keydown', onKey);
+			window.removeEventListener('keyup', onKey);
+			window.removeEventListener('blur', onBlur);
+		};
+	}, []);
+
+	// A mouse down with the key on a name starts no text selection
+	const onMouseDown = (e: MouseEvent) => {
+		if (e.button === 0 && isGotoKey(e) && gotoTarget(e.target)) {
+			e.preventDefault();
+		}
+	};
+
 	// A click moves the cursor of the text editor. A click on a variable also traces it. A selection of code goes to the
-	// extension, for the text editor and for the MCP server. A click in a card does nothing.
+	// extension, for the text editor and for the MCP server. A click in a card does nothing. Ctrl+click on a name goes to
+	// its definition. The mouse buttons Back and Forward go through the places of these jumps
 	const onMouseUp = (e: MouseEvent) => {
+		if (e.button === 3 || e.button === 4) {
+			e.preventDefault();
+			props.onHistory(e.button === 3);
+			return;
+		}
+		if (e.button === 0 && isGotoKey(e)) {
+			const at = gotoTarget(e.target);
+			if (at) {
+				setLink(null);
+				// a list of more than one definition shows near the click
+				props.onContextPoint(e.clientX, e.clientY);
+				props.onGoToDefinition(at.line, columnAt(at.rowEl, e.clientX, e.clientY), props.callable.has(at.style));
+				return;
+			}
+		}
 		const selection = window.getSelection();
 		const target = e.target as HTMLElement;
 		if (e.button === 0 && !target.closest('.card') && selection && !selection.isCollapsed && selection.rangeCount > 0) {
@@ -854,7 +938,10 @@ export function CodeView(props: CodeViewProps) {
 			role="region"
 			aria-label={props.file ? `Code of ${props.file}` : 'Code'}
 			onScroll={onScroll}
+			onMouseDown={onMouseDown}
 			onMouseUp={onMouseUp}
+			onMouseMove={onMouseMove}
+			onMouseLeave={onMouseLeave}
 			onContextMenu={onContextMenu}
 			onMouseOver={onMouseOver}
 			onMouseOut={onMouseOut}

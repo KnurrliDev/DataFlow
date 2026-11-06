@@ -128,6 +128,8 @@ select.choice option { color: var(--vscode-dropdown-foreground); background: var
 .row.cursor .ln { color: var(--vscode-editorLineNumber-activeForeground); }
 .code { position: relative; flex: none; padding-right: 24px; }
 .code::selection, .code *::selection { background: var(--vscode-editor-selectionBackground); }
+/* the name under the mouse while the key of "go to definition" is down, as a link in the text editor */
+.code .goto-link { text-decoration: underline; cursor: pointer; }
 .guide { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; }
 
 /* the colors of Flow Lens. The extension contributes them as theme colors */

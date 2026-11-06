@@ -29,6 +29,9 @@ export interface SideSettings {
 	guides: boolean; // the indent guides
 	activeGuide: boolean; // a highlight on the indent guide of the block of the cursor
 	bracketColors: boolean; // the colors of the bracket pairs
+	// the key for "go to definition" with the mouse, as in the text editor: Ctrl (Cmd on macOS), or Alt if
+	// editor.multiCursorModifier is ctrlCmd
+	gotoKey: 'ctrl' | 'meta' | 'alt';
 }
 
 // The style indices of the brackets: first + level for the levels of nesting from 0 to levels - 1, and first + levels
@@ -287,7 +290,10 @@ export interface SideCallEdge {
 // the engine, then the calls in other files from the call hierarchy of VS Code. Lines from 1, UTF-16 columns from 0
 export interface SideCallList {
 	seq: number; // each command makes a new list
-	fn: string; // the function, for example fire_transition()
+	// definitions: the list of the definitions of a name after Ctrl+click, if there is more than one. A click on one moves
+	// only the side view. Else the list of "Show Calls"
+	kind?: 'definitions';
+	fn: string; // the function, for example fire_transition(), or the name of the definitions
 	sites: SideCallListSite[];
 	isSearching: boolean; // the calls in other files did not come yet
 	note?: string; // for example why the list has only the calls in this file
@@ -620,8 +626,9 @@ export type ToSide =
 	// The ranges of lines that a condition of the preprocessor skips, for example in #if 0. Each range is [first, last]
 	| { type: 'inactive'; file: string; ranges: [number, number][] }
 	// traceable: the style indices of variables and parameters. A click on them traces the variable. callable: the style
-	// indices of functions and methods. Their menu has "Show Calls"
-	| { type: 'styles'; styles: SideStyle[]; brackets: SideBrackets; traceable: number[]; callable: number[] }
+	// indices of functions and methods. Their menu has "Show Calls". navigable: the style indices of all names. Ctrl+click
+	// on them goes to the definition. includeFile: the style index of a string, for the file of an #include
+	| { type: 'styles'; styles: SideStyle[]; brackets: SideBrackets; traceable: number[]; callable: number[]; navigable: number[]; includeFile: number }
 	| { type: 'callList'; list: SideCallList | null }
 	| { type: 'settings'; settings: SideSettings }
 	| { type: 'scrollTo'; line: number } // the first visible line
@@ -687,6 +694,12 @@ export type FromSide =
 	| { type: 'rendered'; ms: number; rows: number; inactiveRows: number } // the time of the last render of the code view
 	| { type: 'shortEnds'; lines: number[]; width: number } // the visible lines with a dot for the hints at the end of the row, and the width of the code view in px
 	| { type: 'card'; kind: SideCardKind | null; line: number } // the answer to showCard. null: the line has no card at the column
+	// Ctrl+click on a name: the side view goes to its definition. col is a UTF-16 column from 0. isCallable: the name is a
+	// function or a method, so a click on its own definition shows "Show Calls"
+	| { type: 'goToDefinition'; line: number; col: number; isCallable?: boolean }
+	| { type: 'goToPlace'; file: string; line: number; col: number } // a click in the list of definitions. col is a UTF-16 column from 0
+	| { type: 'goBack' } // the mouse button Back: the place before the last jump of the side view
+	| { type: 'goForward' }
 	| SideAction;
 
 // The state that the webview keeps for the restore after a reload of the window

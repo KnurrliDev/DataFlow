@@ -58,6 +58,21 @@ To use the side view, do these steps:
 
 The status line of the side view shows the state of the engine and the compile databases. It also has buttons to select a project, select the compile database, show the log and restart the engine.
 
+### Go to a definition
+
+To go to the definition of a name in the side view, hold Ctrl and click the name. On macOS, use Cmd. If the setting `editor.multiCursorModifier` is `ctrlCmd`, use Alt, as in the text editor.
+
+- While you hold the key, the name under the mouse pointer gets an underline.
+- The side view goes to the definition, and the focus stays in the side view. The text editor stays at its place. A text editor of the file of the definition gets its cursor at the definition, as for a click in the side view.
+- A click on the file of an `#include` shows the header in the side view.
+- A click on the name of the definition of a function shows **Show Calls**.
+- For more than one definition, a list shows the definitions. A click on a definition in the list moves the side view.
+- To go to the definition of the name at the cursor of the side view, push F12 while the side view has the focus.
+
+To go back to the place before the jump, push Alt+Left while the side view has the focus. The Back button of the mouse also goes back. Alt+Right and the Forward button of the mouse go forward again. On macOS, use Ctrl+- and Ctrl+Shift+-. A click in the text editor also shows the file of the editor in the side view again.
+
+The definition providers of VS Code find the definition first, for example the C/C++ extension or clangd. If no provider finds a definition, the engine finds it in the translation unit. For a function with its definition in a different source file, the engine then finds the declaration.
+
 ### The side view with no text editor
 
 The side view also works when no text editor shows its file. For example, the panel of Claude Code can be in front of the C++ editor.
@@ -444,6 +459,9 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | **DataFlow: Toggle Call Hierarchy** | | Turns Call Hierarchy on or off. |
 | **DataFlow: Toggle Threads and Races** | | Turns Threads and races on or off. |
 | **DataFlow: Show Calls** | | Shows all calls of the function at the cursor in a list. |
+| **DataFlow: Go to Definition in the Side View** | F12 in the side view | Goes to the definition of the name at the cursor of the side view. See [Go to a definition](#go-to-a-definition). |
+| **DataFlow: Go Back in the Side View** | Alt+Left in the side view | Goes to the place before the last jump of the side view. |
+| **DataFlow: Go Forward in the Side View** | Alt+Right in the side view | Goes to the place that the last **Go Back** left. |
 | **DataFlow: Review Changes** | | Starts Change Ripple. |
 | **DataFlow: Clear Review** | | Removes the review of Change Ripple. |
 | **DataFlow: Select Target Branch** | | Selects the target branch of Change Ripple. |

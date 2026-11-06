@@ -231,6 +231,21 @@
         "command": "dataflow.showCalls",
         "title": "Show Calls",
         "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.side.goToDefinition",
+        "title": "Go to Definition in the Side View",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.side.back",
+        "title": "Go Back in the Side View",
+        "category": "DataFlow"
+      },
+      {
+        "command": "dataflow.side.forward",
+        "title": "Go Forward in the Side View",
+        "category": "DataFlow"
       }
     ],
     "mcpServerDefinitionProviders": [
@@ -254,6 +269,23 @@
         "command": "dataflow.showCard",
         "key": "ctrl+alt+k",
         "when": "editorTextFocus && editorLangId =~ /^(c|cpp|cuda-cpp)$/"
+      },
+      {
+        "command": "dataflow.side.goToDefinition",
+        "key": "f12",
+        "when": "activeWebviewPanelId == 'dataflow.sideView'"
+      },
+      {
+        "command": "dataflow.side.back",
+        "key": "alt+left",
+        "mac": "ctrl+-",
+        "when": "activeWebviewPanelId == 'dataflow.sideView'"
+      },
+      {
+        "command": "dataflow.side.forward",
+        "key": "alt+right",
+        "mac": "ctrl+shift+-",
+        "when": "activeWebviewPanelId == 'dataflow.sideView'"
       }
     ],
     "menus": {

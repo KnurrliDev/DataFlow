@@ -2,6 +2,7 @@
 
 #include <dataflow/calls.hpp>
 #include <dataflow/cost.hpp>
+#include <dataflow/definition.hpp>
 #include <dataflow/flow.hpp>
 #include <dataflow/includers.hpp>
 #include <dataflow/includes.hpp>
@@ -172,6 +173,15 @@ namespace DataFlow {
       _e.include_pass_key_ = std::move(key);
       return false;
     }  // update_include_pass
+
+    // makes the tokens of an entry current: the tokens of the last parse stay in the entry. true if they were current.
+    // call it only with the lock of the entry
+    inline bool update_tokens(TuEntry& _e) {
+      if (_e.tokens_ && _e.tokens_parse_ == _e.parse_count_) return true;
+      _e.tokens_       = std::make_shared<const FileTokens>(build_file_tokens(*_e.ast_));
+      _e.tokens_parse_ = _e.parse_count_;
+      return false;
+    }  // update_tokens
 
     // one string or an array of strings, for example compileCommands
     [[nodiscard]] inline std::vector<std::string> get_strings(const JsonObject* _params, const llvm::StringRef _key) {
@@ -706,13 +716,9 @@ namespace DataFlow {
     if (_method == "dataflow/tokens")
       return post_entry_request(_srv, *_id, *file, [params](TuEntry& _e) -> std::expected<JsonObject, std::string> {
         // the tokens of a parse stay in the entry, because the side view asks for the lines in parts
-        const bool isCached = _e.tokens_ && _e.tokens_parse_ == _e.parse_count_;
-        if (!isCached) {
-          _e.tokens_       = std::make_shared<const FileTokens>(build_file_tokens(*_e.ast_));
-          _e.tokens_parse_ = _e.parse_count_;
-        }
-        const int64_t first = std::clamp<int64_t>(params.getInteger("first").value_or(1), 1, INT32_MAX);
-        const int64_t last  = std::clamp<int64_t>(params.getInteger("last").value_or(INT32_MAX), 0, INT32_MAX);
+        const bool isCached  = Detail::update_tokens(_e);
+        const int64_t first  = std::clamp<int64_t>(params.getInteger("first").value_or(1), 1, INT32_MAX);
+        const int64_t last   = std::clamp<int64_t>(params.getInteger("last").value_or(INT32_MAX), 0, INT32_MAX);
         // the level of a bracket among the brackets of its type, for the setting of vs code that gives each type its
         // own colors
         const bool isPerType = params.getBoolean("bracketLevelPerType").value_or(false);
@@ -721,6 +727,25 @@ namespace DataFlow {
         out["cached"]        = isCached;
         return out;
       });
+    // the definition of the name at a position (line and col, from 1): a name, a macro or the file of an #include. the
+    // tokens of the parse give the name and its declaration
+    if (_method == "dataflow/definition")
+      return post_entry_request(
+          _srv, *_id, *file,
+          [&srv = _srv, params, file = *file](TuEntry& _e) -> std::expected<JsonObject, std::string> {
+            const auto line = params.getInteger("line"), col = params.getInteger("col");
+            if (!line || !col || *line < 1 || *col < 1)
+              return std::unexpected("the request needs line and col, from 1");
+            Detail::update_tokens(_e);
+            const FileToken* token = definition_token(*_e.tokens_, uint32_t(*line), uint32_t(*col));
+            if (!token) return definition_to_json({});
+            if (is_include_file(*_e.tokens_, *token)) {
+              const auto isPassReused = Detail::update_include_pass(srv, _e, file);
+              if (!isPassReused) return std::unexpected(isPassReused.error());
+              return definition_to_json(include_definition(*_e.include_pass_, uint32_t(*line)));
+            }
+            return definition_to_json(name_definition(*_e.ast_, *_e.tokens_, *token));
+          });
 
     Protocol::reply_error(*_id, Protocol::ec_method_not_found, "unknown method: " + _method);
   }  // dispatch

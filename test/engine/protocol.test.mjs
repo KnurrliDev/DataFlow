@@ -2719,6 +2719,90 @@ test('accepts a ## that gives no valid token in a command of MSVC, as MSVC does,
 	}
 });
 
+test('finds the definition of the name at a position: a type, a macro, a function, a variable, a member and an include', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-definition-'));
+	const header = path.join(dir, 'defs.h');
+	const source = path.join(dir, 'main.cpp');
+	const headerText = [
+		'#pragma once',
+		'#define DF_LIMIT 42',
+		'struct Battery {',
+		'  double charge_ = 0.0;',
+		'  double charge(double kw);',
+		'};',
+		'int df_free(int value);',
+		'template <class T> T df_twice(T v) { return v + v; }',
+		'',
+	].join('\n');
+	const sourceText = [
+		'#include "defs.h"',
+		'double Battery::charge(double kw) { charge_ += kw; return charge_; }',
+		'int df_use() {',
+		'  Battery b;',
+		'  int local = DF_LIMIT;',
+		'  b.charge(1.0);',
+		'  return df_twice(df_free(local));',
+		'}',
+		'',
+	].join('\n');
+	writeFileSync(header, headerText);
+	writeFileSync(source, sourceText);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file: source, arguments: ['clang++', '-std=c++20', '-c', source] }]));
+	// the line and the column, from 1, of a word in a line of a text
+	const at = (text, line, word, nth = 0) => {
+		const lineText = text.split('\n')[line - 1];
+		let col = -1;
+		for (let i = 0; i <= nth; i++) col = lineText.indexOf(word, col + 1);
+		assert.ok(col >= 0, `${word} in line ${line}`);
+		return { line, col: col + 1 };
+	};
+	const key = (file) => path.resolve(file).toLowerCase();
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		const init = await own.send('initialize', { compileCommands: [db], maxThreads: 1, cacheSize: 2 });
+		assert.equal(init.error, undefined, JSON.stringify(init.error));
+		const definition = async (place) => {
+			const res = await own.send('dataflow/definition', { file: source, ...place });
+			assert.equal(res.error, undefined, JSON.stringify(res.error));
+			return res.result;
+		};
+		const expect = async (place, name, kind, target) => {
+			const r = await definition(place);
+			assert.equal(r.name, name);
+			assert.equal(r.kind, kind);
+			assert.equal(r.targets.length, 1, JSON.stringify(r));
+			const [t] = r.targets;
+			assert.deepEqual({ file: key(t.file), line: t.line, col: t.col, role: t.role },
+				{ file: key(target.file), line: target.line, col: target.col, role: target.role }, `${name}: ${JSON.stringify(t)}`);
+		};
+
+		// a type in the header, and a macro of the header
+		await expect(at(sourceText, 4, 'Battery'), 'Battery', 'class', { file: header, ...at(headerText, 3, 'Battery'), role: 'definition' });
+		await expect(at(sourceText, 5, 'DF_LIMIT'), 'DF_LIMIT', 'macro', { file: header, ...at(headerText, 2, 'DF_LIMIT'), role: 'definition' });
+		// a method with its definition in the source file, also with the position right after the name
+		const chargeDef = { file: source, ...at(sourceText, 2, 'charge'), role: 'definition' };
+		await expect(at(sourceText, 6, 'charge'), 'Battery::charge', 'method', chargeDef);
+		const after = at(sourceText, 6, 'charge');
+		await expect({ line: after.line, col: after.col + 'charge'.length }, 'Battery::charge', 'method', chargeDef);
+		// the name of the definition itself
+		await expect(at(sourceText, 2, 'charge'), 'Battery::charge', 'method', chargeDef);
+		// a function with no definition in the translation unit: its declaration
+		await expect(at(sourceText, 7, 'df_free'), 'df_free', 'function', { file: header, ...at(headerText, 7, 'df_free'), role: 'declaration' });
+		// a local variable, a function template and a data member
+		await expect(at(sourceText, 7, 'local'), 'local', 'variable', { file: source, ...at(sourceText, 5, 'local'), role: 'definition' });
+		await expect(at(sourceText, 7, 'df_twice'), 'df_twice', 'function', { file: header, ...at(headerText, 8, 'df_twice'), role: 'definition' });
+		await expect(at(sourceText, 2, 'charge_'), 'Battery::charge_', 'property', { file: header, ...at(headerText, 4, 'charge_'), role: 'definition' });
+		// the file of an include
+		await expect(at(sourceText, 1, 'defs'), '"defs.h"', 'string', { file: header, line: 1, col: 1, role: 'file' });
+		// a keyword has no definition
+		assert.deepEqual((await definition(at(sourceText, 7, 'return'))).targets, []);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('sends status notifications', () => {
 	const states = engine.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params.state);
 	assert.ok(states.includes('parsing') && states.includes('ready'), states.join(','));

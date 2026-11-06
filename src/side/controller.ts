@@ -1,10 +1,12 @@
 import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { EngineClient, FileResult } from '../engine/client';
+import { toUtf16Column, toUtf8Column } from '../lenses/flow';
 import type { ReviewState } from '../lenses/ripple';
 import { guideSummary, withCurrent, withStatus } from '../review/guide';
 import { CostLayerState, LogicPathState, RippleLayerState, StateStore, TraceState } from '../state/store';
 import { buildSideCost } from './costLayer';
+import { DefinitionPlace, otherPlaces, PlaceHistory, SidePlace } from './definition';
 import { buildSideFlow, buildSideMemberFlow } from './flowLayer';
 import { buildSideLogic } from './logicLayer';
 import { functionTitle } from './names';
@@ -42,10 +44,22 @@ const TRACEABLE = ['variable', 'parameter', 'property'].flatMap((type) => Array.
 // The style indices of functions and methods, with each set of modifiers. The menu of their names has "Show Calls"
 const CALLABLE = ['function', 'method'].flatMap((type) => Array.from({ length: 1 << SEMANTIC_MODIFIERS.length },
 	(_, bits) => semanticStyleIndex(SEMANTIC_TYPES.indexOf(type as never), bits)));
+// The style indices of all names. Ctrl+click on a name goes to its definition
+const NAVIGABLE = SEMANTIC_TYPES.flatMap((_, type) => Array.from({ length: 1 << SEMANTIC_MODIFIERS.length },
+	(__, bits) => semanticStyleIndex(type, bits)));
+// The style index of a string. Ctrl+click on the file of an #include opens the file
+const INCLUDE_FILE = LEXICAL_KEYS.indexOf('string');
 
 // The settings of the text editor that change the code view
 const EDITOR_SETTINGS = ['editor.fontSize', 'editor.lineHeight', 'editor.fontLigatures', 'editor.letterSpacing', 'editor.tabSize',
-	'editor.indentSize', 'editor.guides', 'editor.bracketPairColorization'];
+	'editor.indentSize', 'editor.guides', 'editor.bracketPairColorization', 'editor.multiCursorModifier'];
+
+// A promise with a time limit: undefined after the time
+function withLimit<T>(promise: Thenable<T>, ms: number): Promise<T | undefined> {
+	let timer: NodeJS.Timeout | undefined;
+	const limit = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), ms); });
+	return Promise.race([Promise.resolve(promise), limit]).finally(() => clearTimeout(timer));
+}
 
 // Animations are on if the setting is on and VS Code does not reduce motion
 function animationsOn(): boolean {
@@ -139,6 +153,7 @@ export class SideViewController implements vscode.Disposable {
 	private viewCursor?: { doc: vscode.TextDocument; pos: vscode.Position }; // the cursor of the side view, see cursorPlace
 	private viewSelection?: { doc: vscode.TextDocument; range: vscode.Range }; // the selection of the side view, see selectionPlace
 	private viewTop = 1; // the first visible line of the side view
+	private readonly history = new PlaceHistory(); // the places that the jumps of the side view left, for Back and Forward
 	lastScrollTo?: number;
 	lastWhy?: SideWhy;
 
@@ -530,6 +545,18 @@ export class SideViewController implements vscode.Disposable {
 			case 'openDefinition':
 				void this.openDefinition(message.file, message.line, message.col);
 				break;
+			case 'goToDefinition':
+				void this.goToDefinition(message.line, message.col, message.isCallable ?? false);
+				break;
+			case 'goToPlace':
+				void this.jumpTo({ file: message.file, line: Math.max(0, message.line - 1), col: message.col });
+				break;
+			case 'goBack':
+				void this.goBack();
+				break;
+			case 'goForward':
+				void this.goForward();
+				break;
 			case 'openEditor':
 				void this.focusEditor();
 				break;
@@ -647,7 +674,7 @@ export class SideViewController implements vscode.Disposable {
 	// Sends the full state, for example when the webview starts again after it was hidden
 	private sendAll(): void {
 		this.post({ type: 'settings', settings: this.settings() });
-		this.post({ type: 'styles', styles: this.styles, brackets: BRACKETS, traceable: TRACEABLE, callable: CALLABLE });
+		this.post({ type: 'styles', styles: this.styles, brackets: BRACKETS, traceable: TRACEABLE, callable: CALLABLE, navigable: NAVIGABLE, includeFile: INCLUDE_FILE });
 		this.post({ type: 'frame', frame: this.frame() });
 		this.post({ type: 'story', story: this.lastStory });
 		this.postGuide();
@@ -820,7 +847,7 @@ export class SideViewController implements vscode.Disposable {
 		}
 		this.styles = result.styles;
 		this.stylesError = result.error;
-		this.post({ type: 'styles', styles: this.styles, brackets: BRACKETS, traceable: TRACEABLE, callable: CALLABLE });
+		this.post({ type: 'styles', styles: this.styles, brackets: BRACKETS, traceable: TRACEABLE, callable: CALLABLE, navigable: NAVIGABLE, includeFile: INCLUDE_FILE });
 	}
 
 	// Without an extension that gives semantic tokens, for example the C/C++ extension or clangd, the text editor shows
@@ -1143,6 +1170,160 @@ export class SideViewController implements vscode.Disposable {
 		await this.openPlace(found.uri.fsPath, found.range.start.line + 1, found.range.start.character);
 	}
 
+	// Ctrl+click on a name, or F12 in the side view: the side view goes to the definition of the name, and the focus stays
+	// in the side view. A visible text editor of the file of the definition gets its cursor there, as for a click in the
+	// side view. Else only the side view moves, so the text editor stays at its place. The definition providers of VS
+	// Code answer first, for example the C/C++ extension, else the engine. A click on the definition of a function shows
+	// "Show Calls", as the text editor shows the references. More than one definition gives a list
+	async goToDefinition(line: number, col: number, isCallable: boolean): Promise<void> {
+		const model = this.model;
+		if (!model) {
+			return;
+		}
+		const doc = model.doc;
+		const at = doc.validatePosition(new vscode.Position(Math.max(0, line - 1), Math.max(0, col)));
+		const wordRange = doc.getWordRangeAtPosition(at);
+		const word = wordRange ? doc.getText(wordRange) : 'the name';
+		const found = await this.definitionPlaces(doc, at);
+		const places = otherPlaces(found, { key: fileKey(doc.uri.fsPath), line: at.line, col: at.character });
+		if (places.length === 1) {
+			await this.jumpTo({ file: places[0].file, line: places[0].line, col: places[0].col });
+		} else if (places.length > 1) {
+			const sites = await Promise.all(places.map(async (p) => {
+				const target = await vscode.workspace.openTextDocument(vscode.Uri.file(p.file));
+				const text = p.line < target.lineCount ? target.lineAt(p.line).text.trim() : '';
+				return { file: p.file, line: p.line + 1, col: p.col, caller: '', kind: 'other' as const, text };
+			}));
+			this.showCallList({ seq: Date.now(), kind: 'definitions', fn: word, sites, isSearching: false, isFromMenu: true });
+		} else if (found.length > 0 && isCallable) {
+			void vscode.commands.executeCommand('dataflow.showCalls', { line: at.line + 1, col: at.character });
+		} else {
+			vscode.window.setStatusBarMessage(found.length > 0 ? `DataFlow: This is the definition of ${word}.` : `DataFlow found no definition of ${word}.`, 4000);
+		}
+	}
+
+	// F12 while the side view has the focus: the definition of the name at the cursor of the side view
+	goToDefinitionAtCursor(): void {
+		const pos = this.editorForSync()?.selection.active ?? this.cursorPlace?.pos;
+		if (!pos) {
+			vscode.window.setStatusBarMessage('DataFlow: Click a name in the side view, then push F12.', 4000);
+			return;
+		}
+		void this.goToDefinition(pos.line + 1, pos.character, CALLABLE.includes(this.styleAt(pos) ?? -1));
+	}
+
+	// Back and Forward of the side view: the mouse buttons, and Alt+Left and Alt+Right while the side view has the focus
+	async goBack(): Promise<void> {
+		await this.goInHistory(true);
+	}
+
+	async goForward(): Promise<void> {
+		await this.goInHistory(false);
+	}
+
+	private async goInHistory(isBack: boolean): Promise<void> {
+		const current = this.sidePlace();
+		const to = current && (isBack ? this.history.goBack(current) : this.history.goForward(current));
+		if (!to) {
+			vscode.window.setStatusBarMessage(`DataFlow: The side view has no place to go ${isBack ? 'back' : 'forward'} to.`, 3000);
+			return;
+		}
+		try {
+			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(to.file));
+			this.moveTo(doc, doc.validatePosition(new vscode.Position(to.line, to.col)));
+		} catch {
+			// the file of the place is gone
+		}
+	}
+
+	// The definitions of the name at a place: from the definition providers of VS Code, else from the engine. The engine
+	// knows the definitions in the translation unit, and else the declarations
+	private async definitionPlaces(doc: vscode.TextDocument, at: vscode.Position): Promise<DefinitionPlace[]> {
+		const out: DefinitionPlace[] = [];
+		const add = (uri: vscode.Uri, range: vscode.Range) => out.push({
+			file: uri.fsPath, key: fileKey(uri.fsPath), line: range.start.line, col: range.start.character, endLine: range.end.line, endCol: range.end.character,
+		});
+		try {
+			const result = await withLimit(vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[] | undefined>(
+				'vscode.executeDefinitionProvider', doc.uri, at), DEFINITION_MS);
+			for (const l of result ?? []) {
+				if ('targetUri' in l) {
+					add(l.targetUri, l.targetSelectionRange ?? l.targetRange);
+				} else {
+					add(l.uri, l.range);
+				}
+			}
+		} catch {
+			// a provider that fails gives no definition
+		}
+		const client = this.engine();
+		if (out.length > 0 || !client || client.currentState !== 'ready') {
+			return out;
+		}
+		try {
+			const result = await client.definition(doc.uri.fsPath, at.line + 1, toUtf8Column(doc.lineAt(at.line).text, at.character));
+			for (const t of result.targets) {
+				const target = await vscode.workspace.openTextDocument(vscode.Uri.file(t.file));
+				const line = Math.min(Math.max(0, t.line - 1), target.lineCount - 1);
+				const pos = new vscode.Position(line, toUtf16Column(target.lineAt(line).text, t.col));
+				add(target.uri, target.getWordRangeAtPosition(pos) ?? new vscode.Range(pos, pos));
+			}
+		} catch {
+			// the engine gives no definition, for example during a parse
+		}
+		return out;
+	}
+
+	// A jump of the side view: Ctrl+click, F12, a click in the list of definitions. The place that the side view leaves
+	// goes into the history for Back
+	private async jumpTo(place: SidePlace): Promise<void> {
+		const from = this.sidePlace();
+		const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(place.file));
+		if (from) {
+			this.history.push(from);
+		}
+		this.moveTo(doc, doc.validatePosition(new vscode.Position(place.line, place.col)));
+	}
+
+	// Moves the side view to a place. The focus stays in the side view. A visible text editor of the file gets its cursor
+	// there, as for a click in the side view, and the side view follows that editor. Else only the side view moves, with
+	// its own cursor
+	private moveTo(doc: vscode.TextDocument, pos: vscode.Position): void {
+		this.store.update({ sideMode: 'file' });
+		if (!sameDoc(doc, this.model?.doc)) {
+			this.showFile(doc);
+		}
+		const editor = this.editorForSync();
+		if (!editor) {
+			this.showPlace(doc, pos);
+			return;
+		}
+		editor.selection = new vscode.Selection(pos, pos);
+		editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+	}
+
+	// The place of the side view, for the history: the cursor of the text editor of its file, else the cursor of the side
+	// view, else its first visible line
+	private sidePlace(): SidePlace | undefined {
+		const model = this.model;
+		if (!model) {
+			return undefined;
+		}
+		const pos = this.editorForSync()?.selection.active ?? this.cursorPlace?.pos ?? new vscode.Position(Math.max(0, this.viewTop - 1), 0);
+		return { file: model.doc.uri.fsPath, line: pos.line, col: pos.character };
+	}
+
+	// The style index of the token at a place of the file of the side view
+	private styleAt(pos: vscode.Position): number | undefined {
+		const spans = this.model?.rows[pos.line]?.spans ?? [];
+		for (let i = 0; i + 2 < spans.length; i += 3) {
+			if (spans[i] <= pos.character && pos.character < spans[i + 1]) {
+				return spans[i + 2];
+			}
+		}
+		return undefined;
+	}
+
 	// Shows a place in the text editor beside the side view and in the side view. With no C++ text editor on the screen,
 	// for example with Claude Code in the other editor group, only the side view moves, so the other group stays
 	private async openPlace(file: string, line: number, col = 0): Promise<void> {
@@ -1203,6 +1384,8 @@ export class SideViewController implements vscode.Disposable {
 			guides: config.get<boolean>('guides.indentation', true),
 			activeGuide: config.get<boolean | string>('guides.highlightActiveIndentation', true) !== false,
 			bracketColors: config.get<boolean>('bracketPairColorization.enabled', true),
+			// the key for "go to definition" does not conflict with the key for more cursors, as in the text editor
+			gotoKey: config.get<string>('multiCursorModifier', 'alt') === 'ctrlCmd' ? 'alt' : process.platform === 'darwin' ? 'meta' : 'ctrl',
 		};
 	}
 

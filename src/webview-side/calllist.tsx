@@ -84,12 +84,16 @@ export function CallListPanel({ list, point, onClose }: {
 			groups.push({ file: site.file, items: [{ site, index }] });
 		}
 	});
-	const count = list.sites.length === 1 ? '1 call' : `${list.sites.length} calls`;
+	// the list of the definitions of a name: a click moves only the side view, as Ctrl+click does
+	const isDefinitions = list.kind === 'definitions';
+	const noun = isDefinitions ? 'definition' : 'call';
+	const count = list.sites.length === 1 ? `1 ${noun}` : `${list.sites.length} ${noun}s`;
+	const title = isDefinitions ? 'Definitions of' : 'Calls of';
 	return (
-		<div class="call-list" ref={box} role="dialog" aria-label={`Calls of ${list.fn}`} onKeyDown={onKeyDown}
+		<div class="call-list" ref={box} role="dialog" aria-label={`${title} ${list.fn}`} onKeyDown={onKeyDown}
 			style={pos ? { left: `${pos.left}px`, top: `${pos.top}px` } : { visibility: 'hidden' }}>
 			<div class="call-list-head">
-				<span class="call-list-title">Calls of <strong class="mono">{list.fn}</strong></span>
+				<span class="call-list-title">{title} <strong class="mono">{list.fn}</strong></span>
 				<span class="sub">{count}</span>
 				<span class="grow" />
 				<button type="button" class="call-list-close" title="Close the list (Escape)" aria-label="Close the list" onClick={() => close.current()}>×</button>
@@ -102,7 +106,8 @@ export function CallListPanel({ list, point, onClose }: {
 							<button type="button" class={index === current ? 'call-item current' : 'call-item'} title={`Show ${basename(site.file)}, line ${site.line}`}
 								onClick={() => {
 									setCurrent(index);
-									post({ type: 'openPlace', file: site.file, line: site.line, col: site.col });
+									post(isDefinitions ? { type: 'goToPlace', file: site.file, line: site.line, col: site.col }
+										: { type: 'openPlace', file: site.file, line: site.line, col: site.col });
 								}}>
 								<span class="call-line">{site.line}</span>
 								<span class="call-caller">{site.caller}</span>
@@ -111,7 +116,7 @@ export function CallListPanel({ list, point, onClose }: {
 						))}
 					</div>
 				))}
-				{list.sites.length === 0 && !list.isSearching && <p class="sub call-list-empty">No calls found.</p>}
+				{list.sites.length === 0 && !list.isSearching && <p class="sub call-list-empty">No {noun}s found.</p>}
 			</div>
 			{(list.isSearching || list.note) && <div class="call-list-foot sub">{list.isSearching ? 'Looking for calls in other files…' : list.note}</div>}
 		</div>

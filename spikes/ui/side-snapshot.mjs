@@ -238,6 +238,46 @@ try {
 		}
 	}
 
+	// Ctrl+click: with Ctrl down, the name under the mouse gets the underline of a link. Ctrl+click on HomeBatteryCtrl goes
+	// to its header in the side view only, so the cursor of the text editor stays. The mouse button Back comes back
+	if (!fileArg) {
+		const line = readFileSync(file, 'utf8').split(/\r?\n/).findIndex((l) => l.includes('std::optional<Requests> process(')) + 1;
+		const header = path.join(workspace, 'include', 'battery', 'types.hpp');
+		const declLine = readFileSync(header, 'utf8').split(/\r?\n/).findIndex((l) => l.includes('struct HomeBatteryCtrl {')) + 1;
+		const mod = process.platform === 'darwin' ? 'metaKey' : 'ctrlKey';
+		const status = () => wb.evaluate(`document.querySelector('[id="status.editor.selection"]')?.textContent ?? ''`);
+		const sideFile = () => inSide(`return doc.querySelector('.toolbar .file')?.textContent ?? '';`);
+		// the side view makes only the rows near the visible part
+		await inSide(`const s = doc.querySelector('.scroller'); s.scrollLeft = 0; s.scrollTop = ${line - 10} * parseFloat(s.style.getPropertyValue('--row-height')); return true;`);
+		await sleep(800);
+		result.goto = { line, declLine, statusBefore: await status() };
+		const name = `[...doc.querySelectorAll('.rows > .row[data-line="${line}"] .code span')].find((s) => s.textContent === 'HomeBatteryCtrl')`;
+		const mouse = (type, extra) => inSide(`const span = ${name}; const r = span.getBoundingClientRect();
+			span.dispatchEvent(new MouseEvent('${type}', { bubbles: true, cancelable: true, button: 0, clientX: r.left + 4, clientY: r.top + r.height / 2, ${extra} }));
+			return true;`);
+		await mouse('mousemove', `${mod}: true`);
+		result.goto.hover = await inSide(`const span = ${name}; const style = getComputedStyle(span);
+			return { isLink: span.classList.contains('goto-link'), decoration: style.textDecorationLine, cursor: style.cursor };`);
+		await shot('goto-hover');
+		await inSide(`doc.defaultView.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true })); return true;`);
+		result.goto.afterKeyUp = await inSide(`return ${name}.classList.contains('goto-link');`);
+		await mouse('mousedown', `${mod}: true`);
+		await mouse('mouseup', `${mod}: true`);
+		for (let i = 0; i < 40 && await sideFile() !== 'types.hpp'; i++) {
+			await sleep(250);
+		}
+		await sleep(500);
+		result.goto.file = await sideFile();
+		result.goto.cursor = await inSide(`return Number(doc.querySelector('.rows > .row.cursor')?.dataset.line ?? 0);`);
+		result.goto.statusAfter = await status();
+		await shot('goto-header');
+		await inSide(`doc.querySelector('.scroller').dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 3 })); return true;`);
+		for (let i = 0; i < 40 && await sideFile() !== 'battery.cpp'; i++) {
+			await sleep(250);
+		}
+		result.goto.back = await sideFile();
+	}
+
 	result.dirty = await wb.evaluate(`!!document.querySelector('.tab.dirty')`);
 	side.ws.close();
 

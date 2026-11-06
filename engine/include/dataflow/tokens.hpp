@@ -74,6 +74,9 @@ namespace DataFlow {
     std::string text_;
     std::vector<uint32_t> line_starts_;  // the offset of the first byte of each line
     std::vector<FileToken> tokens_;      // in the sequence of the file
+    // the declaration of each name, by the file offset of the name. the declarations are nodes of the ast of the parse,
+    // so they are valid only while the ast of this parse is in the cache
+    std::unordered_map<uint32_t, const clang::NamedDecl*> decls_;
   };  // FileTokens
 
   namespace Detail {
@@ -242,17 +245,20 @@ namespace DataFlow {
       return out;
     }  // name_mods
 
-    // the semantic kinds of the names of the main file, by the file offset of the name
+    // the semantic kinds of the names of the main file, by the file offset of the name. with _decls, also the
+    // declaration of each name
     class NameClassifier : public clang::RecursiveASTVisitor<NameClassifier> {
       using Base = clang::RecursiveASTVisitor<NameClassifier>;
 
       const clang::SourceManager& sm_;
       std::unordered_map<uint32_t, std::pair<TokenKind, uint32_t>>& out_;
+      std::unordered_map<uint32_t, const clang::NamedDecl*>* decls_ = nullptr;
 
      public:
       NameClassifier(const clang::SourceManager& _sm,
-                     std::unordered_map<uint32_t, std::pair<TokenKind, uint32_t>>& _out)
-          : sm_(_sm), out_(_out) {}
+                     std::unordered_map<uint32_t, std::pair<TokenKind, uint32_t>>& _out,
+                     std::unordered_map<uint32_t, const clang::NamedDecl*>* _decls = nullptr)
+          : sm_(_sm), out_(_out), decls_(_decls) {}
 
       bool VisitNamedDecl(clang::NamedDecl* _d) {
         if (!_d->isImplicit()) add(_d->getLocation(), _d, mod_declaration);
@@ -382,7 +388,12 @@ namespace DataFlow {
         if (const auto* t = llvm::dyn_cast<clang::TemplateDecl>(_d); t && t->getTemplatedDecl())
           _d = t->getTemplatedDecl();
 
-        if (const std::optional<TokenKind> kind = name_kind(_d)) add_kind(_loc, *kind, _mods | name_mods(_d, sm_));
+        const std::optional<TokenKind> kind = name_kind(_d);
+        if (!kind) return;
+        add_kind(_loc, *kind, _mods | name_mods(_d, sm_));
+        if (!decls_) return;
+        const clang::SourceLocation at = sm_.getSpellingLoc(_loc);
+        if (sm_.isWrittenInMainFile(at)) decls_->try_emplace(sm_.getFileOffset(at), _d);
       }  // add
 
       // a name from a macro has its spelling in a macro argument or in the body of a macro. only the spelling in the
@@ -465,7 +476,7 @@ namespace DataFlow {
 
     // the kinds of the names
     std::unordered_map<uint32_t, std::pair<TokenKind, uint32_t>> names;
-    Detail::NameClassifier classifier(sm, names);
+    Detail::NameClassifier classifier(sm, names, &out.decls_);
     for (auto it = _ast.top_level_begin(); it != _ast.top_level_end(); ++it)
       if (!Detail::is_instantiation(*it) && sm.isWrittenInMainFile(sm.getExpansionLoc((*it)->getLocation())))
         classifier.TraverseDecl(*it);

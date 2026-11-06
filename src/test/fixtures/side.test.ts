@@ -1077,3 +1077,110 @@ suite('The side view with no text editor', () => {
 		assert.strictEqual(api.side.cursorPlace, undefined);
 	});
 });
+
+// Ctrl+click in the side view: the side view goes to the definition, and the text editor stays at its place. A text
+// editor of the file of the definition gets its cursor there. Back and Forward go through the jumps. The test build has
+// no C/C++ extension, so the engine gives the definitions
+suite('Go to definition in the side view', () => {
+	const root = () => vscode.workspace.workspaceFolders![0].uri.fsPath;
+	const file = () => path.join(root(), 'src', 'battery.cpp');
+	const header = () => path.join(root(), 'include', 'battery', 'types.hpp');
+	const textOf = (f: string) => readFileSync(f, 'utf8').split(/\r?\n/);
+	const lineIn = (f: string, text: string) => textOf(f).findIndex((l) => l.includes(text)) + 1;
+	const colIn = (f: string, line: number, name: string) => textOf(f)[line - 1].indexOf(name);
+	const key = (f: string) => path.normalize(f).toLowerCase();
+	const sideFile = () => key(api.side.file ?? '');
+
+	let api: DataFlowApi;
+	let editor: vscode.TextEditor;
+	let start: vscode.Position;
+	suiteSetup(async function () {
+		this.timeout(120000);
+		api = await activateDataFlow(file());
+		editor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file()), vscode.ViewColumn.One);
+		await vscode.commands.executeCommand('dataflow.openSideView');
+		await waitFor(() => sideFile() === key(file()) && api.side.tokenVersion !== undefined, 60000, () => `${api.side.file}`);
+		start = new vscode.Position(lineIn(file(), 'auto bestFit = best_preset(') - 1, 4);
+		editor.selection = new vscode.Selection(start, start);
+	});
+
+	test('Ctrl+click on a type goes to its header in the side view only, and Back and Forward come back', async function () {
+		this.timeout(60000);
+		const line = lineIn(file(), 'std::optional<Requests> process(');
+		api.side.receive({ type: 'goToDefinition', line, col: colIn(file(), line, 'HomeBatteryCtrl') + 2 });
+		await waitFor(() => sideFile() === key(header()), 30000, () => `${api.side.file}`);
+		assert.strictEqual(api.side.cursorPlace?.pos.line, lineIn(header(), 'struct HomeBatteryCtrl {') - 1);
+		// the text editor stays at its place
+		assert.strictEqual(key(editor.document.uri.fsPath), key(file()));
+		assert.ok(editor.selection.active.isEqual(start), `${editor.selection.active.line}`);
+
+		api.side.receive({ type: 'goBack' });
+		await waitFor(() => sideFile() === key(file()), 15000, () => `${api.side.file}`);
+		api.side.receive({ type: 'goForward' });
+		await waitFor(() => sideFile() === key(header()), 15000, () => `${api.side.file}`);
+		api.side.receive({ type: 'goBack' });
+		await waitFor(() => sideFile() === key(file()), 15000, () => `${api.side.file}`);
+		assert.ok(editor.selection.active.isEqual(start), `${editor.selection.active.line}`);
+	});
+
+	test('Ctrl+click on a call of a function of the same file moves the cursor of the text editor too', async function () {
+		this.timeout(60000);
+		const line = lineIn(file(), 'return solve_power_plan(charge);');
+		api.side.receive({ type: 'goToDefinition', line, col: colIn(file(), line, 'solve_power_plan') + 3 });
+		const def = lineIn(file(), 'std::optional<double> solve_power_plan(');
+		await waitFor(() => editor.selection.active.line === def - 1, 30000, () => `${editor.selection.active.line + 1}`);
+		assert.strictEqual(sideFile(), key(file()));
+		api.side.receive({ type: 'goBack' });
+		await waitFor(() => editor.selection.active.isEqual(start), 15000, () => `${editor.selection.active.line + 1}`);
+	});
+
+	test('Ctrl+click on the name of the definition of a function shows its calls', async function () {
+		this.timeout(60000);
+		const def = lineIn(file(), 'std::optional<double> solve_power_plan(');
+		api.side.receive({ type: 'goToDefinition', line: def, col: colIn(file(), def, 'solve_power_plan') + 1, isCallable: true });
+		try {
+			await waitFor(() => api.side.lastCallList?.fn === 'solve_power_plan()', 30000, () => JSON.stringify(api.side.lastCallList?.fn ?? null));
+			assert.deepStrictEqual(api.side.lastCallList!.sites.map((s) => s.line), [lineIn(file(), 'return solve_power_plan(charge);')]);
+			assert.strictEqual(sideFile(), key(file()));
+		} finally {
+			api.side.showCallList(null);
+		}
+	});
+
+	test('Ctrl+click on the file of an #include opens the header in the side view', async function () {
+		this.timeout(60000);
+		const line = lineIn(file(), '#include <battery/types.hpp>');
+		api.side.receive({ type: 'goToDefinition', line, col: colIn(file(), line, 'types') });
+		await waitFor(() => sideFile() === key(header()), 30000, () => `${api.side.file}`);
+		assert.strictEqual(api.side.cursorPlace?.pos.line, 0);
+		api.side.receive({ type: 'goBack' });
+		await waitFor(() => sideFile() === key(file()), 15000, () => `${api.side.file}`);
+	});
+
+	test('More than one definition from a provider gives a list, and a click in it moves only the side view', async function () {
+		this.timeout(60000);
+		const main = path.join(path.dirname(file()), 'main.cpp');
+		const declLine = lineIn(header(), 'struct HomeBatteryCtrl {') - 1;
+		const provider = vscode.languages.registerDefinitionProvider({ language: 'cpp' }, {
+			provideDefinition: () => [
+				new vscode.Location(vscode.Uri.file(header()), new vscode.Position(declLine, 7)),
+				new vscode.Location(vscode.Uri.file(main), new vscode.Position(0, 0)),
+			],
+		});
+		try {
+			const line = lineIn(file(), 'std::optional<Requests> process(');
+			api.side.receive({ type: 'goToDefinition', line, col: colIn(file(), line, 'HomeBatteryCtrl') + 2 });
+			await waitFor(() => api.side.lastCallList?.kind === 'definitions', 30000, () => JSON.stringify(api.side.lastCallList ?? null));
+			const sites = api.side.lastCallList!.sites;
+			assert.deepStrictEqual(sites.map((s) => [key(s.file), s.line]), [[key(header()), declLine + 1], [key(main), 1]]);
+			api.side.receive({ type: 'goToPlace', file: sites[1].file, line: sites[1].line, col: sites[1].col });
+			await waitFor(() => sideFile() === key(main), 15000, () => `${api.side.file}`);
+			assert.strictEqual(key(editor.document.uri.fsPath), key(file()));
+		} finally {
+			provider.dispose();
+			api.side.showCallList(null);
+			api.side.receive({ type: 'goBack' });
+			await waitFor(() => sideFile() === key(file()), 15000, () => `${api.side.file}`);
+		}
+	});
+});
