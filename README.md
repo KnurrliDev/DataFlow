@@ -18,6 +18,10 @@ The side view shows the file of the active C++ editor with the colors of your th
 | Threads and races | The code that runs on a different thread, the shared data, and the protection of each access |
 | Change Ripple | The code that the changes of your branch affect, as a story for a review |
 
+Ctrl+click on a name in the side view goes to its definition, and Alt+Left goes back. [Go to a definition](docs/usage.md#go-to-a-definition)
+
+**Outline** shows the members and the memory layout of a class, a struct, a union or an enum. To open it, right-click the name of the type in the side view, and click **Outline**. [Outline of a type](docs/usage.md#outline-of-a-type)
+
 DataFlow also has an MCP server. A language model reads the facts of the engine through the tools of the server. Then the model shows logical blocks, notes, comments and details in the side view. The engine gives the lines and the data, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other.
 
 DataFlow works on Windows 64-bit with VS Code 1.120 or later. Your project needs a compile database, for example the `compile_commands.json` file of CMake or a qmake build folder. For an Unreal Engine 5 project, DataFlow makes the compile database with UnrealBuildTool.
@@ -63,7 +67,7 @@ Hidden C++ shows the operations that the compiler adds: copies, conversions, tem
 
 ### Include Hierarchy
 
-Include Hierarchy shows the lines that each include adds after the preprocessor. The tree shows the includes and the path that brings a header into the file. It also shows the includes that forward declarations can replace. [Use Include Hierarchy](docs/usage.md#include-hierarchy)
+Include Hierarchy shows the lines that each include adds after the preprocessor. The tree shows the includes and the path that brings a header into the file. It also shows the includes that forward declarations can replace. **Check** lets the engine parse a copy of the file in memory with the declarations. The file does not change. [Use Include Hierarchy](docs/usage.md#include-hierarchy)
 
 ![Include Hierarchy shows the lines of each include, the tree of the includes and the path to vector.](docs/images/include-hierarchy.png)
 
