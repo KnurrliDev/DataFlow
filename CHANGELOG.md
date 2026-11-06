@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Go to a definition in the side view: Ctrl+click on a name, or F12, goes to its definition. The side view moves, and the text editor stays at its place. Ctrl+click on the file of an `#include` shows the header.
 - Back and Forward of the side view: Alt+Left and Alt+Right, or the mouse buttons, go through the jumps of the side view.
