@@ -2928,6 +2928,112 @@ test('gives the outline of a class: the bases, the members in the source, the an
 	}
 });
 
+test('tells for each include if forward declarations can replace it, or the first use that needs it', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-forward-'));
+	const headers = {
+		'battery.h': 'namespace power { struct Battery { double kw = 0; }; }',
+		'plan.h': 'namespace power { class Plan { public: int hours = 0; }; }',
+		'mode.h': 'enum class Mode : unsigned char { IDLE, CHARGE };',
+		'box.h': 'template <class T> class Box { public: T value; };',
+		'pair.h': 'template <class T, class U = int> class Pair {};',
+		'macro.h': '#define POWER_LIMIT 42',
+		'alias.h': 'using Kw = double;',
+		'member.h': 'struct Meter { int read() const { return 1; } };',
+		'cell.h': 'struct Cell { int id = 0; };',
+		'gauge.h': 'struct Gauge { int id = 0; };',
+		'base.h': 'struct Base { int id = 0; };',
+		'pool.h': 'struct Pool { bool busy(); };',
+		'point.h': 'struct Point { int x = 0, y = 0; };',
+		'error.h': 'struct Error { int code = 0; };',
+		'slot.h': 'struct Slot { int id = 0; };',
+		'filter.h': 'struct Filter { int id = 0; };',
+		'ring.h': 'template <class T, int N> class Ring {};',
+		'gate.h': 'template <class T> concept Small = sizeof(T) < 8; template <Small T> class Gate {};',
+		'later.h': 'template <class T, class U> class Later; template <class T, class U = int> class Later {};',
+	};
+	for (const [name, text] of Object.entries(headers)) writeFileSync(path.join(dir, name), `#pragma once\n${text}\n`);
+	const source = path.join(dir, 'main.cpp');
+	const sourceText = [
+		...Object.keys(headers).map((h) => `#include "${h}"`),
+		'#include <memory>',
+		'#include <utility>',
+		'void df_use(power::Battery* battery, const power::Battery& ref);',
+		'power::Plan df_plan;',
+		'void df_set(Mode mode);',
+		'Box<int>* df_box = nullptr;',
+		'Pair<int>* df_pair = nullptr;',
+		'int df_limit = POWER_LIMIT;',
+		'Kw df_kw = 1.0;',
+		'int df_read(const Meter& meter) { return meter.read(); }',
+		'std::shared_ptr<Cell> df_cell;',
+		'std::unique_ptr<Gauge> df_gauge;',
+		'struct Derived : Base {};',
+		'bool Pool::busy() { return false; }',
+		'void df_take(Point point);',
+		'void df_point() { df_take(Point{1, 2}); }',
+		'void df_try() { try { df_point(); } catch (const Error& error) { } }',
+		'void df_swap(Slot* a, Slot* b) { std::swap(*a, *b); }',
+		'auto df_lambda = [](Filter) { return 0; };',
+		'Ring<int, 4>* df_ring = nullptr;',
+		'Gate<int>* df_gate = nullptr;',
+		'Later<int>* df_later = nullptr;',
+		'',
+	].join('\n');
+	writeFileSync(source, sourceText);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file: source, arguments: ['clang++', '-std=c++20', '-c', source] }]));
+	const lineOf = (text) => sourceText.split('\n').findIndex((l) => l.includes(text)) + 1;
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		const init = await own.send('initialize', { compileCommands: [db], maxThreads: 1, cacheSize: 2 });
+		assert.equal(init.error, undefined, JSON.stringify(init.error));
+		const res = await own.send('dataflow/includes', { file: source, roots: [dir] });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+		const forward = Object.fromEntries(res.result.nodes.filter((n) => n.parent === 0).map((n) => [n.spelled, n.forward ?? null]));
+
+		// pointers and references, a function declaration with a parameter by value, a pointer to a template, and a
+		// template on the short list
+		assert.deepEqual(forward['"battery.h"'], {
+			state: 'possible', text: 'namespace power { struct Battery; }', types: [{ name: 'power::Battery', lines: [lineOf('df_use(')] }],
+		});
+		assert.deepEqual([forward['"mode.h"']?.state, forward['"mode.h"']?.text], ['possible', 'enum class Mode : unsigned char;']);
+		assert.deepEqual([forward['"box.h"']?.state, forward['"box.h"']?.text], ['possible', 'template <class T> class Box;']);
+		assert.deepEqual([forward['"cell.h"']?.state, forward['"cell.h"']?.text], ['possible', 'struct Cell;']);
+		// the first use that needs the include
+		const blocker = (h) => forward[`"${h}"`]?.blocker;
+		assert.deepEqual(blocker('plan.h'), { name: 'power::Plan', kind: 'a variable of the type', line: lineOf('power::Plan df_plan') });
+		assert.deepEqual(blocker('pair.h'), { name: 'Pair', kind: 'a type with no forward declaration', line: lineOf('Pair<int>') });
+		assert.deepEqual(blocker('macro.h'), { name: 'POWER_LIMIT', kind: 'a macro', line: lineOf('POWER_LIMIT;') });
+		assert.deepEqual(blocker('alias.h'), { name: 'Kw', kind: 'a type alias', line: lineOf('Kw df_kw') });
+		assert.deepEqual(blocker('member.h'), { name: 'Meter', kind: 'a member access', line: lineOf('meter.read()') });
+		assert.deepEqual(blocker('gauge.h'), { name: 'Gauge', kind: 'a variable of the type', line: lineOf('std::unique_ptr<Gauge>') });
+		assert.deepEqual(blocker('base.h'), { name: 'Base', kind: 'a base class', line: lineOf('struct Derived') });
+		assert.deepEqual(blocker('pool.h'), { name: 'Pool', kind: 'a definition of a member function', line: lineOf('Pool::busy') });
+		assert.deepEqual(blocker('point.h'), { name: 'Point', kind: 'an object of the type', line: lineOf('Point{1, 2}') });
+		assert.deepEqual(blocker('error.h'), { name: 'Error', kind: 'a catch', line: lineOf('catch (') });
+		assert.deepEqual(blocker('slot.h'), { name: 'Slot', kind: 'a template argument', line: lineOf('std::swap') });
+		assert.deepEqual(blocker('filter.h'), { name: 'Filter', kind: 'a parameter by value', line: lineOf('df_lambda') });
+		// a non-type parameter of a builtin type is no problem. a constraint can need the header
+		assert.deepEqual([forward['"ring.h"']?.state, forward['"ring.h"']?.text], ['possible', 'template <class T, int N> class Ring;']);
+		assert.deepEqual(blocker('gate.h'), { name: 'Gate', kind: 'a type with no forward declaration', line: lineOf('Gate<int>') });
+		// a default argument of a later declaration counts too
+		assert.deepEqual(blocker('later.h'), { name: 'Later', kind: 'a type with no forward declaration', line: lineOf('Later<int>') });
+		// a header of the standard library gets no check
+		assert.equal(forward['<memory>'], null);
+
+		// a parse with an error gives no result, because the ast is not complete
+		own.notify('textDocument/didOpen', { file: source, text: `${sourceText}int df_error = df_missing;\n`, version: 2 });
+		const bad = await own.send('dataflow/includes', { file: source, roots: [dir] });
+		assert.equal(bad.error, undefined, JSON.stringify(bad.error));
+		assert.ok(bad.result.errorCount > 0);
+		assert.ok(bad.result.nodes.every((n) => n.forward === undefined), JSON.stringify(bad.result.nodes.filter((n) => n.forward)));
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('sends status notifications', () => {
 	const states = engine.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params.state);
 	assert.ok(states.includes('parsing') && states.includes('ready'), states.join(','));

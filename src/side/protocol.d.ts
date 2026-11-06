@@ -358,11 +358,18 @@ export interface SideCallListSite {
 export interface SideIncludes {
 	file: string;
 	name: string; // the name of the file
-	stats: { lines: number; total: number; includes: number; skipped: number; unused: number; missing: number };
+	// forward: the includes that forward declarations can replace
+	stats: { lines: number; total: number; includes: number; skipped: number; unused: number; missing: number; forward: number };
 	groups: { name: string; lines: number; color: SideIncludeColor }[]; // the most lines first
 	nodes: SideIncludeNode[]; // nodes[0] is the file. A parent comes before its children
-	hints: { line: number; text: string; kind: 'cost' | 'large' | 'skipped' | 'unused' | 'missing'; node: number }[];
+	hints: { line: number; text: string; kind: 'cost' | 'large' | 'skipped' | 'unused' | 'missing' | 'forward'; node: number }[];
 }
+
+// The forward declaration check of an include of the file: forward declarations can replace it, or the first use that
+// needs it. text has one line for each namespace. lines: the lines of the file that use the type
+export type SideIncludeForward =
+	| { state: 'possible'; text: string; types: { name: string; lines: number[] }[] }
+	| { state: 'needed'; blocker: { name: string; kind: string; line: number } };
 
 export type SideIncludeColor = 'path' | 'read' | 'muted' | 'check' | 'definition' | 'write' | 'ripple' | 'problem';
 
@@ -396,6 +403,7 @@ export interface SideIncludeNode {
 	isUsed?: boolean; // an include of the file: the file uses a name of the header. Undefined if the check does not apply
 	use?: { name: string; line: number; node?: number }; // node: the node of the file of the name
 	first?: number; // a skipped node: the node that entered the file before
+	forward?: SideIncludeForward; // a used include of the file. Undefined if the check does not apply
 }
 
 // Threads and races in the side view: the threads of the file, the shared data with a verdict for each item, the code
@@ -752,6 +760,7 @@ export type FromSide =
 	// a click on a member in the panel of "Outline", with a UTF-8 column from 1 as the engine gives it. toDefinition: Ctrl+click
 	// on a function with no known definition, so the extension asks the definition providers
 	| { type: 'outlineGo'; file: string; line: number; col: number; toDefinition?: boolean }
+	| { type: 'copyForward'; text: string } // the button Copy of the forward declarations of an include
 	| SideAction;
 
 // The state that the webview keeps for the restore after a reload of the window

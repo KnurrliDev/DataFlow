@@ -596,6 +596,11 @@ suite('Include Hierarchy in the side view', () => {
 		const algorithm = includes.nodes.find((n) => n.parent === 0 && n.name === '<algorithm>')!;
 		assert.strictEqual(algorithm.group, 'C++ standard library');
 		assert.strictEqual(includes.stats.includes, 4);
+		// the file needs types.hpp: best_preset() returns a type of it by value. The standard library gets no check
+		assert.deepStrictEqual(types.forward, {
+			state: 'needed', blocker: { name: 'charge::Preset', kind: 'a return value by value', line: lineOf('std::optional<charge::Preset> best_preset(') },
+		});
+		assert.deepStrictEqual([algorithm.forward, includes.stats.forward], [undefined, 0]);
 		assert.ok(includes.stats.total > includes.stats.lines * 10, JSON.stringify(includes.stats));
 		assert.ok(includes.groups.some((g) => g.name === 'project headers') && includes.groups.some((g) => g.name === 'this file'));
 	});
@@ -618,6 +623,34 @@ suite('Include Hierarchy in the side view', () => {
 		await waitFor(() => !api.store.state.lenses.includes && api.side.includes === null, 5000, () => JSON.stringify(api.store.state.lenses));
 		api.side.receive({ type: 'toggleLens', lens: 'includes' });
 		await waitFor(() => api.side.includes?.name === 'battery.cpp', 30000, () => JSON.stringify(api.store.state.lenses));
+	});
+
+	test('In a header, forward declarations can replace an include that the header uses only through pointers and references', async function () {
+		this.timeout(120000);
+		const header = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'include', 'battery', 'planner.hpp');
+		const headerLine = (text: string) => readFileSync(header, 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
+		await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(header), vscode.ViewColumn.One);
+		await waitFor(() => api.side.includes?.name === 'planner.hpp', 90000, () => JSON.stringify(api.side.includes?.stats ?? null));
+		const includes = api.side.includes!;
+		const typesLine = headerLine('#include <battery/types.hpp>');
+		const types = includes.nodes.find((n) => n.parent === 0 && n.line === typesLine)!;
+		assert.deepStrictEqual(types.forward, {
+			state: 'possible',
+			text: 'namespace electricity::power_ctrl { struct MeterRead; }\nnamespace charge { struct State; struct Schedule; struct Preset; struct CostModel; }',
+			types: [
+				{ name: 'electricity::power_ctrl::MeterRead', lines: [headerLine('lastRead_')] },
+				{ name: 'charge::State', lines: [headerLine('void plan(')] },
+				{ name: 'charge::Schedule', lines: [headerLine('void plan(')] },
+				{ name: 'charge::Preset', lines: [headerLine('best(')] },
+				{ name: 'charge::CostModel', lines: [headerLine('best(')] },
+			],
+		});
+		assert.deepStrictEqual(includes.hints.filter((h) => h.kind === 'forward').map((h) => [h.line, h.text]), [[typesLine, '→ 5 forward declarations']]);
+		const pool = includes.nodes.find((n) => n.parent === 0 && n.name === '<battery/worker_pool.hpp>')!;
+		assert.deepStrictEqual(pool.forward, {
+			state: 'needed', blocker: { name: 'electricity::WorkerPool', kind: 'a data member of the type', line: headerLine('WorkerPool pool_') },
+		});
+		assert.strictEqual(includes.stats.forward, 1);
 	});
 });
 

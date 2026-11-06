@@ -370,6 +370,13 @@ button.badge:hover { background: color-mix(in srgb, var(--c) 26%, transparent); 
 .hint.inc-hint:hover { background: color-mix(in srgb, var(--c) 24%, transparent); }
 .hint.inc-hint.k-large { --c: var(--vscode-dataflow-write); }
 .hint.inc-hint.k-unused, .hint.inc-hint.k-missing { --c: var(--vscode-dataflow-problem); }
+.hint.inc-hint.k-forward, .badge.k-forward { --c: var(--vscode-dataflow-check); }
+.fwd { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.fwd-code { display: flex; align-items: flex-start; gap: 8px; }
+.fwd-code pre { flex: 1; min-width: 0; margin: 0; padding: 4px 8px; border-radius: 4px; overflow-x: auto; white-space: pre;
+  font-family: var(--vscode-editor-font-family); font-size: 0.92em;
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15)); }
+.fwd-type { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; font-size: 0.92em; }
 .hint.inc-hint.k-skipped { font-style: italic; background: transparent; }
 .badge.k-muted { --c: var(--vscode-descriptionForeground); }
 .badge.k-problem { --c: var(--vscode-dataflow-problem); }
@@ -386,7 +393,10 @@ button.badge:hover { background: color-mix(in srgb, var(--c) 26%, transparent); 
 .irow[aria-selected="true"] { background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground)); }
 .irow.s-skipped .f { opacity: 0.6; }
 .iname { display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; }
-.iname .f { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--vscode-editor-font-family); font-size: 0.92em; }
+.iname .f { min-width: 6ch; overflow: hidden; text-overflow: ellipsis; font-family: var(--vscode-editor-font-family); font-size: 0.92em; }
+/* in a narrow column the badges shrink first, so the name of the header stays */
+.iname .badge { min-width: 0; flex-shrink: 4; overflow: hidden; text-overflow: ellipsis; }
+.iname .badge.k-forward { flex-shrink: 0; }
 .iname .iline { color: var(--vscode-descriptionForeground); font-size: 0.88em; }
 .tw { flex: none; width: 14px; padding: 0; border: 0; background: none; color: inherit; cursor: pointer; font: inherit; }
 .ibar { height: 6px; overflow: hidden; border-radius: 3px; background: color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent); }

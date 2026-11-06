@@ -552,6 +552,10 @@ export class SideViewController implements vscode.Disposable {
 			case 'guideCopy':
 				void this.copyGuideSummary();
 				break;
+			case 'copyForward':
+				void vscode.env.clipboard.writeText(message.text).then(() =>
+					vscode.window.setStatusBarMessage('DataFlow: The forward declarations are on the clipboard.', 4000));
+				break;
 			case 'guideClose':
 				this.store.update({ guide: undefined });
 				break;

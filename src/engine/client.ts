@@ -301,7 +301,14 @@ export interface IncludeNode {
 	isOwn?: boolean; // the header of the main file, for example a.h for a.cpp
 	isUsed?: boolean; // an entered header that the main file includes: the main file uses a name of it
 	use?: { name: string; line: number; node?: number }; // the first use. node: the node of the file of the name
+	forward?: IncludeForward; // a used include of the main file. Undefined if the check does not apply
 }
+
+// The forward declaration check of an include: forward declarations can replace it, or the first use that needs it.
+// text has one line for each namespace. lines: the lines of the main file that use the type
+export type IncludeForward =
+	| { state: 'possible'; text: string; types: { name: string; lines: number[] }[] }
+	| { state: 'needed'; blocker: { name: string; kind: string; line: number } };
 
 export interface IncludeModel {
 	files: IncludeFile[];

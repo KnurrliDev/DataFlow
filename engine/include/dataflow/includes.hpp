@@ -24,6 +24,11 @@
       "IWYU pragma: begin_exports" and "IWYU pragma: end_exports", is also an export
     > no check: an include of the main file with "IWYU pragma: keep" or "IWYU pragma: export", a header with code and
       with no include guard, for example an X macro file, and a source file, for example moc_x.cpp
+    > forward declarations: forward declarations can replace a used include of a project or a library if each name that
+      the main file uses from it is a type with a forward declaration, and no place of the main file needs the full
+      type. a place that needs the full type is, for example, a variable or a data member by value, a base class, a
+      member access, a construction, a call that returns the type by value, sizeof, new and delete. the check is
+      conservative: a template argument of a template that is not on a short list needs the full type
 */
 
 namespace DataFlow {
@@ -51,6 +56,16 @@ namespace DataFlow {
     std::vector<uint32_t> keep_;   // the lines of the includes with "IWYU pragma: keep"
   };  // HeaderExports
 
+  // the result of the forward declaration check of an include of the main file
+  struct IncludeForward {
+    bool isPossible_ = false;  // forward declarations can replace the include
+    std::string text_;         // possible: the forward declarations, for example namespace power { class Battery; }
+    std::vector<std::pair<std::string, std::vector<uint32_t>>> types_;  // possible: each type and the lines of its uses
+    std::string blockerName_;  // needed: the first name or type that needs the include
+    std::string blockerKind_;  // needed: why, for example "a member access"
+    uint32_t blockerLine_ = 0;
+  };  // IncludeForward
+
   struct IncludeNode {
     int32_t file_   = -1;  // -1 for a file that the preprocessor did not find
     int32_t parent_ = -1;
@@ -62,6 +77,7 @@ namespace DataFlow {
     bool isOwn_         = false;  // the header of the main file, for example a.h for a.cpp
     std::optional<bool> isUsed_;  // an entered include of the main file: the main file uses a name of it
     IncludeUse use_;
+    std::optional<IncludeForward> forward_;  // a used include of the main file of a project or a library
   };  // IncludeNode
 
   struct IncludeModel {
@@ -73,6 +89,7 @@ namespace DataFlow {
 
   struct IncludeOptions {
     std::vector<std::string> roots_;  // the folders of the project. a file in them is a project header
+    bool hasErrors_ = false;          // the parse has errors, so the ast is not complete: no forward declaration check
   };  // IncludeOptions
 
   // the result of a pass of the preprocessor. a later parse can use it again while the directives of the main file, the
@@ -687,13 +704,533 @@ namespace DataFlow {
     }  // main_macro_uses
   }  // namespace Detail
 
+  //----------------------------------
+  // Forward declarations
+
+  namespace Detail {
+    // a reference of the main file to a declaration, and a place of the main file that needs the full type of a class
+    struct ForwardRef {
+      const clang::Decl* decl_ = nullptr;  // the canonical declaration
+      uint32_t line_           = 0;
+    };  // ForwardRef
+
+    struct ForwardNeed {
+      const clang::CXXRecordDecl* record_ = nullptr;
+      uint32_t line_                      = 0;
+      const char* kind_                   = "";  // for example "a member access"
+    };  // ForwardNeed
+
+    // a template whose instantiation with a type argument does not need the full type of the argument. a different
+    // template is conservative: its type arguments need their full types
+    [[nodiscard]] inline bool is_incomplete_ok_template(const clang::ClassTemplateSpecializationDecl& _spec) {
+      const clang::ClassTemplateDecl* tpl = _spec.getSpecializedTemplate();
+      const llvm::StringRef name          = tpl->getName();
+      if (tpl->isInStdNamespace()) return name == "shared_ptr" || name == "weak_ptr";
+      return llvm::is_contained({"TObjectPtr", "TWeakObjectPtr", "TSoftObjectPtr", "TSubclassOf", "QPointer"}, name);
+    }  // is_incomplete_ok_template
+
+    // the classes whose full types a declaration or an expression of a type needs: the class of the type, and the type
+    // arguments of a template that needs them. a pointer or a reference needs no full type
+    inline void full_types(clang::QualType _t, std::vector<const clang::CXXRecordDecl*>& _out,
+                           const uint32_t _depth = 0) {
+      if (_t.isNull() || _depth > 8) return;
+      _t = _t.getCanonicalType();
+      if (_t->isReferenceType() || _t->isPointerType() || _t->isMemberPointerType() || _t->isFunctionType()) return;
+      if (const clang::ArrayType* a = _t->getAsArrayTypeUnsafe()) {
+        full_types(a->getElementType(), _out, _depth + 1);
+        return;
+      }
+      // an enum: its opaque declaration makes the enum complete
+      const clang::CXXRecordDecl* rd = _t->getAsCXXRecordDecl();
+      if (!rd) return;
+      _out.push_back(rd);
+      if (const auto* spec = llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(rd);
+          spec && !is_incomplete_ok_template(*spec))
+        for (const clang::TemplateArgument& arg : spec->getTemplateArgs().asArray())
+          if (arg.getKind() == clang::TemplateArgument::Type) full_types(arg.getAsType(), _out, _depth + 1);
+    }  // full_types
+
+    // the references of the main file to declarations, and the places that need full types
+    class ForwardUseCollector : public clang::RecursiveASTVisitor<ForwardUseCollector> {
+      using Base = clang::RecursiveASTVisitor<ForwardUseCollector>;
+      const clang::ASTContext& ctx_;
+      const clang::SourceManager& sm_;
+
+     public:
+      std::vector<ForwardRef> refs_;
+      std::vector<ForwardNeed> needs_;
+
+      explicit ForwardUseCollector(const clang::ASTContext& _ctx) : ctx_(_ctx), sm_(_ctx.getSourceManager()) {}
+
+      // the code that the user wrote: no instantiations of templates
+      bool TraverseDecl(clang::Decl* _d) {
+        if (const auto* fn = llvm::dyn_cast_or_null<clang::FunctionDecl>(_d); fn && fn->isTemplateInstantiation())
+          return true;
+        const auto* spec = llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(_d);
+        if (spec && spec->getSpecializationKind() == clang::TSK_ImplicitInstantiation) return true;
+        return Base::TraverseDecl(_d);
+      }  // TraverseDecl
+
+      bool VisitDeclRefExpr(clang::DeclRefExpr* _e) {
+        ref(_e->getDecl(), _e->getLocation());
+        // an explicit template argument, for example of std::make_shared<T>()
+        for (const clang::TemplateArgumentLoc& arg : _e->template_arguments())
+          if (arg.getArgument().getKind() == clang::TemplateArgument::Type)
+            need(arg.getArgument().getAsType(), _e->getLocation(), "a template argument");
+        need_template_args(_e->getDecl(), _e->getLocation());
+        return true;
+      }
+
+      bool VisitMemberExpr(clang::MemberExpr* _e) {
+        ref(_e->getMemberDecl(), _e->getMemberLoc());
+        const clang::QualType base = _e->getBase()->getType();
+        need(_e->isArrow() ? base->getPointeeType() : base, _e->getMemberLoc(), "a member access");
+        need_template_args(_e->getMemberDecl(), _e->getMemberLoc());
+        return true;
+      }
+
+      bool VisitCXXConstructExpr(clang::CXXConstructExpr* _e) {
+        ref(_e->getConstructor(), _e->getLocation());
+        need(_e->getType(), _e->getLocation(), "an object of the type");
+        return true;
+      }
+
+      bool VisitOverloadExpr(clang::OverloadExpr* _e) {
+        for (const clang::NamedDecl* d : _e->decls()) ref(d, _e->getNameLoc());
+        return true;
+      }
+
+      bool VisitUsingDecl(clang::UsingDecl* _d) {
+        for (const clang::UsingShadowDecl* s : _d->shadows()) ref(s->getTargetDecl(), _d->getLocation());
+        return true;
+      }
+
+      // a definition of a function needs the full types of its parameters and of its return value. a definition of a
+      // function that a header declares, for example a member function, uses that declaration
+      bool VisitFunctionDecl(clang::FunctionDecl* _d) {
+        ref(_d, _d->getLocation());
+        need_class(_d, "a definition of a member function");
+        if (_d->doesThisDeclarationHaveABody()) need_signature(*_d, _d->getLocation());
+        return true;
+      }
+
+      // the visitor does not visit the call operator of a lambda
+      bool VisitLambdaExpr(clang::LambdaExpr* _e) {
+        if (const clang::CXXMethodDecl* op = _e->getCallOperator()) need_signature(*op, _e->getBeginLoc());
+        return true;
+      }
+
+      // a variable needs the full type, but not a declaration with extern and not a static data member in its class
+      bool VisitVarDecl(clang::VarDecl* _d) {
+        need_class(_d, "a definition of a static data member");
+        if (llvm::isa<clang::ParmVarDecl>(_d) || _d->isThisDeclarationADefinition() == clang::VarDecl::DeclarationOnly)
+          return true;
+        need(_d->getType(), _d->getLocation(), "a variable of the type");
+        return true;
+      }
+
+      bool VisitFieldDecl(clang::FieldDecl* _d) {
+        need(_d->getType(), _d->getLocation(), "a data member of the type");
+        return true;
+      }
+
+      bool VisitCXXRecordDecl(clang::CXXRecordDecl* _d) {
+        if (_d->isThisDeclarationADefinition())
+          for (const clang::CXXBaseSpecifier& b : _d->bases()) need(b.getType(), b.getBeginLoc(), "a base class");
+        return true;
+      }
+
+      bool VisitTypeLoc(clang::TypeLoc _tl) {
+        const clang::SourceLocation at = _tl.getBeginLoc();
+        if (const auto t = _tl.getAs<clang::TagTypeLoc>())
+          ref(t.getDecl(), at);
+        else if (const auto t = _tl.getAs<clang::TypedefTypeLoc>())
+          ref(t.getDecl(), at);
+        else if (const auto t = _tl.getAs<clang::UsingTypeLoc>())
+          ref(t.getDecl()->getTargetDecl(), at);
+        else if (const auto t = _tl.getAs<clang::TemplateSpecializationTypeLoc>())
+          ref(t.getTypePtr()->getTemplateName().getAsTemplateDecl(), at);
+        else if (const auto t = _tl.getAs<clang::DeducedTemplateSpecializationTypeLoc>())
+          ref(t.getTypePtr()->getTemplateName().getAsTemplateDecl(), at);
+        return true;
+      }
+
+      // a call that returns a class by value makes an object of the class. the call is a prvalue. getCallReturnType
+      // is not safe in templates
+      bool VisitCallExpr(clang::CallExpr* _e) {
+        if (_e->isPRValue()) need(_e->getType(), _e->getBeginLoc(), "a call that returns the type by value");
+        return true;
+      }
+
+      bool VisitMaterializeTemporaryExpr(clang::MaterializeTemporaryExpr* _e) {
+        need(_e->getType(), _e->getBeginLoc(), "a temporary object");
+        return true;
+      }
+
+      // an aggregate initialization, for example X{1, 2}, makes an object with no call of a constructor
+      bool VisitInitListExpr(clang::InitListExpr* _e) {
+        need(_e->getType(), _e->getBeginLoc(), "an object of the type");
+        return true;
+      }
+
+      // sizeof(X&) is the size of X
+      bool VisitUnaryExprOrTypeTraitExpr(clang::UnaryExprOrTypeTraitExpr* _e) {
+        need(_e->getTypeOfArgument().getNonReferenceType(), _e->getBeginLoc(), "sizeof or alignof");
+        return true;
+      }
+
+      bool VisitCXXNewExpr(clang::CXXNewExpr* _e) {
+        need(_e->getAllocatedType(), _e->getBeginLoc(), "a new expression");
+        return true;
+      }
+
+      bool VisitCXXDeleteExpr(clang::CXXDeleteExpr* _e) {
+        need_pointee(_e->getArgument()->getType(), _e->getBeginLoc(), "a delete expression");
+        return true;
+      }
+
+      bool VisitCXXTypeidExpr(clang::CXXTypeidExpr* _e) {
+        need(_e->isTypeOperand() ? _e->getTypeOperand(ctx_) : _e->getExprOperand()->getType(), _e->getBeginLoc(),
+             "a typeid expression");
+        return true;
+      }
+
+      // a cast between a class and its base needs the full types of both
+      bool VisitCastExpr(clang::CastExpr* _e) {
+        switch (_e->getCastKind()) {
+          case clang::CK_DerivedToBase:
+          case clang::CK_UncheckedDerivedToBase:
+          case clang::CK_BaseToDerived:
+          case clang::CK_Dynamic:
+          case clang::CK_DerivedToBaseMemberPointer:
+          case clang::CK_BaseToDerivedMemberPointer:
+            need_pointee(_e->getType(), _e->getBeginLoc(), "a cast between classes");
+            need_pointee(_e->getSubExpr()->getType(), _e->getBeginLoc(), "a cast between classes");
+            break;
+          default:
+            break;
+        }
+        return true;
+      }
+
+      // pointer arithmetic needs the size of the type
+      bool VisitBinaryOperator(clang::BinaryOperator* _e) {
+        if (_e->isAdditiveOp() || _e->getOpcode() == clang::BO_AddAssign || _e->getOpcode() == clang::BO_SubAssign)
+          for (const clang::Expr* side : {_e->getLHS(), _e->getRHS()})
+            if (side->getType()->isPointerType())
+              need_pointee(side->getType(), _e->getOperatorLoc(), "pointer arithmetic");
+        return true;
+      }
+
+      bool VisitUnaryOperator(clang::UnaryOperator* _e) {
+        if (_e->isIncrementDecrementOp() && _e->getSubExpr()->getType()->isPointerType())
+          need_pointee(_e->getSubExpr()->getType(), _e->getOperatorLoc(), "pointer arithmetic");
+        return true;
+      }
+
+      bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr* _e) {
+        need_pointee(_e->getBase()->getType(), _e->getBeginLoc(), "pointer arithmetic");
+        return true;
+      }
+
+      // a throw and a catch need the full type, also through a pointer or a reference
+      bool VisitCXXThrowExpr(clang::CXXThrowExpr* _e) {
+        if (const clang::Expr* sub = _e->getSubExpr()) need_pointee(sub->getType(), _e->getBeginLoc(), "a throw");
+        return true;
+      }
+
+      bool VisitCXXCatchStmt(clang::CXXCatchStmt* _s) {
+        need_pointee(_s->getCaughtType(), _s->getBeginLoc(), "a catch");
+        return true;
+      }
+
+     private:
+      // the line of a place in the main file, or 0
+      [[nodiscard]] uint32_t main_line(const clang::SourceLocation _loc) const {
+        const clang::SourceLocation at = sm_.getFileLoc(_loc);
+        return at.isValid() && sm_.isInMainFile(at) ? sm_.getExpansionLineNumber(at) : 0;
+      }  // main_line
+
+      void ref(const clang::Decl* _d, const clang::SourceLocation _loc) {
+        if (!_d) return;
+        if (const uint32_t line = main_line(_loc)) refs_.push_back({_d->getCanonicalDecl(), line});
+      }  // ref
+
+      void need(const clang::QualType _t, const clang::SourceLocation _loc, const char* _kind) {
+        const uint32_t line = main_line(_loc);
+        if (!line || _t.isNull() || _t->isDependentType()) return;
+        std::vector<const clang::CXXRecordDecl*> records;
+        full_types(_t, records);
+        for (const clang::CXXRecordDecl* rd : records) needs_.push_back({rd, line, _kind});
+      }  // need
+
+      void need_pointee(const clang::QualType _t, const clang::SourceLocation _loc, const char* _kind) {
+        if (_t.isNull()) return;
+        need(_t->isPointerType() || _t->isReferenceType() ? _t->getPointeeType() : _t, _loc, _kind);
+      }  // need_pointee
+
+      // a definition out of its class, for example of a member function, needs the class
+      void need_class(const clang::Decl* _d, const char* _kind) {
+        const auto* rd = llvm::dyn_cast<clang::CXXRecordDecl>(_d->getDeclContext());
+        if (!rd || !_d->isOutOfLine()) return;
+        if (const uint32_t line = main_line(_d->getLocation())) needs_.push_back({rd, line, _kind});
+      }  // need_class
+
+      void need_signature(const clang::FunctionDecl& _fn, const clang::SourceLocation _loc) {
+        for (const clang::ParmVarDecl* p : _fn.parameters())
+          need(p->getType(), p->getLocation(), "a parameter by value");
+        need(_fn.getReturnType(), _loc, "a return value by value");
+      }  // need_signature
+
+      // a call of a function template with a class as a type argument, for example std::swap(a, b), probably needs the
+      // full type of the class. a reference counts as the class, because a forwarding reference deduces a reference
+      void need_template_args(const clang::ValueDecl* _d, const clang::SourceLocation _loc) {
+        const auto* fn                          = llvm::dyn_cast_or_null<clang::FunctionDecl>(_d);
+        const clang::TemplateArgumentList* args = fn ? fn->getTemplateSpecializationArgs() : nullptr;
+        if (!args || !main_line(_loc)) return;
+        const auto need_arg = [&](const clang::TemplateArgument& _arg) {
+          if (_arg.getKind() == clang::TemplateArgument::Type)
+            need(_arg.getAsType().getNonReferenceType(), _loc, "a template argument");
+        };
+        for (const clang::TemplateArgument& arg : args->asArray()) {
+          if (arg.getKind() != clang::TemplateArgument::Pack) {
+            need_arg(arg);
+            continue;
+          }
+          for (const clang::TemplateArgument& element : arg.pack_elements()) need_arg(element);
+        }
+      }  // need_template_args
+
+    };  // ForwardUseCollector
+
+    // a forward declaration and its namespace, for example "class Battery;" in "power"
+    struct ForwardDecl {
+      std::string scope_;
+      std::string text_;
+    };  // ForwardDecl
+
+    // a template parameter that a forward declaration can give again: no default argument, no constraint, and the type
+    // of a non-type parameter is a builtin type or auto. a constraint or a different type can need the header
+    [[nodiscard]] inline bool is_simple_parameter(const clang::NamedDecl* _p) {
+      if (const auto* t = llvm::dyn_cast<clang::TemplateTypeParmDecl>(_p))
+        return !t->hasDefaultArgument() && !t->hasTypeConstraint();
+      if (const auto* n = llvm::dyn_cast<clang::NonTypeTemplateParmDecl>(_p))
+        return !n->hasDefaultArgument() && (n->getType()->isBuiltinType() || n->getType()->getContainedAutoType());
+      if (const auto* tt = llvm::dyn_cast<clang::TemplateTemplateParmDecl>(_p)) return !tt->hasDefaultArgument();
+      return false;
+    }  // is_simple_parameter
+
+    // the forward declaration of a type, or nothing: a class, a struct, a union or a class template at namespace
+    // scope, or an enum with a fixed underlying type. a type in an anonymous, an inline or a reserved namespace, for
+    // example std, has none. a class template with default arguments has none, because a forward declaration cannot
+    // give them again. a class template with a constraint has none, because the concept can be in the same header. the
+    // keyword is the keyword of the definition, because msvc gives class and struct different names
+    [[nodiscard]] inline std::optional<ForwardDecl> forward_declaration(const clang::Decl* _d,
+                                                                        const clang::ASTContext& _ctx) {
+      const clang::TagDecl* tag           = nullptr;
+      const clang::ClassTemplateDecl* tpl = nullptr;
+      if (const auto* t = llvm::dyn_cast<clang::ClassTemplateDecl>(_d)) {
+        tpl = t;
+        tag = t->getTemplatedDecl();
+      } else if (const auto* s = llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(_d)) {
+        // a specialization needs the declaration of its template
+        tpl = s->getSpecializedTemplate();
+        tag = tpl->getTemplatedDecl();
+      } else if (const auto* r = llvm::dyn_cast<clang::CXXRecordDecl>(_d)) {
+        tpl = r->getDescribedClassTemplate();
+        tag = r;
+      } else {
+        tag = llvm::dyn_cast<clang::TagDecl>(_d);
+      }
+      if (!tag || tag->getName().empty()) return std::nullopt;
+      if (const clang::TagDecl* def = tag->getDefinition()) tag = def;
+
+      std::vector<std::string> parts;
+      for (const clang::DeclContext* dc = tag->getDeclContext(); !dc->isTranslationUnit(); dc = dc->getParent()) {
+        if (llvm::isa<clang::LinkageSpecDecl>(dc)) continue;
+        const auto* ns = llvm::dyn_cast<clang::NamespaceDecl>(dc);
+        if (!ns || ns->isAnonymousNamespace() || ns->isInline()) return std::nullopt;
+        const llvm::StringRef name = ns->getName();
+        if (name == "std" || name.starts_with("__") ||
+            (name.size() > 1 && name[0] == '_' && std::isupper(static_cast<unsigned char>(name[1]))))
+          return std::nullopt;
+        parts.push_back(name.str());
+      }
+      ForwardDecl out;
+      for (auto it = parts.rbegin(); it != parts.rend(); ++it) out.scope_ += (out.scope_.empty() ? "" : "::") + *it;
+
+      if (const auto* e = llvm::dyn_cast<clang::EnumDecl>(tag)) {
+        if (!e->isFixed()) return std::nullopt;
+        out.text_ = e->isScoped() ? (e->isScopedUsingClassTag() ? "enum class " : "enum struct ") : "enum ";
+        out.text_ += e->getName().str();
+        // a builtin type gets its name, because the source range of "unsigned char" has only the first keyword. the
+        // text of a declaration is never cut
+        if (const clang::TypeSourceInfo* written = e->getIntegerTypeSourceInfo()) {
+          const clang::QualType type = written->getType();
+          out.text_ +=
+              " : " + (llvm::isa<clang::BuiltinType>(type.getTypePtr())
+                           ? type.getAsString(_ctx.getPrintingPolicy())
+                           : one_line(source_text(_ctx, written->getTypeLoc().getSourceRange()), std::string::npos));
+        }
+        out.text_ += ';';
+        return out;
+      }
+      if (tpl) {
+        // a later declaration can add default arguments. the most recent declaration has all of them
+        const clang::TemplateParameterList& list = *tpl->getMostRecentDecl()->getTemplateParameters();
+        if (list.getRequiresClause()) return std::nullopt;
+        std::string params;
+        for (const clang::NamedDecl* p : list) {
+          if (!is_simple_parameter(p)) return std::nullopt;
+          params += (params.empty() ? "" : ", ") + one_line(source_text(_ctx, p->getSourceRange()), std::string::npos);
+        }
+        out.text_ = "template <" + params + "> ";
+      }
+      out.text_ += tag->getKindName().str() + ' ' + tag->getName().str() + ';';
+      return out;
+    }  // forward_declaration
+
+    // why a name of an include has no forward declaration
+    [[nodiscard]] inline const char* forward_blocker_kind(const clang::Decl* _d) {
+      if (llvm::isa<clang::CXXConstructorDecl>(_d)) return "a constructor";
+      if (llvm::isa<clang::CXXMethodDecl, clang::FieldDecl>(_d)) return "a member";
+      if (llvm::isa<clang::FunctionDecl, clang::FunctionTemplateDecl>(_d)) return "a function";
+      if (llvm::isa<clang::VarDecl, clang::VarTemplateDecl>(_d)) return "a variable";
+      if (llvm::isa<clang::EnumConstantDecl>(_d)) return "an enumerator";
+      if (llvm::isa<clang::TypedefNameDecl, clang::TypeAliasTemplateDecl>(_d)) return "a type alias";
+      if (llvm::isa<clang::ConceptDecl>(_d)) return "a concept";
+      if (llvm::isa<clang::TagDecl, clang::ClassTemplateDecl>(_d)) return "a type with no forward declaration";
+      return "a declaration";
+    }  // forward_blocker_kind
+
+    [[nodiscard]] inline std::string decl_name(const clang::Decl* _d) {
+      const auto* named = llvm::dyn_cast<clang::NamedDecl>(_d);
+      return named ? named->getQualifiedNameAsString() : std::string();
+    }  // decl_name
+
+    // the forward declaration check of the used includes of the main file. _names[top] has the files whose names count
+    // for the include top: its file, the files that it exports, and the files with a used name that only it brings in
+    inline void add_forward_checks(IncludeModel& _model, clang::ASTUnit& _ast, const std::vector<int32_t>& _tops,
+                                   const std::vector<bool>& _checked, const std::vector<std::vector<int32_t>>& _names,
+                                   const UseMap& _macroUses) {
+      clang::ASTContext& ctx         = _ast.getASTContext();
+      const clang::SourceManager& sm = _ast.getSourceManager();
+      // only the declarations of the main file: the code of the headers is not necessary, and it is slow
+      ForwardUseCollector collector(ctx);
+      for (auto it = _ast.top_level_begin(); it != _ast.top_level_end(); ++it) {
+        const clang::SourceRange range = (*it)->getSourceRange();
+        if (sm.isInMainFile(sm.getFileLoc(range.getBegin())) || sm.isInMainFile(sm.getFileLoc(range.getEnd())))
+          collector.TraverseDecl(*it);
+      }
+
+      // the files of the model by the key of their path
+      std::unordered_map<std::string, int32_t> fileOf;
+      for (int32_t f = 0; f < int32_t(_model.files_.size()); ++f)
+        fileOf.try_emplace(normalize_path(_model.files_[f].path_), f);
+      std::unordered_map<uint32_t, int32_t> fileOfId;  // by the hash of a file id
+      const auto file_at = [&](const clang::SourceLocation _loc) -> int32_t {
+        const clang::SourceLocation at = sm.getFileLoc(_loc);
+        if (at.isInvalid() || sm.isInMainFile(at)) return -1;
+        const clang::FileID fid = sm.getFileID(at);
+        const auto [it, isNew]  = fileOfId.try_emplace(fid.getHashValue(), -1);
+        if (isNew)
+          if (const auto f = fileOf.find(normalize_path(file_of(sm, at))); f != fileOf.end()) it->second = f->second;
+        return it->second;
+      };
+      // the file of the definition of a class. an instantiation of a template has the file of its template
+      const auto definition_file = [&](const clang::CXXRecordDecl* _rd) -> int32_t {
+        if (const clang::CXXRecordDecl* pattern = _rd->getTemplateInstantiationPattern()) _rd = pattern;
+        const clang::CXXRecordDecl* def = _rd->getDefinition();
+        return file_at((def ? def : _rd)->getLocation());
+      };
+
+      for (const int32_t top : _tops) {
+        IncludeNode& node = _model.nodes_[top];
+        if (!_checked[top] || !node.isUsed_.value_or(false) || node.isOwn_) continue;
+        const std::string& group = _model.files_[node.file_].group_;
+        if (llvm::is_contained({"C++ standard library", "Windows SDK", "Clang built-ins", "system headers"}, group))
+          continue;
+        const std::unordered_set<int32_t> files(_names[top].begin(), _names[top].end());
+
+        // the names of the include, in the sequence of their first use
+        std::vector<std::pair<const clang::Decl*, std::vector<uint32_t>>> names;
+        std::unordered_map<const clang::Decl*, size_t> nameIndex;
+        for (const ForwardRef& r : collector.refs_) {
+          if (const auto it = nameIndex.find(r.decl_); it != nameIndex.end()) {
+            if (names[it->second].second.back() != r.line_) names[it->second].second.push_back(r.line_);
+            continue;
+          }
+          const bool isOfInclude = llvm::any_of(
+              r.decl_->redecls(), [&](const clang::Decl* _d) { return files.contains(file_at(_d->getLocation())); });
+          if (!isOfInclude) continue;
+          nameIndex.emplace(r.decl_, names.size());
+          names.push_back({r.decl_, {r.line_}});
+        }
+        for (auto& [decl, lines] : names) {
+          std::ranges::sort(lines);
+          lines.erase(std::ranges::unique(lines).begin(), lines.end());
+        }
+
+        // the first use that needs the include: a macro, a name with no forward declaration, or a full type
+        IncludeForward out;
+        const auto block = [&](std::string _name, const char* _kind, const uint32_t _line) {
+          if (out.blockerLine_ != 0 && out.blockerLine_ <= _line) return;
+          out.blockerName_ = std::move(_name);
+          out.blockerKind_ = _kind;
+          out.blockerLine_ = _line;
+        };
+        for (const ForwardNeed& n : collector.needs_)
+          if (files.contains(definition_file(n.record_))) block(decl_name(n.record_), n.kind_, n.line_);
+        for (const int32_t f : files)
+          if (const auto it = _macroUses.find(normalize_path(_model.files_[f].path_)); it != _macroUses.end())
+            block(it->second.name_, "a macro", it->second.line_);
+        std::vector<std::pair<std::string, std::vector<std::string>>> scopes;  // the declarations of each namespace
+        for (const auto& [decl, lines] : names) {
+          const std::optional<ForwardDecl> fd = forward_declaration(decl, ctx);
+          if (!fd) {
+            block(decl_name(decl), forward_blocker_kind(decl), lines.front());
+            continue;
+          }
+          out.types_.push_back({decl_name(decl), lines});
+          auto scope = llvm::find_if(scopes, [&](const auto& _s) { return _s.first == fd->scope_; });
+          if (scope == scopes.end()) scope = scopes.insert(scopes.end(), {fd->scope_, {}});
+          if (!llvm::is_contained(scope->second, fd->text_)) scope->second.push_back(fd->text_);
+        }
+        if (names.empty() && out.blockerLine_ == 0) continue;
+
+        out.isPossible_ = out.blockerLine_ == 0 && !out.types_.empty();
+        if (out.isPossible_) {
+          for (const auto& [scope, decls] : scopes) {
+            // "namespace a::b { ... }" needs C++17. before, each namespace gets its own braces
+            std::string line, close;
+            if (!scope.empty() && ctx.getLangOpts().CPlusPlus17) {
+              line  = "namespace " + scope + " { ";
+              close = " }";
+            } else if (!scope.empty()) {
+              for (const llvm::StringRef part : llvm::split(scope, "::")) {
+                line += "namespace " + part.str() + " { ";
+                close += " }";
+              }
+            }
+            for (size_t i = 0; i < decls.size(); ++i) line += (i > 0 ? " " : "") + decls[i];
+            out.text_ += (out.text_.empty() ? "" : "\n") + line + close;
+          }
+        } else {
+          out.types_.clear();
+        }
+        node.forward_ = std::move(out);
+      }
+    }  // add_forward_checks
+  }  // namespace Detail
+
   // the include hierarchy of a pass and of the parse of the same main file: the uses, the groups and the used includes
   [[nodiscard]] inline IncludeModel build_includes(const IncludePass& _pass, clang::ASTUnit& _ast,
                                                    const std::string& _resource_dir, const IncludeOptions& _opts) {
     IncludeModel out = _pass.model_;
     if (out.nodes_.empty()) return out;
     Detail::UseMap stdUses;  // the spelled name of a public header of the standard library -> the first use
-    Detail::UseMap uses = Detail::main_macro_uses(_ast, _pass, stdUses);
+    Detail::UseMap uses            = Detail::main_macro_uses(_ast, _pass, stdUses);
+    const Detail::UseMap macroUses = uses;
 
     // the declarations that the main file uses, from the ast of the parse
     Detail::UseCollector collector(_ast.getSourceManager(), uses, stdUses);
@@ -779,6 +1316,8 @@ namespace DataFlow {
     // "IWYU pragma: keep" or "IWYU pragma: export" gets no check. a header with code and with no include guard gets no
     // check, because it can add code to the main file, for example an X macro file
     std::vector<bool> stays(out.nodes_.size(), true);
+    std::vector<bool> checked(out.nodes_.size(), false);             // the includes with a check of their uses
+    std::vector<std::vector<int32_t>> nameFiles(out.nodes_.size());  // the files whose names count for each include
     const clang::SourceManager& sm  = _ast.getSourceManager();
     const HeaderExports kept        = Detail::header_exports(sm.getBufferData(sm.getMainFileID()));
     const llvm::StringRef main_stem = llvm::sys::path::stem(out.files_[out.nodes_.front().file_].path_);
@@ -790,12 +1329,14 @@ namespace DataFlow {
       if (!Detail::is_header(path)) continue;
       if (llvm::is_contained(kept.keep_, node.line_) || llvm::is_contained(kept.lines_, node.line_)) continue;
       if (!out.files_[node.file_].isGuarded_ && node.hasCode_) continue;
+      checked[top] = true;
 
       // the names of the header, of the headers that it exports and of the public headers of the standard library
       std::optional<IncludeUse> first;
       walk(
           top,
           [&](const int32_t _i, const int32_t _n) {
+            nameFiles[top].push_back(out.nodes_[_n].file_);
             const IncludeUse* u = fileUses[out.nodes_[_n].file_];
             if (const auto it = stdUses.find(out.nodes_[_i].spelled_);
                 it != stdUses.end() && (!u || it->second.line_ < u->line_))
@@ -828,8 +1369,10 @@ namespace DataFlow {
       node.isUsed_               = true;
       node.use_                  = *fileUses[f];
       node.use_.node_            = nodeOf[f];
+      nameFiles[reachers[f].front()].push_back(f);
     }
 
+    if (!_opts.hasErrors_) Detail::add_forward_checks(out, _ast, tops, checked, nameFiles, macroUses);
     return out;
   }  // build_includes
 
@@ -870,6 +1413,20 @@ namespace DataFlow {
       if (n.isUsed_) o["isUsed"] = *n.isUsed_;
       if (n.isUsed_.value_or(false))
         o["use"] = JsonObject{{"name", n.use_.name_}, {"line", int64_t(n.use_.line_)}, {"node", int64_t(n.use_.node_)}};
+      if (const std::optional<IncludeForward>& f = n.forward_; f && f->isPossible_) {
+        JsonArray types;
+        for (const auto& [name, lines] : f->types_) {
+          JsonArray at;
+          for (const uint32_t line : lines) at.push_back(int64_t(line));
+          types.push_back(JsonObject{{"name", name}, {"lines", std::move(at)}});
+        }
+        o["forward"] = JsonObject{{"state", "possible"}, {"text", f->text_}, {"types", std::move(types)}};
+      } else if (f) {
+        o["forward"] = JsonObject{
+            {"state", "needed"},
+            {"blocker",
+             JsonObject{{"name", f->blockerName_}, {"kind", f->blockerKind_}, {"line", int64_t(f->blockerLine_)}}}};
+      }
       nodes.push_back(std::move(o));
     }
 

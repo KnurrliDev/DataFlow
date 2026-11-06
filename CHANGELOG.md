@@ -7,6 +7,7 @@
 - The engine has the new request `dataflow/definition`. It finds the definition of a name, a macro or the file of an include, if the definition providers of VS Code find none.
 - Outline of a type: right-click the name of a class, a struct, a union or an enum in the side view, and click **Outline**. A panel shows the members in the sequence of the source and the layout with the padding. It also shows the annotations of Unreal Engine and Qt, and the members of the bases.
 - The engine has the new request `dataflow/outline`.
+- Forward declarations in Include Hierarchy: an include that forward declarations can replace gets a hint and the badge **fwd**. The details show the declarations with **Copy**, and the lines that use each type. For the other used includes, the details show the first line that needs the header, and the reason. The engine request `dataflow/includes` and the MCP tool `get_includes` give the result in `forward`.
 
 ## 0.2.0
 

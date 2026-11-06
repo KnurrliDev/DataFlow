@@ -13,7 +13,7 @@ The side view shows the file of the active C++ editor with the colors of your th
 | Flow Lens | Where the value of a variable or a data member comes from, and where it goes |
 | Logic Map | One path through a function, with its events, returns, changes and warnings |
 | Hidden C++ | The operations that the compiler adds, for example copies, conversions and destructors |
-| Include Hierarchy | The lines that each include adds, and the includes that the file possibly does not use |
+| Include Hierarchy | The lines that each include adds, the includes that the file possibly does not use, and the includes that forward declarations can replace |
 | Call Hierarchy | The callers and the called functions, with the data of each call |
 | Threads and races | The code that runs on a different thread, the shared data, and the protection of each access |
 | Change Ripple | The code that the changes of your branch affect, as a story for a review |
@@ -63,7 +63,7 @@ Hidden C++ shows the operations that the compiler adds: copies, conversions, tem
 
 ### Include Hierarchy
 
-Include Hierarchy shows the lines that each include adds after the preprocessor. The tree shows the includes and the path that brings a header into the file. [Use Include Hierarchy](docs/usage.md#include-hierarchy)
+Include Hierarchy shows the lines that each include adds after the preprocessor. The tree shows the includes and the path that brings a header into the file. It also shows the includes that forward declarations can replace. [Use Include Hierarchy](docs/usage.md#include-hierarchy)
 
 ![Include Hierarchy shows the lines of each include, the tree of the includes and the path to vector.](docs/images/include-hierarchy.png)
 

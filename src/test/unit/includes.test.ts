@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import type { IncludeFile, IncludeModel, IncludeNode, IncludersResult } from '../../engine/client';
-import { buildSideIncluders, buildSideIncludes, formatLines } from '../../lenses/includes';
+import { buildSideIncluders, buildSideIncludes, formatLines, forwardHint } from '../../lenses/includes';
 
 // A model with the shape of the result of dataflow/includes for app.cpp of the engine test: a forced include, the own
 // header, a header that comes in three times, an unused header, a forwarding header, <vector> and a missing header.
@@ -25,12 +25,16 @@ function appModel(): IncludeModel {
 			node(1, 0, 0, `"${path.join(ROOT, 'force.h')}"`, 'entered', { isUsed: false }),
 			node(2, 0, 1, '"app.h"', 'entered', { isOwn: true, isUsed: true, use: { name: 'app_main', line: 9 } }),
 			node(3, 2, 2, '"base.h"', 'entered'),
-			node(4, 0, 2, '"util.h"', 'entered', { isUsed: true, use: { name: 'helper', line: 12 } }),
+			node(4, 0, 2, '"util.h"', 'entered', {
+				isUsed: true, use: { name: 'helper', line: 12 }, forward: { state: 'needed', blocker: { name: 'helper', kind: 'a function', line: 12 } },
+			}),
 			node(3, 4, 2, '"base.h"', 'skipped', { first: 3 }),
 			node(3, 0, 3, '"base.h"', 'skipped', { first: 3 }),
 			node(5, 0, 4, '"unused.h"', 'entered', { isUsed: false }),
 			node(6, 0, 5, '"macros.h"', 'entered', { isUsed: true, use: { name: 'APP_VALUE', line: 11 } }),
-			node(7, 0, 6, '"fwd.h"', 'entered', { isUsed: true, use: { name: 'Base', line: 10 } }),
+			node(7, 0, 6, '"fwd.h"', 'entered', {
+				isUsed: true, use: { name: 'Base', line: 10 }, forward: { state: 'possible', text: 'class Base;', types: [{ name: 'Base', lines: [10] }] },
+			}),
 			node(3, 7, 1, '"base.h"', 'skipped', { first: 3 }),
 			node(8, 0, 7, '<vector>', 'entered', { isUsed: true, use: { name: 'std::vector', line: 11 } }),
 			node(-1, 0, 8, '"nope.h"', 'missing'),
@@ -50,7 +54,7 @@ suite('Include Hierarchy', () => {
 		assert.deepStrictEqual(view.nodes.map((n) => n.total), [1028, 2, 5, 2, 3, 0, 0, 2, 2, 1, 0, 1000, 0]);
 		assert.deepStrictEqual(view.nodes[0].children, [1, 2, 4, 6, 7, 8, 9, 11, 12]);
 		assert.deepStrictEqual(view.nodes.map((n) => n.depth), [0, 1, 1, 2, 1, 2, 1, 1, 1, 1, 2, 1, 1]);
-		assert.deepStrictEqual(view.stats, { lines: 13, total: 1028, includes: 8, skipped: 1, unused: 1, missing: 1 });
+		assert.deepStrictEqual(view.stats, { lines: 13, total: 1028, includes: 8, skipped: 1, unused: 1, missing: 1, forward: 1 });
 	});
 
 	test('The names, the forced include, the parent files and the colors of the nodes', () => {
@@ -69,7 +73,7 @@ suite('Include Hierarchy', () => {
 		assert.deepStrictEqual([view.nodes[11].color, view.nodes[2].color, view.nodes[0].color], ['muted', 'read', 'path']);
 	});
 
-	test('The include lines of the file get hints: the added lines, included before, possibly unused and not found', () => {
+	test('The include lines of the file get hints: the added lines, included before, possibly unused, forward declarations and not found', () => {
 		const view = buildSideIncludes(appModel(), path.join(ROOT, 'app.cpp'))!;
 		assert.deepStrictEqual(view.hints.map((h) => `${h.line} ${h.kind} ${h.text}`), [
 			'1 cost +5 lines',
@@ -79,10 +83,20 @@ suite('Include Hierarchy', () => {
 			'4 unused possibly unused',
 			'5 cost +2 lines',
 			'6 cost +1 line',
+			'6 forward → class Base;',
 			'7 large +1.0k lines',
 			'8 missing not found',
 		]);
 		assert.deepStrictEqual(view.hints.filter((h) => h.line === 3).map((h) => h.node), [6]);
+		assert.deepStrictEqual(view.hints.filter((h) => h.kind === 'forward').map((h) => h.node), [9]);
+		// the nodes keep the result of the check for the badge and the details
+		assert.deepStrictEqual([view.nodes[9].forward?.state, view.nodes[4].forward?.state, view.nodes[2].forward], ['possible', 'needed', undefined]);
+	});
+
+	test('A long or a multi-line text of forward declarations gives their count in the hint', () => {
+		assert.strictEqual(forwardHint('namespace power { struct Battery; }'), '→ namespace power { struct Battery; }');
+		assert.strictEqual(forwardHint('namespace power { struct Battery; class Plan; }\nenum class Mode : unsigned char;'), '→ 3 forward declarations');
+		assert.strictEqual(forwardHint(`namespace a_long_namespace_name::and_another_one { struct ${'X'.repeat(20)}; }`), '→ 1 forward declaration');
 	});
 
 	test('Other groups get the colors of the palette, the most lines first', () => {

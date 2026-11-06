@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Components/StaticMeshComponent.h"
 #include "BatteryActor.generated.h"
 
 UENUM()
@@ -33,6 +34,10 @@ public:
 
 	UPROPERTY(VisibleAnywhere, Category = "Battery")
 	float Charge = 0.f;
+
+	/** The mesh of the battery. The header uses its class only through TObjectPtr. */
+	UPROPERTY(VisibleAnywhere, Category = "Battery")
+	TObjectPtr<UStaticMeshComponent> Mesh;
 
 private:
 	float CheapestPrice(const TArray<float>& Prices) const;

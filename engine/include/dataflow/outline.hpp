@@ -88,25 +88,6 @@ namespace DataFlow {
       return {file_of(_sm, at), _sm.getSpellingLineNumber(at), _sm.getSpellingColumnNumber(at)};
     }  // outline_place
 
-    // the text on one line with single spaces, with at most _max bytes
-    [[nodiscard]] inline std::string one_line(const llvm::StringRef _text, const size_t _max = 120) {
-      std::string out;
-      bool isSpace = false;
-      for (const char c : _text) {
-        if (std::isspace(static_cast<unsigned char>(c))) {
-          isSpace = !out.empty();
-          continue;
-        }
-        if (isSpace) out += ' ';
-        isSpace = false;
-        out += c;
-      }
-      if (out.size() <= _max) return out;
-      size_t end = _max - 3;
-      while (end > 0 && (static_cast<unsigned char>(out[end]) & 0xC0) == 0x80) --end;  // not in a utf-8 sequence
-      return out.substr(0, end) + "...";
-    }  // one_line
-
     // the macro that makes a declaration: the macro call at its place in the file, for example GENERATED_BODY. empty if
     // the body of the class has the name, also as a macro argument. a name that a macro of a different file gives to an
     // inner macro, for example to DECLARE_FUNCTION of a generated header, is not in the body

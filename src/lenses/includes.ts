@@ -12,6 +12,17 @@ const LARGE_SHARE = 0.1;
 const GROUP_COLORS: Record<string, SideIncludeColor> = { 'this file': 'path', 'project headers': 'read', 'C++ standard library': 'muted' };
 const PALETTE: SideIncludeColor[] = ['check', 'definition', 'write', 'ripple', 'problem'];
 
+// The hint of an include that forward declarations can replace shows the declarations if they fit, else their count
+const MAX_FORWARD_HINT = 60;
+
+export function forwardHint(text: string): string {
+	if (!text.includes('\n') && text.length <= MAX_FORWARD_HINT) {
+		return `→ ${text}`;
+	}
+	const n = text.split(';').length - 1;
+	return `→ ${n} forward ${n === 1 ? 'declaration' : 'declarations'}`;
+}
+
 // For example 950, 12.3k or 1.2M
 export function formatLines(n: number): string {
 	if (n >= 1e6) {
@@ -95,6 +106,7 @@ export function buildSideIncludes(model: IncludeModel, file: string): SideInclud
 			isUsed: n.isUsed,
 			use: n.use,
 			first: n.first,
+			forward: n.forward,
 		};
 	});
 
@@ -108,6 +120,9 @@ export function buildSideIncludes(model: IncludeModel, file: string): SideInclud
 			hints.push({ line: n.line, text, kind: total[i] / total[0] > LARGE_SHARE ? 'large' : 'cost', node: i });
 			if (n.isUsed === false && !n.isOwn) {
 				hints.push({ line: n.line, text: 'possibly unused', kind: 'unused', node: i });
+			}
+			if (n.forward?.state === 'possible') {
+				hints.push({ line: n.line, text: forwardHint(n.forward.text), kind: 'forward', node: i });
 			}
 		} else if (n.state === 'skipped') {
 			const by = n.first !== undefined ? nodes[n.first].parent : -1;
@@ -127,6 +142,7 @@ export function buildSideIncludes(model: IncludeModel, file: string): SideInclud
 			skipped: top.filter((i) => nodes[i].state === 'skipped').length,
 			unused: top.filter((i) => nodes[i].isUsed === false && !nodes[i].isOwn).length,
 			missing: nodes.filter((n) => n.state === 'missing').length,
+			forward: top.filter((i) => nodes[i].forward?.state === 'possible').length,
 		},
 		groups,
 		nodes: sideNodes,

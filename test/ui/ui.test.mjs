@@ -37,7 +37,7 @@ async function run(script) {
 	}
 }
 
-test('side view: the colors, the guides, the scroll sync in both directions, the cursor with no text editor, Show Calls, Ctrl+click, Outline and the restore after a reload', { timeout: 600000 }, async () => {
+test('side view: the colors, the guides, the scroll sync in both directions, the cursor with no text editor, Show Calls, Ctrl+click, Outline, forward declarations and the restore after a reload', { timeout: 600000 }, async () => {
 	const r = await run('side-snapshot.mjs');
 	assert.ok(r.spans > 100, `${r.spans} spans`);
 	assert.match(r.status, /^Engine: ready/);
@@ -87,6 +87,19 @@ test('side view: the colors, the guides, the scroll sync in both directions, the
 	assert.deepEqual([o.panel.groups, o.panel.items], [['▾Data members10'], 10], JSON.stringify(o));
 	assert.ok(o.filtered.length > 0 && o.filtered.length < 10 && o.filtered.every((t) => /charg/i.test(t)), JSON.stringify(o.filtered));
 	assert.deepEqual([o.file, o.isOpen, o.afterEscape, o.back], ['types.hpp', true, false, 'battery.cpp'], JSON.stringify(o));
+	// Include Hierarchy in a header: the include of types.hpp gets the hint and the badge of forward declarations. The
+	// details show the declarations with Copy, and the first line that needs the include of worker_pool.hpp
+	const f = r.forward;
+	assert.equal(f.file, 'planner.hpp', JSON.stringify(f));
+	assert.equal(f.hint, '→ 5 forward declarations', JSON.stringify(f));
+	assert.equal(f.details?.title, 'Forward declarations can replace this include', JSON.stringify(f));
+	assert.match(f.details.code, /^namespace electricity::power_ctrl \{ struct MeterRead; \}\nnamespace charge \{ struct State;/, JSON.stringify(f));
+	assert.equal(f.details.types.length, 5, JSON.stringify(f));
+	assert.equal(f.details.copy, 'Copy');
+	assert.deepEqual(f.badges, ['<battery/types.hpp>'], JSON.stringify(f));
+	assert.ok(f.stats.includes('1 replaceable by forward declarations'), JSON.stringify(f.stats));
+	assert.equal(f.copied, true, JSON.stringify(f));
+	assert.match(f.needed ?? '', /^The file needs the full header: line \d+ uses electricity::WorkerPool, a data member of the type\.$/, JSON.stringify(f));
 	assert.match(r.afterReload, /^battery\.cpp, \d+ spans$/);
 	assert.equal(r.dirty, false);
 });

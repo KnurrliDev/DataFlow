@@ -41,6 +41,25 @@ namespace DataFlow {
       return clang::Lexer::getSourceText(sm.getExpansionRange(_range), sm, _ctx.getLangOpts()).str();
     }  // source_text
 
+    // the text on one line with single spaces, with at most _max bytes
+    [[nodiscard]] inline std::string one_line(const llvm::StringRef _text, const size_t _max = 120) {
+      std::string out;
+      bool isSpace = false;
+      for (const char c : _text) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+          isSpace = !out.empty();
+          continue;
+        }
+        if (isSpace) out += ' ';
+        isSpace = false;
+        out += c;
+      }
+      if (out.size() <= _max) return out;
+      size_t end = _max - 3;
+      while (end > 0 && (static_cast<unsigned char>(out[end]) & 0xC0) == 0x80) --end;  // not in a utf-8 sequence
+      return out.substr(0, end) + "...";
+    }  // one_line
+
     // the span of a range. a name in a macro argument gets the position of the argument in the source.
     // a range on more than one line gets the length of its first token
     [[nodiscard]] inline Span span_of(const clang::SourceRange _range, const clang::ASTContext& _ctx) {

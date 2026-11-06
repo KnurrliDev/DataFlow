@@ -103,7 +103,8 @@ The engine parses a header with the command of a near source file, so the header
 | A nested type, a type in an anonymous namespace, or an enum with no fixed underlying type | None |
 | A type alias (`typedef`, `using`) | None |
 | A class template with default template arguments | None. The forward declaration cannot give the default arguments again. |
-| A type of the namespace `std` | None. A declaration in `std` is undefined behavior. For the stream types, the result is `#include <iosfwd>`. |
+| A class template with a constraint, or with a non-type parameter that is not a builtin type or `auto` | None. The concept or the type can be in the header (found during the implementation). |
+| A type of the namespace `std` | None. A declaration in `std` is undefined behavior. The headers of the standard library get no check. The proposed rule "the stream types give `#include <iosfwd>`" is not in the first version (5.7). |
 
 Classes of Unreal Engine (for example `AActor`) and of Qt (for example `QString`) can have forward declarations. The documentation of both recommends them in headers.
 
@@ -128,14 +129,15 @@ All other uses need the full type, for example:
 - A function body with a parameter by value.
 - A call with an argument or a result by value.
 - `std::unique_ptr<T>`, because its destructor needs the full type.
+- The implementation also found these uses: an aggregate initialization (`X{1, 2}`), a parameter by value of a lambda, `catch` and `throw` also through a pointer or a reference, a definition of a member function or a static data member out of its class, and a call of a function template with the type as a type argument, for example `std::swap(a, b)`.
 
 The engine also finds uses that have no name in the text. Examples are a call that returns the type by value, and a member access through a variable of type `auto`.
 
 ### 5.4 Engine
 
-- A new visitor `TypeUseCollector` in `includes.hpp` collects each use of each type of the used includes, with its line and its kind: `pointer`, `reference`, `declaration`, `value`, `member`, `base`, `sizeof` and others. The visitor `UseCollector` keeps only the first use of each name, so it cannot do this.
+- A new visitor `ForwardUseCollector` in `includes.hpp` collects each reference of the main file to a declaration, and each place that needs the full type of a class, with its line and its kind. The visitor `UseCollector` keeps only the first use of each name, so it cannot do this. The visitor walks only the declarations of the main file.
 - In the result of `dataflow/includes`, each include node of the main file gets `forward: { state, text, types, blocker }`:
-  - `state`: `possible`, `needed` or `none` (no result, for example for an unused include).
+  - `state`: `possible` or `needed`. An include with no result, for example an unused include, has no `forward`.
   - `text`: the forward declarations, grouped by namespace.
   - `types`: each type with its uses and their lines.
   - `blocker`: for `needed`, the first use that needs the header: the name, the line and the kind of the use.
@@ -143,16 +145,16 @@ The engine also finds uses that have no name in the text. Examples are a call th
 
 ### 5.5 Side view
 
-- In the tree of Include Hierarchy, each include that forward declarations can replace gets the badge `forward declaration`.
+- In the tree of Include Hierarchy, each include that forward declarations can replace gets the badge `fwd`. The first version had the badge `forward declaration`, but the narrow details column cut it.
 - The #include line in the code gets a hint, for example `→ class Battery;`. A click on the hint opens the include in Include Hierarchy, as the hint "possibly unused" does.
-- The details of the include show the forward declarations as code, a button **Copy**, and the uses with their lines, for example `line 12: pointer member`.
+- The details of the include show the forward declarations as code, a button **Copy**, and each type with the lines that use it.
 - For an include that the file needs, the details show the first line that needs the full type, for example `line 45: member access of Battery`. Thus Include Hierarchy also tells why the file needs each include.
 - The status line of Include Hierarchy counts the includes that forward declarations can replace.
 
 ### 5.6 Optional actions
 
-- **Check with a parse**: the engine parses a copy of the file with the forward declarations in the place of the include. Then it shows the new errors. This takes the time of a full parse, so it starts only after a click.
-- **Replace**: DataFlow replaces the include with the forward declarations in the text editor, as one edit that Ctrl+Z removes. The request asks only to show the information, so this action is a decision of the user (section 11).
+- **Check with a parse**: the engine parses a copy of the file with the forward declarations in the place of the include. Then it shows the new errors. This takes the time of a full parse, so it starts only after a click. Not in the first version.
+- **Replace**: DataFlow replaces the include with the forward declarations in the text editor, as one edit that Ctrl+Z removes. Decision of the user: DataFlow does not edit files. Thus there is no **Replace**, and the details have only **Copy**.
 
 ### 5.7 Limits
 
@@ -160,6 +162,9 @@ The engine also finds uses that have no name in the text. Examples are a call th
 - A class with a `std::unique_ptr<T>` data member and a destructor in its source file can use a forward declaration of `T`. The first version gives `needed` for it. A later rule can find this case.
 - If a different include also brings in the header, the parse of 5.6 shows no error. The other include hides the full type.
 - A file with parse errors gets no result, because its ast is not complete.
+- The visitor does not walk the instantiations of templates. Thus it does not see a use that only an instantiation has, for example a specialization of `fmt::formatter` that the header declares. A call of a function template with the type as a type argument gives `needed`, so most of these cases give the correct result.
+- The headers of the standard library get no check. The rule for `<iosfwd>` of 5.2 needs the uses of each name of the standard library, and the check of the used includes keeps only the first use of each public header. It can come in a later version.
+- The text of the declarations uses `namespace a::b { ... }` from C++17. Before C++17, each namespace gets its own braces.
 
 ## 6. Feature 3: outline of a type
 
@@ -236,5 +241,5 @@ The proposed order is A, B, C. Phases A and B use `name_at`. Phase C has the mos
 1. Ctrl+click: decided. The side view goes to the definition and keeps the focus. The side view has Back and Forward. In the file of a visible text editor, the cursor of that editor follows.
 2. Outline: decided. A panel over the code. A click on a member moves the side view, as Ctrl+click does. The menu label is **Outline**.
 3. Outline: decided. The panel shows the memory layout.
-4. Forward declarations: only show the result (proposed), or also the action **Replace**?
-5. The order of the phases: A, B, C (proposed)?
+4. Forward declarations: decided. DataFlow only shows the result. It does not edit files, so the details have **Copy** and no **Replace**.
+5. The order of the phases: decided. A, B, C.

@@ -681,7 +681,8 @@ namespace DataFlow {
           [&srv = _srv, params, file = *file](TuEntry& _e) -> std::expected<JsonObject, std::string> {
             // the result of a parse stays in the entry until the next parse
             IncludeOptions opts;
-            opts.roots_ = Detail::get_strings(&params, "roots");
+            opts.roots_     = Detail::get_strings(&params, "roots");
+            opts.hasErrors_ = _e.diags_->get_count() > 0;
             std::string roots;
             for (const std::string& r : opts.roots_) roots += r + '\n';
             const bool isCached = _e.includes_ && _e.includes_parse_ == _e.parse_count_ && _e.includes_roots_ == roots;

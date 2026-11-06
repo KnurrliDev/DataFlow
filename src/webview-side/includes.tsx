@@ -90,6 +90,7 @@ export function IncludeDetails({ includes, includers, selected, onSelect }: Incl
 				<span class="stat">{fmt(s.total)} lines after the preprocessor</span>
 				<span class="stat">{s.includes} includes, {s.skipped} included before</span>
 				{s.unused > 0 && <span class="stat">{s.unused} possibly unused</span>}
+				{s.forward > 0 && <span class="stat">{s.forward} replaceable by forward declarations</span>}
 				{s.missing > 0 && <span class="stat problem">{s.missing} not found</span>}
 			</div>
 			{tab === 'tree' ? (
@@ -176,6 +177,7 @@ function IncludeTree({ includes, open, selected, onToggle, onSelect }: TreeProps
 					{n.isOwn && <span class="badge k-muted">own header</span>}
 					{n.state === 'skipped' && <span class="badge k-muted">included before</span>}
 					{n.isUsed === false && !n.isOwn && <span class="badge k-problem">possibly unused</span>}
+					{n.forward?.state === 'possible' && <span class="badge k-forward" title="Forward declarations can replace this include">fwd</span>}
 					{n.state === 'missing' && <span class="badge k-problem">not found</span>}
 				</span>
 				<span class="ibar"><i class={`c-${n.color}`} style={{ width: `${n.total > 0 ? Math.max(1.5, (n.total / total) * 100) : 0}%` }} /></span>
@@ -239,7 +241,45 @@ function WhyPath({ includes, node }: { includes: SideIncludes; node?: SideInclud
 					remove the include.
 				</p>
 			)}
+			{node.forward && <ForwardCheck includes={includes} node={node} />}
 			{node.path && <button type="button" class="link small" onClick={() => openPlace(node.path, 1)}>Open {basename(node.path)}</button>}
+		</div>
+	);
+}
+
+// The details of the forward declarations show at most this number of lines for each type
+const MAX_FORWARD_LINES = 12;
+
+// The forward declaration check of an include of the file: the declarations that can replace it, with the lines that
+// use each type, or the first line that needs the include. A click on a line opens it
+function ForwardCheck({ includes, node }: { includes: SideIncludes; node: SideIncludeNode }) {
+	const f = node.forward!;
+	const lineLink = (line: number) => (
+		<button type="button" class="link mono" title={`Open line ${line}`} onClick={() => openPlace(includes.file, line)}>line {line}</button>
+	);
+	if (f.state === 'needed') {
+		return (
+			<p class="sub fwd-needed">
+				The file needs the full header: {lineLink(f.blocker.line)} uses <span class="mono">{f.blocker.name}</span>, {f.blocker.kind}.
+			</p>
+		);
+	}
+	return (
+		<div class="fwd">
+			<div class="sub-title">Forward declarations can replace this include</div>
+			<div class="fwd-code">
+				<pre>{f.text}</pre>
+				<button type="button" class="link small" title="Put the forward declarations on the clipboard"
+					onClick={() => vscode.postMessage({ type: 'copyForward', text: f.text })}>Copy</button>
+			</div>
+			{f.types.map((t) => (
+				<div class="fwd-type">
+					<span class="mono">{t.name}</span>
+					{t.lines.slice(0, MAX_FORWARD_LINES).map((l, i) => <>{i > 0 && ', '}{lineLink(l)}</>)}
+					{t.lines.length > MAX_FORWARD_LINES && <span class="sub">and {t.lines.length - MAX_FORWARD_LINES} more</span>}
+				</div>
+			))}
+			<p class="sub">The file uses these types only in ways that need no full type, for example through a pointer or a reference.</p>
 		</div>
 	);
 }

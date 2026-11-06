@@ -46,5 +46,18 @@ suite('Unreal Engine project', () => {
 		assert.deepStrictEqual(result.functions.map((f) => f.name), [
 			'ABatteryActor::ABatteryActor', 'ABatteryActor::Tick', 'ABatteryActor::PlanCharge', 'ABatteryActor::CheapestPrice',
 		]);
+
+		// the header uses UStaticMeshComponent only through TObjectPtr, so a forward declaration can replace its include.
+		// The base class AActor needs its header
+		const header = path.join(root(), 'Source', 'BatteryPlant', 'BatteryActor.h');
+		const headerLine = (text: string) => readFileSync(header, 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
+		type Forward = { state: string; text?: string; types?: { name: string; lines: number[] }[]; blocker?: object };
+		const includes = await api.mcpHost.includes(header) as { includes: { include: string; forward?: Forward }[]; parseErrors?: string[] };
+		assert.strictEqual(includes.parseErrors, undefined, JSON.stringify(includes.parseErrors));
+		const forwardOf = (name: string) => includes.includes.find((i) => i.include === name)?.forward;
+		const mesh = forwardOf('Components/StaticMeshComponent.h');
+		assert.deepStrictEqual([mesh?.state, mesh?.text], ['possible', 'class UStaticMeshComponent;'], JSON.stringify(includes.includes));
+		assert.ok(mesh!.types![0].lines.includes(headerLine('TObjectPtr<UStaticMeshComponent>')), JSON.stringify(mesh));
+		assert.deepStrictEqual(forwardOf('GameFramework/Actor.h')?.blocker, { name: 'AActor', kind: 'a base class', line: headerLine('ABatteryActor : public AActor') });
 	});
 });

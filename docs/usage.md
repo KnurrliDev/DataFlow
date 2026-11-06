@@ -316,12 +316,15 @@ Include Hierarchy shows the includes of a file and the lines that each include a
 2. Look at the include lines of the file. A hint after the code gives the lines that the include adds: the lines of the header and of the headers that it brings in, each header one time. An include that adds more than 10% of all lines has a hint in a strong color. These are the other hints:
    - **included before, by** a header: the header came in before, and its include guard or `#pragma once` skips it. The include adds nothing.
    - **possibly unused**: the file uses no name and no macro of the header, and it needs no header that the include brings in.
+   - **→ struct Battery;** or **→ 3 forward declarations**: forward declarations can replace the include. The file uses the types of the header only in ways that need no full type, for example through a pointer or a reference.
    - **not found**: the preprocessor did not find the header.
 3. Click a hint, or click **Details** and then the tab **Includes**:
    - The numbers give the lines of the file, the lines after the preprocessor, and the includes.
    - **Where the lines come from** shows the lines of each group: the file, the project headers, the C++ standard library, and the other libraries, for example Qt or the Windows SDK.
    - The tree shows the includes. To show the includes of a header, click its arrow. The bar and the number give the lines that each header adds.
    - Click a header. **Why … is in the file** shows the path of includes from the file to the header. To open the include line of a step, click the step.
+   - Click an include of the file that has the badge **fwd**. The details show the forward declarations, and the lines that use each type. To put the declarations on the clipboard, click **Copy**. DataFlow does not change the file.
+   - Click a different include of the file. The details show the first line that needs the full header, and the reason, for example "a data member of the type".
 4. Click **Included by**. It shows the places in the translation unit that include the selected header, and the translation units of the compile database that include it. A change to the header compiles these translation units again. If you select no header in a header file, Included by shows the translation units that include the file itself.
 
 The check "possibly unused" uses these rules. Most of them are also the rules of clangd:
@@ -330,6 +333,20 @@ The check "possibly unused" uses these rules. Most of them are also the rules of
 - A header also gives the names of the headers that it exports. A header that adds no code to the file, only directives and macros, exports all its includes, for example `<QTimer>`. An include with the comment `// IWYU pragma: export` is also an export. The same is true for an include between `// IWYU pragma: begin_exports` and `// IWYU pragma: end_exports`.
 - The file can use a name of a header that no used include brings in. Then the first include that brings in the header is used, because the file needs it. Thus of two includes that bring in the same header, the check can mark only the second.
 - An include with `// IWYU pragma: keep` or `// IWYU pragma: export` gets no check. A header that adds code and has no include guard gets no check, because it can be an X macro file.
+
+The check of the forward declarations uses these rules:
+
+- The check is for each used include of the file. The own header, the C++ standard library, the Windows SDK, the built-in headers of Clang and the other system headers get no check.
+- The names of an include are the same names as for the check "possibly unused".
+- Each name must be a class, a struct, a union, a class template or an enum with a fixed underlying type. The type must be at the scope of a namespace. A nested type, a type alias, a function, a variable, an enumerator and a macro need the header.
+- A class template with default template arguments needs the header, because a forward declaration cannot give the default arguments again. A class template with a constraint, or with a non-type parameter that is not a builtin type or `auto`, also needs the header, because the concept or the type can be in the header. A type in an anonymous namespace or in an inline namespace also needs the header.
+- Each use of a type must need no full type. Examples are a pointer, a reference, and a parameter or a return value of a function declaration with no body.
+- A template argument of `std::shared_ptr`, `std::weak_ptr`, `TObjectPtr`, `TWeakObjectPtr`, `TSoftObjectPtr`, `TSubclassOf` or `QPointer` needs no full type. A template argument of a different template, for example `std::vector` or `std::unique_ptr`, needs the full type.
+- These uses also need the full type: a variable, a data member, a base class, a member access, `sizeof`, `new`, `delete`, a definition of a member function, and a call of a function template with the type as an argument.
+- A forward declaration uses the keyword of the definition, `class` or `struct`, because MSVC gives them different names.
+- A file with parse errors gets no result, because the engine cannot see all uses.
+
+The check does not see the code of the instantiations of templates. For example, an instantiation can need a specialization that the header declares. Thus the build of the file is the last check.
 
 For the translation units of Included by, the engine scans all source files of the compile database one time, with the dependency scanner of Clang. The scanner runs only the directives of the preprocessor, so `#if` and the include folders of each command count. It uses the unsaved text of the open files. On a Qt project with 89 source files, the scan takes about 3 s. The engine keeps the result until a file of the project changes on disk, or a directive of an open file changes.
 

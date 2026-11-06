@@ -327,6 +327,48 @@ try {
 		}
 	}
 
+	// Include Hierarchy on planner.hpp: the include of types.hpp gets the hint of forward declarations, and its row in the
+	// tree gets the badge. A click on the hint shows the declarations, the lines of each type and Copy. The row of
+	// worker_pool.hpp gives the first line that needs it. Then the side view goes back to battery.cpp for the reload
+	if (!fileArg) {
+		const planner = path.join(workspace, 'include', 'battery', 'planner.hpp');
+		const typesLine = readFileSync(planner, 'utf8').split(/\r?\n/).findIndex((l) => l.includes('#include <battery/types.hpp>')) + 1;
+		const sideName = () => inSide(`return doc.querySelector('.toolbar .file')?.textContent ?? '';`);
+		const openFile = async (fileName) => {
+			await focusEditor();
+			await key('p', 'KeyP', 80, 2); // ctrl+p
+			if (!await quickInput(fileName)) { throw new Error(`the command palette did not open for ${fileName}`); }
+			for (let i = 0; i < 60 && await sideName() !== fileName; i++) { await sleep(250); }
+		};
+		const includesLens = `[...doc.querySelectorAll('.toolbar .lens')].find((b) => b.textContent.trim() === 'Includes')`;
+		await openFile('planner.hpp');
+		result.forward = { typesLine, file: await sideName() };
+		await inSide(`const b = ${includesLens}; if (b.getAttribute('aria-pressed') !== 'true') { b.click(); } return true;`);
+		const hint = `doc.querySelector('.rows > .row[data-line="${typesLine}"] .inc-hint.k-forward')`;
+		for (let i = 0; i < 160 && !await inSide(`return !!${hint};`); i++) { await sleep(250); }
+		result.forward.hint = await inSide(`return ${hint}?.textContent ?? null;`);
+		if (result.forward.hint) {
+			await inSide(`${hint}.click(); return true;`);
+			await sleep(800);
+			result.forward.details = await inSide(`const f = doc.querySelector('.details .fwd'); if (!f) { return null; }
+				return { title: f.querySelector('.sub-title')?.textContent, code: f.querySelector('pre')?.textContent,
+					types: [...f.querySelectorAll('.fwd-type')].map((t) => t.textContent), copy: f.querySelector('.fwd-code button')?.textContent };`);
+			result.forward.badges = await inSide(`return [...doc.querySelectorAll('.itree .irow')].filter((r) => r.querySelector('.badge.k-forward'))
+				.map((r) => r.querySelector('.f')?.textContent);`);
+			result.forward.stats = await inSide(`return [...doc.querySelectorAll('.details .stats .stat')].map((s) => s.textContent);`);
+			await shot('forward');
+			await inSide(`doc.querySelector('.details .fwd-code button').click(); return true;`);
+			await sleep(800);
+			result.forward.copied = await wb.evaluate(`[...document.querySelectorAll('.statusbar-item')].some((s) => s.textContent.includes('forward declarations are on the clipboard'))`);
+			// a click on the row of worker_pool.hpp: the details give the first line that needs the include
+			await inSide(`[...doc.querySelectorAll('.itree .irow')].find((r) => r.querySelector('.f')?.textContent === '<battery/worker_pool.hpp>').click(); return true;`);
+			await sleep(500);
+			result.forward.needed = await inSide(`return doc.querySelector('.details .fwd-needed')?.textContent ?? null;`);
+		}
+		await inSide(`${includesLens}.click(); return true;`);
+		await openFile('battery.cpp');
+	}
+
 	result.dirty = await wb.evaluate(`!!document.querySelector('.tab.dirty')`);
 	side.ws.close();
 

@@ -180,6 +180,7 @@ export function createTools(host: McpHost): McpTool[] {
 			{ file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION }, [], true, (a) => host.hidden(a.text('file'), a.fn())),
 		tool('get_includes', 'Get the includes',
 			'The include hierarchy of a file: the lines that each include adds after the preprocessor, the headers that come in two times, the includes that the file possibly does not use, '
+			+ 'the includes that forward declarations can replace (forward: the declarations, or the first line that needs the include), '
 			+ 'and the translation units of the compile database that include the file (includedBy). A change of a header compiles these translation units again.',
 			{ file: FILE }, [], true, (a) => host.includes(a.text('file'))),
 		tool('show_blocks', 'Show logical blocks',

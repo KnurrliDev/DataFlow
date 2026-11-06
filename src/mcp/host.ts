@@ -316,6 +316,7 @@ export class DataFlowMcpHost implements McpHost {
 			includes: side.nodes.filter((n) => n.parent === 0).map((n) => ({
 				line: n.line, include: n.name, lines: n.total, state: n.state,
 				...(n.isUsed === false ? { possiblyUnused: true } : {}),
+				...(n.forward ? { forward: n.forward } : {}),
 				...(n.first !== undefined ? { includedBefore: side.nodes[n.first]?.parentPath } : {}),
 			})),
 			largestHeaders: side.nodes.filter((n) => n.state === 'entered').sort((a, b) => b.own - a.own).slice(0, 10).map((n) => ({ file: n.name, lines: n.own })),

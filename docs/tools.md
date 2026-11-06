@@ -275,6 +275,7 @@ Gives the include hierarchy of a file:
 - the lines that each include adds after the preprocessor
 - the headers that come in two times
 - the includes that the file possibly does not use
+- the includes that forward declarations can replace (`forward`): the declarations and the lines that use each type. For an include that the file needs, `forward` gives the first line that needs the full header and the reason.
 - the translation units of the compile database that include the file (`includedBy`). A change of the header compiles these translation units again.
 
 Parameters: `file`.
