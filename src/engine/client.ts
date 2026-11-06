@@ -310,6 +310,16 @@ export type IncludeForward =
 	| { state: 'possible'; text: string; types: { name: string; lines: number[] }[] }
 	| { state: 'needed'; blocker: { name: string; kind: string; line: number } };
 
+// The errors of the parse of dataflow/checkForward: the first errors and the count of all errors. An error in a different
+// file has its file, and at: the line of its first note in the checked file, for example of the instantiation
+export interface ForwardCheckResult {
+	file: string;
+	line: number;
+	errorCount: number;
+	errors: { line: number; message: string; file?: string; at?: number }[];
+	ms: number;
+}
+
 export interface IncludeModel {
 	files: IncludeFile[];
 	nodes: IncludeNode[]; // the main file first, then the directives in the sequence of the preprocessor
@@ -684,10 +694,17 @@ export class EngineClient implements vscode.Disposable {
 	}
 
 	// The outline of the class, the struct, the union or the enum of the name at a position (line and col from 1, col in
-	// UTF-8 bytes), or of a qualified name. A type with no definition in the translation unit gives its declaration
+	// UTF-8 bytes), or of a name with or without its namespaces. A type with no definition in the translation unit gives
+	// its declaration. A name of more than one type gives the qualified names of the candidates
 	outline(file: string, at: { line: number; col: number } | { name: string }, token?: vscode.CancellationToken)
-		: Promise<FileResult & { outline: SideOutlineData | null; declaration?: SideOutlinePlace & { name: string } }> {
+		: Promise<FileResult & { outline: SideOutlineData | null; declaration?: SideOutlinePlace & { name: string }; candidates?: string[] }> {
 		return this.request('dataflow/outline', { file, ...at }, token);
+	}
+
+	// A parse of a copy of the file in memory with forward declarations in the place of the #include on a line. The file
+	// does not change
+	checkForward(file: string, line: number, text: string, token?: vscode.CancellationToken): Promise<ForwardCheckResult> {
+		return this.request('dataflow/checkForward', { file, line, text }, token);
 	}
 
 	flow(file: string, fn: FunctionSelector, options: FlowOptions, token?: vscode.CancellationToken): Promise<FileResult & FlowModel & { cached?: boolean }> {

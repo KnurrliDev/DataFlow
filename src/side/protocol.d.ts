@@ -371,6 +371,15 @@ export type SideIncludeForward =
 	| { state: 'possible'; text: string; types: { name: string; lines: number[] }[] }
 	| { state: 'needed'; blocker: { name: string; kind: string; line: number } };
 
+// The button Check of the forward declarations of the include on a line: the engine parses a copy of the file in memory
+// with the declarations in the place of the include. An error in a different file has its file, and at: the line of its
+// first note in the file, for example of the instantiation that needs the full type
+export type SideForwardCheck = { file: string; line: number } & (
+	| { state: 'running' }
+	| { state: 'done'; ms: number; errorCount: number; errors: { line: number; message: string; file?: string; at?: number }[] }
+	| { state: 'failed'; message: string }
+);
+
 export type SideIncludeColor = 'path' | 'read' | 'muted' | 'check' | 'definition' | 'write' | 'ripple' | 'problem';
 
 // Included by in the compile databases: the source files that include a file. The first request scans all source files
@@ -699,6 +708,7 @@ export type ToSide =
 	| { type: 'logic'; logic: SideLogic | null }
 	| { type: 'cost'; cost: SideCost | null }
 	| { type: 'includes'; includes: SideIncludes | null }
+	| { type: 'forwardCheck'; check: SideForwardCheck | null } // the result of the button Check of the forward declarations
 	| { type: 'includers'; includers: SideIncluders | null }
 	| { type: 'calls'; calls: SideCalls | null }
 	| { type: 'threads'; threads: SideThreads | null }
@@ -761,6 +771,7 @@ export type FromSide =
 	// on a function with no known definition, so the extension asks the definition providers
 	| { type: 'outlineGo'; file: string; line: number; col: number; toDefinition?: boolean }
 	| { type: 'copyForward'; text: string } // the button Copy of the forward declarations of an include
+	| { type: 'checkForward'; line: number; text: string } // the button Check: line is the line of the include, text the declarations
 	| SideAction;
 
 // The state that the webview keeps for the restore after a reload of the window

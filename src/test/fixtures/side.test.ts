@@ -651,6 +651,15 @@ suite('Include Hierarchy in the side view', () => {
 			state: 'needed', blocker: { name: 'electricity::WorkerPool', kind: 'a data member of the type', line: headerLine('WorkerPool pool_') },
 		});
 		assert.strictEqual(includes.stats.forward, 1);
+
+		// Check parses a copy of the header in memory with the declarations: no errors, and the header does not change
+		const before = readFileSync(header, 'utf8');
+		const text = types.forward?.state === 'possible' ? types.forward.text : '';
+		api.side.receive({ type: 'checkForward', line: typesLine, text });
+		await waitFor(() => api.side.forwardCheck?.state === 'done', 60000, () => JSON.stringify(api.side.forwardCheck));
+		const check = api.side.forwardCheck!;
+		assert.deepStrictEqual([check.line, check.state === 'done' && check.errorCount], [typesLine, 0], JSON.stringify(check));
+		assert.strictEqual(readFileSync(header, 'utf8'), before);
 	});
 });
 

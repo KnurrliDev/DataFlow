@@ -377,6 +377,11 @@ button.badge:hover { background: color-mix(in srgb, var(--c) 26%, transparent); 
   font-family: var(--vscode-editor-font-family); font-size: 0.92em;
   background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15)); }
 .fwd-type { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: baseline; font-size: 0.92em; }
+.fwd-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.fwd-ok { color: var(--vscode-dataflow-check); }
+.fwd-errors { display: flex; flex-direction: column; gap: 2px; }
+.fwd-error { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; text-align: left; }
+.fwd-error .fwd-message { min-width: 0; overflow-wrap: anywhere; }
 .hint.inc-hint.k-skipped { font-style: italic; background: transparent; }
 .badge.k-muted { --c: var(--vscode-descriptionForeground); }
 .badge.k-problem { --c: var(--vscode-dataflow-problem); }

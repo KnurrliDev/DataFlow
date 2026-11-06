@@ -180,6 +180,7 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`get_threads`](#get_threads) | read | The data of Threads and races |
 | [`get_hidden`](#get_hidden) | read | The data of Hidden C++ |
 | [`get_includes`](#get_includes) | read | The data of Include Hierarchy, with the translation units of the compile database that include the file |
+| [`get_outline`](#get_outline) | read | The outline of a type: the members, the annotations and the memory layout |
 | [`get_review`](#get_review) | read | The C and C++ files under the paths of a guided review, with the diff of each changed file against the target branch |
 | [`show_blocks`](#show_blocks) | view | Shows the logical blocks of a function, with a maximum of five levels. A new call replaces the blocks of its function. The blocks of the other functions of the file stay. |
 | [`show_flow`](#show_flow) | view | Starts Flow Lens on a variable or a data member, as a click does |
@@ -281,6 +282,26 @@ Gives the include hierarchy of a file:
 Parameters: `file`.
 
 Example request: "Which includes of this file add the most lines, and which includes can I remove?"
+
+### get_outline
+
+Gives the outline of a class, a struct, a union or an enum, as the menu **Outline** of the side view shows it:
+
+- the bases, and the template parameters or the underlying type of an enum
+- the members in the sequence of the source, with their access and their marks, for example `static`, `virtual` or `const`
+- the annotations of Unreal Engine, for example `UPROPERTY(EditAnywhere)`, the signals, the slots and the properties of Qt, and the members that a macro makes, for example `GENERATED_BODY()`
+- the memory layout: the size, the alignment, the offset and the size of each data member, and the holes of padding
+- the names of the members of each base
+
+A type that the translation unit only declares gets the outline from the header with its definition. If more than one type has the name, the tool gives their names with the namespaces.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `file` | | See the common parameters. |
+| `name` | string | The name of the type, with or without its namespaces. |
+| `line` | integer | A line with the name of the type, for example the line of its definition. Use it instead of `name`. |
+
+Example request: "Explain the members of HomeBatteryCtrl, and tell me how to make it smaller in memory."
 
 ### show_blocks
 

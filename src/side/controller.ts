@@ -14,7 +14,7 @@ import {
 	BRACKET_LEVELS, BRACKET_STYLE, LEXICAL_KEYS, plainRows, SEMANTIC_MODIFIERS, SEMANTIC_TYPES, semanticStyleIndex, shiftSpans, toRows,
 } from './model';
 import type {
-	FromSide, SideAction, SideBrackets, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideFrame, SideGuide, SideIncluders, SideIncludes,
+	FromSide, SideAction, SideBrackets, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideIncluders, SideIncludes,
 	SideLogic, SideModel, SideOutline, SideRipple, SideThreads, SideRow, SideSettings, SideStory, SideStyle, SideViewState, SideWhy, ToSide,
 } from './protocol';
 import { buildSideRipple, buildSideStory, fileKey, lineRanges, storyLines } from './storyLayer';
@@ -125,6 +125,8 @@ export class SideViewController implements vscode.Disposable {
 	private lastIncludes: SideIncludes | null = null;
 	private lastIncludesLayer?: SideIncludes;
 	private lastIncluders?: SideIncluders;
+	private lastForwardCheck: SideForwardCheck | null = null;
+	private forwardCheckRun = 0; // a new check or new include data makes the result of a running check old
 	private lastCalls: SideCalls | null = null;
 	private lastCallsLayer?: SideCalls;
 	private lastThreads: SideThreads | null = null;
@@ -279,6 +281,11 @@ export class SideViewController implements vscode.Disposable {
 	// The include hierarchy that the side view got last, for the tests
 	get includes(): SideIncludes | null {
 		return this.lastIncludes;
+	}
+
+	// The result of the button Check of the forward declarations, as the side view got it last, for the tests
+	get forwardCheck(): SideForwardCheck | null {
+		return this.lastForwardCheck;
 	}
 
 	// The source files that include a file, as the side view got them last, for the tests
@@ -551,6 +558,9 @@ export class SideViewController implements vscode.Disposable {
 				break;
 			case 'guideCopy':
 				void this.copyGuideSummary();
+				break;
+			case 'checkForward':
+				void this.checkForward(message.line, message.text);
 				break;
 			case 'copyForward':
 				void vscode.env.clipboard.writeText(message.text).then(() =>
@@ -1110,6 +1120,39 @@ export class SideViewController implements vscode.Disposable {
 		this.lastIncludesLayer = layer;
 		this.lastIncludes = layer && this.model && layer.file === this.model.file ? layer : null;
 		this.post({ type: 'includes', includes: this.lastIncludes });
+		// new include data can come from a new text, so the result of a check is old
+		if (this.lastForwardCheck) {
+			this.forwardCheckRun++;
+			this.postForwardCheck(null);
+		}
+	}
+
+	// The button Check of the forward declarations of the include on a line: the engine parses a copy of the file in memory
+	// with the declarations in the place of the include. The file does not change
+	private async checkForward(line: number, text: string): Promise<void> {
+		const engine = this.engine();
+		const file = this.model?.file;
+		if (!engine || engine.currentState !== 'ready' || !file) {
+			vscode.window.setStatusBarMessage('DataFlow: Wait for the engine.', 4000);
+			return;
+		}
+		const run = ++this.forwardCheckRun;
+		this.postForwardCheck({ file, line, state: 'running' });
+		try {
+			const res = await engine.checkForward(file, line, text);
+			if (run === this.forwardCheckRun) {
+				this.postForwardCheck({ file, line, state: 'done', ms: res.ms, errorCount: res.errorCount, errors: res.errors });
+			}
+		} catch (error) {
+			if (run === this.forwardCheckRun) {
+				this.postForwardCheck({ file, line, state: 'failed', message: error instanceof Error ? error.message : String(error) });
+			}
+		}
+	}
+
+	private postForwardCheck(check: SideForwardCheck | null): void {
+		this.lastForwardCheck = check;
+		this.post({ type: 'forwardCheck', check });
 	}
 
 	// Hidden C++ of the file of the side view. The items of a different file show nothing.

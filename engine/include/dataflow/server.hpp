@@ -420,6 +420,30 @@ namespace DataFlow {
     // the params object lives only during dispatch, so the work gets a copy
     const JsonObject params = *_params;
 
+    // a parse of a copy of the file with forward declarations in the place of an include: the errors of the parse.
+    // line: the line of the #include, text: the declarations. the copy is only in memory. the request does not wait for
+    // the other requests of the file, because it does not use the parse of the file
+    if (_method == "dataflow/checkForward") {
+      const auto line = params.getInteger("line");
+      const auto text = Detail::get_string(&params, "text");
+      if (!line || *line < 1 || !text) return reply(std::unexpected("dataflow/checkForward needs a line and a text"));
+      _srv.pool_->post([&srv = _srv, id = *_id, file = *file, line = uint32_t(*line), text = *text]() {
+        const std::optional<FileContext> ctx = Detail::context_of(srv, file);
+        const auto cmd                       = get_command(srv.dbs_, file, srv.resource_dir_, ctx ? &*ctx : nullptr);
+        if (!cmd) return Protocol::reply_error(id, Protocol::ec_internal, cmd.error());
+        std::vector<Buffer> buffers = srv.buffers_.snapshot();
+        if (ctx)
+          if (std::optional<Buffer> b = context_buffer(*ctx, file, buffers)) buffers.push_back(std::move(*b));
+        const auto res = check_forward(*cmd, std::move(buffers), file, line, text, srv.resource_dir_);
+        if (!res) return Protocol::reply_error(id, Protocol::ec_invalid_params, res.error());
+        JsonObject out = forward_check_to_json(*res);
+        out["file"]    = file;
+        out["line"]    = int64_t(line);
+        Protocol::reply(id, std::move(out));
+      });
+      return;
+    }
+
     // the source files of the compile databases that include a file. the first request scans all source files on the
     // threads of the pool, with the unsaved text of the open files. a request after a change of a project file on disk
     // or of the directives of an open file scans again. roots: the project folders
@@ -755,7 +779,18 @@ namespace DataFlow {
         clang::ASTContext& ctx    = _e.ast_->getASTContext();
         const clang::TagDecl* tag = nullptr;
         if (const auto name = Detail::get_string(&params, "name")) {
+          // a name with no namespaces, or with only a part of them, needs a search. more than one match gives the
+          // candidates
           tag = Detail::tag_by_name(ctx, *name);
+          if (!tag) {
+            const std::vector<const clang::TagDecl*> tags = Detail::tags_ending_with(ctx, *name);
+            if (tags.size() > 1) {
+              JsonArray candidates;
+              for (const clang::TagDecl* t : tags) candidates.push_back(t->getQualifiedNameAsString());
+              return JsonObject{{"outline", nullptr}, {"candidates", std::move(candidates)}};
+            }
+            if (!tags.empty()) tag = tags.front();
+          }
         } else if (const auto line = params.getInteger("line"), col = params.getInteger("col");
                    line && col && *line > 0 && *col > 0) {
           Detail::update_tokens(_e);

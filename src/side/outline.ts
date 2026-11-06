@@ -65,6 +65,17 @@ export function paddingAfter(o: SideOutlineData, m: SideOutlineMember): number {
 	return o.layout.holes.find((h) => h.offset === end)?.size ?? 0;
 }
 
+// The columns of the names of a line, in the sequence of the search for a type at a line: first the name after class,
+// struct, union or enum, then the other names. Words in capital letters before the name are export macros, for example
+// ENGINE_API. UTF-16 columns from 0
+export function typeNameColumns(text: string): number[] {
+	const names = [...text.matchAll(/[A-Za-z_]\w*/g)].map((m) => ({ name: m[0], col: m.index }));
+	const keyword = names.findIndex((n) => /^(?:class|struct|union|enum)$/.test(n.name));
+	const first = keyword < 0 ? undefined
+		: names.slice(keyword + 1).find((n) => !/^(?:class|struct|alignas)$/.test(n.name) && !/^[A-Z_][A-Z0-9_]*$/.test(n.name));
+	return [...(first ? [first.col] : []), ...names.filter((n) => n !== first).map((n) => n.col)];
+}
+
 // The line of the definition of a class, a struct, a union or an enum in a text, from 0, or -1. A qualified name gives
 // its last part. A definition has a body: a forward declaration does not count. Words in capital letters between the
 // keyword and the name are export macros, for example ENGINE_API

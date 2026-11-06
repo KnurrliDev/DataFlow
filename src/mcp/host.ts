@@ -19,7 +19,8 @@ import {
 import type { SideViewController } from '../side/controller';
 import type { CodePlace } from '../side/details';
 import { functionTitle } from '../side/names';
-import type { SideGuideStatus, SideModel } from '../side/protocol';
+import { typeNameColumns } from '../side/outline';
+import type { SideGuideStatus, SideModel, SideOutlineData, SideOutlineMember, SideOutlinePlace } from '../side/protocol';
 import type { StateStore } from '../state/store';
 import type { FunctionArg, McpHost } from './tools';
 
@@ -50,6 +51,9 @@ export interface HostDeps {
 	// the C and C++ files under the paths that the user wants to review, with their changes against the target branch of
 	// the git repository, or the reason why no file is available. Paths are absolute, or relative to the project
 	reviewFiles(paths: string[]): Promise<ReviewFilesInput | { message: string }>;
+	// the header with the definition of a type that a translation unit only declares: the definition provider of VS Code
+	// at the place of the name, if a place is known, else a search of the headers of the project
+	definitionHeader(name: string, place?: { doc: vscode.TextDocument; pos: vscode.Position }): Promise<string | undefined>;
 }
 
 const CPP_LANGUAGES = new Set(['c', 'cpp', 'cuda-cpp']);
@@ -59,6 +63,42 @@ const MAX_ITEMS = 200;
 // The parse errors of a result, so that the model knows that the facts can be incomplete
 function parseNote(res: FileResult): object {
 	return res.errorCount > 0 ? { parseErrors: res.errors.slice(0, 5) } : {};
+}
+
+// The outline of a type for a language model: lines from 1, no columns. A member in a different file gets its file. The
+// members of the bases give only their names, because a base like AActor has more than a thousand members
+const MAX_INHERITED_NAMES = 40;
+
+function outlineFacts(o: SideOutlineData): object {
+	const place = (p: SideOutlinePlace) => ({ file: p.file, line: p.line });
+	const member = (m: SideOutlineMember) => ({
+		line: m.line, kind: m.kind, name: m.name,
+		...(m.text ? { text: m.text } : {}),
+		...(m.access ? { access: m.access } : {}),
+		...(m.marks?.length ? { marks: m.marks } : {}),
+		...(m.section ? { section: m.section } : {}),
+		...(m.annotation ? { annotation: m.annotation } : {}),
+		...(m.macro ? { macro: m.macro } : {}),
+		...(m.offset !== undefined ? { offset: m.offset, size: m.size } : {}),
+		...(m.file !== o.file ? { file: m.file } : {}),
+		...(m.definition ? { definition: place(m.definition) } : {}),
+	});
+	return {
+		file: o.file, line: o.line, type: o.qualifiedName, kind: o.kind,
+		...(o.template ? { template: o.template } : {}),
+		...(o.underlying ? { underlying: o.underlying } : {}),
+		...(o.isFinal ? { final: true } : {}),
+		...(o.isAbstract ? { abstract: true } : {}),
+		...(o.isLibrary ? { library: true } : {}),
+		bases: o.bases.map((b) => ({ name: b.name, access: b.access, ...(b.isVirtual ? { virtual: true } : {}), ...(b.offset !== undefined ? { offset: b.offset, size: b.size } : {}) })),
+		...(o.layout ? { layout: { size: o.layout.size, align: o.layout.align, padding: o.layout.padding, ...(o.layout.hasVPtr ? { vptr: true } : {}), holes: o.layout.holes } } : {}),
+		members: o.members.slice(0, MAX_ITEMS).map(member),
+		...(o.members.length > MAX_ITEMS ? { more: o.members.length - MAX_ITEMS } : {}),
+		inherited: o.inherited.map((g) => ({
+			base: g.base, count: g.members.length, names: g.members.slice(0, MAX_INHERITED_NAMES).map((m) => m.name),
+		})),
+		...(o.isTruncated ? { truncated: true } : {}),
+	};
 }
 
 // A position in the function for the engine: the start of its body
@@ -328,6 +368,48 @@ export class DataFlowMcpHost implements McpHost {
 			} : {}),
 			...parseNote(model),
 		};
+	}
+
+	// The outline of a type by its name, or at a line with its name. A type that the translation unit only declares gets
+	// the outline of the header with its definition, as the menu "Outline" does
+	async outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<object> {
+		if (!name && line === undefined) {
+			throw new Error('Give the name of the type, or a line with its name.');
+		}
+		const { client, doc, file: f } = await this.prepare(file);
+		type Result = Awaited<ReturnType<EngineClient['outline']>>;
+		let result: Result | undefined;
+		let place: { doc: vscode.TextDocument; pos: vscode.Position } | undefined;
+		if (name) {
+			result = await client.outline(f, { name });
+			if (result.candidates?.length) {
+				throw new Error(`${result.candidates.length} types match ${name}: ${result.candidates.slice(0, 10).join(', ')}. Give the name with its namespaces.`);
+			}
+		} else {
+			if (line! > doc.lineCount) {
+				throw new Error(`${path.basename(f)} has ${doc.lineCount} lines.`);
+			}
+			const text = doc.lineAt(line! - 1).text;
+			for (const col of typeNameColumns(text)) {
+				result = await client.outline(f, { line: line!, col: toUtf8Column(text, col) });
+				if (result.outline || result.declaration) {
+					place = { doc, pos: new vscode.Position(line! - 1, col) };
+					break;
+				}
+			}
+		}
+		if (result && !result.outline && result.declaration) {
+			const header = await this.deps.definitionHeader(result.declaration.name, place);
+			if (header) {
+				result = await client.outline(header, { name: result.declaration.name });
+			}
+		}
+		if (!result?.outline) {
+			throw new Error(result?.declaration ? `DataFlow found no definition of ${result.declaration.name}.`
+				: name ? `No class, struct, union or enum ${name} in the translation unit of ${path.basename(f)}.`
+					: `No class, struct, union or enum on line ${line} of ${path.basename(f)}.`);
+		}
+		return { ...outlineFacts(result.outline), ...parseNote(result) };
 	}
 
 	//-------------------

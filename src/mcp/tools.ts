@@ -23,6 +23,7 @@ export interface McpHost {
 	threads(file?: string): Promise<object>;
 	hidden(file: string | undefined, fn: FunctionArg): Promise<object>;
 	includes(file?: string): Promise<object>;
+	outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<object>;
 	showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<object>;
 	highlight(file: string | undefined, ranges: ModelNoteInput[], append: boolean): Promise<object>;
 	comment(file: string | undefined, comments: ModelCommentInput[], append: boolean): Promise<object>;
@@ -35,7 +36,7 @@ export interface McpHost {
 
 export const INSTRUCTIONS = [
 	'DataFlow analyzes the C++ code that is open in VS Code with the Clang compiler, and it shows the results in its side view beside the editor.',
-	'The read tools (get_*, list_functions) give facts of the engine: statements, data flow, calls, threads and races, hidden operations and includes.',
+	'The read tools (get_*, list_functions) give facts of the engine: statements, data flow, calls, threads and races, hidden operations, includes and the outline of a type.',
 	'The view tools (show_blocks, show_flow, highlight, comment_lines, add_detail, clear) change the side view that the user looks at.',
 	'Lines start at 1. If you omit "file", a tool uses the file of the active editor, or else the file of the side view. Call get_view first to see what the user looks at.',
 	'If no C++ editor shows, the cursor of get_view is the cursor of the side view, where the user clicked, and the view tools move only the side view.',
@@ -183,6 +184,16 @@ export function createTools(host: McpHost): McpTool[] {
 			+ 'the includes that forward declarations can replace (forward: the declarations, or the first line that needs the include), '
 			+ 'and the translation units of the compile database that include the file (includedBy). A change of a header compiles these translation units again.',
 			{ file: FILE }, [], true, (a) => host.includes(a.text('file'))),
+		tool('get_outline', 'Get the outline of a type',
+			'The outline of a class, a struct, a union or an enum: the bases, the members in the sequence of the source with their access and marks, the annotations of Unreal Engine '
+			+ '(UPROPERTY, UFUNCTION), the signals, slots and properties of Qt, the members that a macro makes, the memory layout with the offset and the size of each data member '
+			+ 'and the holes of padding, and the names of the members of the bases. Give the name of the type, or a line with its name.',
+			{
+				file: FILE,
+				name: { type: 'string', description: 'The name of the type, with or without its namespaces, for example electricity::power_ctrl::HomeBatteryCtrl or HomeBatteryCtrl.' },
+				line: { type: 'integer', minimum: 1, description: 'A line with the name of the type, for example the line of its definition. Use it instead of "name".' },
+			},
+			[], true, (a) => host.outline(a.text('file'), a.text('name'), a.line('line'))),
 		tool('show_blocks', 'Show logical blocks',
 			'Shows logical blocks of one function in the DataFlow side view: a bar beside the lines of each block, its title at the end of its first line, and a list with the summaries and the data of the blocks. '
 			+ `Give the blocks in the sequence of the lines, with no overlap. A block can have children, for example one child for each branch of an if chain, and a child can have children too: ${MAX_BLOCK_LEVELS} levels at most. `

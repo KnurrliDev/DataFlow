@@ -360,6 +360,12 @@ try {
 			await inSide(`doc.querySelector('.details .fwd-code button').click(); return true;`);
 			await sleep(800);
 			result.forward.copied = await wb.evaluate(`[...document.querySelectorAll('.statusbar-item')].some((s) => s.textContent.includes('forward declarations are on the clipboard'))`);
+			// Check: the engine parses a copy of the header in memory with the declarations
+			const checkText = () => inSide(`return doc.querySelector('.details .fwd-result')?.textContent ?? '';`);
+			await inSide(`doc.querySelector('.details .fwd-check').click(); return true;`);
+			for (let i = 0; i < 240 && !/^Check: (no|\d)|^Check failed/.test(await checkText()); i++) { await sleep(250); }
+			result.forward.check = await checkText();
+			await shot('forward-check');
 			// a click on the row of worker_pool.hpp: the details give the first line that needs the include
 			await inSide(`[...doc.querySelectorAll('.itree .irow')].find((r) => r.querySelector('.f')?.textContent === '<battery/worker_pool.hpp>').click(); return true;`);
 			await sleep(500);

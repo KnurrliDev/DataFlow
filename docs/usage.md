@@ -324,6 +324,7 @@ Include Hierarchy shows the includes of a file and the lines that each include a
    - The tree shows the includes. To show the includes of a header, click its arrow. The bar and the number give the lines that each header adds.
    - Click a header. **Why … is in the file** shows the path of includes from the file to the header. To open the include line of a step, click the step.
    - Click an include of the file that has the badge **fwd**. The details show the forward declarations, and the lines that use each type. To put the declarations on the clipboard, click **Copy**. DataFlow does not change the file.
+   - To make sure that the declarations are sufficient, click **Check**. The engine parses a copy of the file in memory with the declarations in the place of the include, and it shows the errors. An error in a header goes to the line of the file that causes it, for example a call that needs an instantiation. The parse takes the time of a full parse of the file.
    - Click a different include of the file. The details show the first line that needs the full header, and the reason, for example "a data member of the type".
 4. Click **Included by**. It shows the places in the translation unit that include the selected header, and the translation units of the compile database that include it. A change to the header compiles these translation units again. If you select no header in a header file, Included by shows the translation units that include the file itself.
 
@@ -346,7 +347,7 @@ The check of the forward declarations uses these rules:
 - A forward declaration uses the keyword of the definition, `class` or `struct`, because MSVC gives them different names.
 - A file with parse errors gets no result, because the engine cannot see all uses.
 
-The check does not see the code of the instantiations of templates. For example, an instantiation can need a specialization that the header declares. Thus the build of the file is the last check.
+The check does not see the code of the instantiations of templates. For example, an instantiation can need a specialization or a function that the header declares. **Check** finds these errors, because it parses the file. If a different include also brings in the header, the parse of **Check** shows no error, because the other include gives the full type.
 
 For the translation units of Included by, the engine scans all source files of the compile database one time, with the dependency scanner of Clang. The scanner runs only the directives of the preprocessor, so `#if` and the include folders of each command count. It uses the unsaved text of the open files. On a Qt project with 89 source files, the scan takes about 3 s. The engine keeps the result until a file of the project changes on disk, or a directive of an open file changes.
 

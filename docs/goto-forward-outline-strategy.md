@@ -153,7 +153,7 @@ The engine also finds uses that have no name in the text. Examples are a call th
 
 ### 5.6 Optional actions
 
-- **Check with a parse**: the engine parses a copy of the file with the forward declarations in the place of the include. Then it shows the new errors. This takes the time of a full parse, so it starts only after a click. Not in the first version.
+- **Check with a parse**: the engine parses a copy of the file with the forward declarations in the place of the include. Then it shows the new errors. This takes the time of a full parse, so it starts only after a click. Done in phase D: the button **Check**, with the engine request `dataflow/checkForward`. The declarations go on the line of the include, so the other lines keep their numbers. An error in a header gets the line of its first note in the file, for example of the instantiation.
 - **Replace**: DataFlow replaces the include with the forward declarations in the text editor, as one edit that Ctrl+Z removes. Decision of the user: DataFlow does not edit files. Thus there is no **Replace**, and the details have only **Copy**.
 
 ### 5.7 Limits
@@ -199,8 +199,8 @@ A new request `dataflow/outline` `{file, line, col}` or `{file, name}` gives the
 
 ## 7. MCP tools (optional)
 
-- A new tool `get_outline` `{file, line}` or `{file, name}` gives the outline to a language model, for example to explain a class.
-- The tool `get_includes` gets the forward declaration result of each include.
+- A new tool `get_outline` `{file, line}` or `{file, name}` gives the outline to a language model, for example to explain a class. Done in phase D.
+- The tool `get_includes` gets the forward declaration result of each include. Done in phase C.
 
 ## 8. Phases
 
@@ -209,7 +209,7 @@ A new request `dataflow/outline` `{file, line, col}` or `{file, name}` gives the
 | A | `name_at`, `dataflow/definition`, Ctrl+click, the underline, F12, the file of an #include, the documents | Small to medium |
 | B | `dataflow/outline`, the menu, the panel, the layout, the documents | Medium |
 | C | The forward declaration check in the engine, the badge, the hint and the details, the documents | Large |
-| D (optional) | **Check with a parse**, **Replace**, the MCP tools | Small for each item |
+| D (optional) | **Check with a parse**, **Replace**, the MCP tools | Small for each item. Done without **Replace** (decision of the user). |
 
 The proposed order is A, B, C. Phases A and B use `name_at`. Phase C has the most rules and needs the most tests.
 

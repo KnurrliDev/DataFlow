@@ -109,7 +109,7 @@ The view tools of the MCP server put the words of the model into the side view. 
 
 ![A card with examples for the expression FINISHED(...).](docs/images/model-detail.png)
 
-`show_flow` starts Flow Lens on a variable, as a click does. The screenshot at the top shows such a trace. `clear` removes the layers of the model. The read tools give the data of the lenses to the model: `get_view`, `list_functions`, `get_structure`, `get_flow`, `get_calls`, `get_threads`, `get_hidden` and `get_includes`.
+`show_flow` starts Flow Lens on a variable, as a click does. The screenshot at the top shows such a trace. `clear` removes the layers of the model. The read tools give the data of the lenses to the model: `get_view`, `list_functions`, `get_structure`, `get_flow`, `get_calls`, `get_threads`, `get_hidden`, `get_includes` and `get_outline`.
 
 ### Guided review
 

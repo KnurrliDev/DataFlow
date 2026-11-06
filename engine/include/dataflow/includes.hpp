@@ -1377,6 +1377,149 @@ namespace DataFlow {
   }  // build_includes
 
   //----------------------------------
+  // Check of forward declarations
+
+  // an error of the parse of a check. an error in a different file gets the line of its first note in the file of the
+  // check, for example of "in instantiation of ... requested here"
+  struct ForwardCheckError {
+    std::string file_;  // the path of the error, empty for the file of the check
+    uint32_t line_ = 0;
+    std::string message_;
+    uint32_t at_ = 0;
+  };  // ForwardCheckError
+
+  struct ForwardCheck {
+    std::vector<ForwardCheckError> errors_;  // the first errors
+    uint32_t errorCount_ = 0;
+    double ms_           = 0.0;
+  };  // ForwardCheck
+
+  namespace Detail {
+    constexpr size_t max_check_errors = 20;
+
+    // a parse with no code generation, with the unsaved text of the open files
+    class CheckFactory : public clang::tooling::FrontendActionFactory {
+      const std::vector<Buffer>& buffers_;
+
+     public:
+      explicit CheckFactory(const std::vector<Buffer>& _buffers) : buffers_(_buffers) {}
+
+      std::unique_ptr<clang::FrontendAction> create() override { return std::make_unique<clang::SyntaxOnlyAction>(); }
+
+      bool runInvocation(std::shared_ptr<clang::CompilerInvocation> _inv, clang::FileManager* _files,
+                         std::shared_ptr<clang::PCHContainerOperations> _pch,
+                         clang::DiagnosticConsumer* _diags) override {
+        clang::PreprocessorOptions& opts = _inv->getPreprocessorOpts();
+        for (const Buffer& b : buffers_)
+          opts.addRemappedFile(b.path_, llvm::MemoryBuffer::getMemBufferCopy(b.text_, b.path_).release());
+        opts.RetainRemappedFileBuffers = false;  // the compiler instance deletes the buffers
+        return clang::tooling::FrontendActionFactory::runInvocation(std::move(_inv), _files, std::move(_pch), _diags);
+      }  // runInvocation
+
+    };  // CheckFactory
+
+    // collects the errors of a check, and the line of the first note of an error in the file of the check
+    class CheckErrorCollector : public clang::DiagnosticConsumer {
+      const std::string key_;  // the normalized path of the file of the check
+      ForwardCheck& out_;
+      bool isKept_ = false;  // the last error is in out_.errors_
+
+     public:
+      CheckErrorCollector(std::string _key, ForwardCheck& _out) : key_(std::move(_key)), out_(_out) {}
+
+      void HandleDiagnostic(const clang::DiagnosticsEngine::Level _level, const clang::Diagnostic& _info) override {
+        clang::DiagnosticConsumer::HandleDiagnostic(_level, _info);
+        const auto [path, line] = place_of(_info);
+        const bool isInFile     = !path.empty() && normalize_path(path) == key_;
+        if (_level == clang::DiagnosticsEngine::Note) {
+          ForwardCheckError* last = isKept_ ? &out_.errors_.back() : nullptr;
+          if (last && !last->file_.empty() && last->at_ == 0 && isInFile) last->at_ = line;
+          return;
+        }
+        if (_level < clang::DiagnosticsEngine::Error) return;
+        ++out_.errorCount_;
+        isKept_ = out_.errors_.size() < max_check_errors;
+        if (!isKept_) return;
+        llvm::SmallString<256> text;
+        _info.FormatDiagnostic(text);
+        out_.errors_.push_back({isInFile ? std::string() : path, line, std::string(text), 0});
+      }  // HandleDiagnostic
+
+     private:
+      [[nodiscard]] static std::pair<std::string, uint32_t> place_of(const clang::Diagnostic& _info) {
+        if (!_info.hasSourceManager() || _info.getLocation().isInvalid()) return {"", 0};
+        const clang::SourceManager& sm = _info.getSourceManager();
+        const clang::PresumedLoc at    = sm.getPresumedLoc(sm.getFileLoc(_info.getLocation()));
+        if (at.isInvalid()) return {"", 0};
+        return {at.getFilename(), at.getLine()};
+      }  // place_of
+
+    };  // CheckErrorCollector
+  }  // namespace Detail
+
+  // parses a copy of a file with a text in the place of an #include line, for example the forward declarations that can
+  // replace the include. the text goes on one line, so the other lines keep their numbers. the copy is only in memory.
+  // _buffers is the unsaved text of the open files
+  [[nodiscard]] inline std::expected<ForwardCheck, std::string> check_forward(const Command& _cmd,
+                                                                              std::vector<Buffer> _buffers,
+                                                                              const std::string& _file,
+                                                                              const uint32_t _line, std::string _text,
+                                                                              const std::string& _resource_dir) {
+    const auto start      = std::chrono::steady_clock::now();
+    const std::string key = normalize_path(_file);
+
+    // the unsaved text of the file, else the text on disk
+    auto buffer           = llvm::find_if(_buffers, [&](const Buffer& _b) { return normalize_path(_b.path_) == key; });
+    std::string text;
+    if (buffer != _buffers.end()) {
+      text = buffer->text_;
+    } else if (const auto disk = llvm::MemoryBuffer::getFile(_file, false, false, true)) {
+      text = (*disk)->getBuffer().str();
+    } else {
+      return std::unexpected("cannot read " + _file);
+    }
+
+    // the include line, with no \r at its end
+    size_t begin = 0;
+    for (uint32_t l = 1; l < _line && begin != std::string::npos; ++l) {
+      begin = text.find('\n', begin);
+      if (begin != std::string::npos) ++begin;
+    }
+    if (begin == std::string::npos || begin > text.size())
+      return std::unexpected("the file has no line " + std::to_string(_line));
+    size_t end = std::min(text.find('\n', begin), text.size());
+    if (end > begin && text[end - 1] == '\r') --end;
+    llvm::StringRef directive = llvm::StringRef(text).slice(begin, end).ltrim();
+    if (!directive.consume_front("#") || !directive.ltrim().starts_with("include"))
+      return std::unexpected("line " + std::to_string(_line) + " has no #include");
+    std::ranges::replace(_text, '\n', ' ');
+    std::ranges::replace(_text, '\r', ' ');
+    text.replace(begin, end - begin, _text);
+    if (buffer != _buffers.end())
+      buffer->text_ = std::move(text);
+    else
+      _buffers.push_back({_file, std::move(text), 0});
+
+    // the parse, with the builtin headers of the engine as in the parse of the file
+    std::vector<std::string> args = _cmd.args_;
+    if (!_resource_dir.empty() && !args.empty()) args.insert(args.begin() + 1, "-resource-dir=" + _resource_dir);
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> fs(llvm::vfs::createPhysicalFileSystem().release());
+    fs->setCurrentWorkingDirectory(_cmd.directory_);
+    clang::FileSystemOptions fso;
+    fso.WorkingDir   = _cmd.directory_;
+    const auto files = llvm::makeIntrusiveRefCnt<clang::FileManager>(fso, fs);
+    Detail::CheckFactory factory(_buffers);
+    clang::tooling::ToolInvocation tool(std::move(args), &factory, files.get(),
+                                        std::make_shared<clang::PCHContainerOperations>());
+    ForwardCheck out;
+    Detail::CheckErrorCollector collector(key, out);
+    tool.setDiagnosticConsumer(&collector);
+    tool.run();
+    out.ms_ = elapsed_ms(start);
+    return out;
+  }  // check_forward
+
+  //----------------------------------
   // Json
 
   namespace Detail {
@@ -1435,5 +1578,17 @@ namespace DataFlow {
                       {"preprocessMs", _model.preprocess_ms_},
                       {"passReused", _model.isPassReused_}};
   }  // includes_to_json
+
+  // an error in a different file has its path, and "at": the line of its first note in the file of the check
+  [[nodiscard]] inline JsonObject forward_check_to_json(const ForwardCheck& _check) {
+    JsonArray errors;
+    for (const ForwardCheckError& e : _check.errors_) {
+      JsonObject o{{"line", int64_t(e.line_)}, {"message", e.message_}};
+      if (!e.file_.empty()) o["file"] = e.file_;
+      if (e.at_ > 0) o["at"] = int64_t(e.at_);
+      errors.push_back(std::move(o));
+    }
+    return JsonObject{{"errorCount", int64_t(_check.errorCount_)}, {"errors", std::move(errors)}, {"ms", _check.ms_}};
+  }  // forward_check_to_json
 
 }  // namespace DataFlow

@@ -1688,14 +1688,14 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 	};
 
 	// The file with the definition of a type that the translation unit only declares: the definition provider of VS Code
-	// finds it, else a search of the headers of the project
+	// at the place of the name finds it, else a search of the headers of the project. Without a place, only the search
 	const HEADER = /\.(h|hh|hpp|hxx|h\+\+|inl|ipp|tpp)$/i;
-	const definitionHeaderOf = async (doc: vscode.TextDocument, pos: vscode.Position, name: string): Promise<string | undefined> => {
+	const definitionHeaderOf = async (name: string, place?: { doc: vscode.TextDocument; pos: vscode.Position }): Promise<string | undefined> => {
 		try {
 			let timer: NodeJS.Timeout | undefined;
 			const limit = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), 10000); });
-			const result = await Promise.race([Promise.resolve(vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[] | undefined>(
-				'vscode.executeDefinitionProvider', doc.uri, pos)), limit]).finally(() => clearTimeout(timer));
+			const result = place ? await Promise.race([Promise.resolve(vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[] | undefined>(
+				'vscode.executeDefinitionProvider', place.doc.uri, place.pos)), limit]).finally(() => clearTimeout(timer)) : undefined;
 			const first = result?.[0];
 			if (first) {
 				return 'targetUri' in first ? first.targetUri.fsPath : first.uri.fsPath;
@@ -1740,7 +1740,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		try {
 			let result = await client.outline(doc.uri.fsPath, { line: place.pos.line + 1, col: toUtf8Column(lineText, place.pos.character) });
 			if (!result.outline && result.declaration) {
-				const header = await definitionHeaderOf(doc, place.pos, result.declaration.name);
+				const header = await definitionHeaderOf(result.declaration.name, { doc, pos: place.pos });
 				if (header) {
 					result = await client.outline(header, { name: result.declaration.name });
 				}
@@ -2374,6 +2374,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		client: (): string | undefined => mcp.clientName,
 		incomingCalls: (file, line, col) => editorIncomingCalls(file, line, col),
 		reviewFiles: (paths) => reviewFiles(paths),
+		definitionHeader: (name, place) => definitionHeaderOf(name, place),
 	});
 	const mcp: McpManager = new McpManager(context, store, log, createTools(mcpHost), createPrompts(), () => projectRoots());
 	context.subscriptions.push(mcp);

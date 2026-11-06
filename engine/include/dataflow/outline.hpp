@@ -417,6 +417,43 @@ namespace DataFlow {
       return nullptr;
     }  // tag_by_name
 
+    // the definitions of the classes and the enums whose qualified name ends with a name, for example HomeBatteryCtrl
+    // or power_ctrl::HomeBatteryCtrl. the search walks the namespaces and the classes of the translation unit. a type
+    // of a project file comes before the types of the system headers: if one type of a project file matches, only it
+    // stays
+    [[nodiscard]] inline std::vector<const clang::TagDecl*> tags_ending_with(clang::ASTContext& _ctx,
+                                                                             const std::string_view _name) {
+      const size_t at                 = _name.rfind("::");
+      const std::string_view last     = at == std::string_view::npos ? _name : _name.substr(at + 2);
+      const std::string suffix        = "::" + std::string(_name);
+      const clang::IdentifierInfo* id = &_ctx.Idents.get(llvm::StringRef(last.data(), last.size()));
+      const clang::SourceManager& sm  = _ctx.getSourceManager();
+
+      std::vector<const clang::TagDecl*> out;
+      llvm::SmallPtrSet<const clang::TagDecl*, 8> found;
+      for (std::vector<const clang::DeclContext*> todo{_ctx.getTranslationUnitDecl()}; !todo.empty();) {
+        const clang::DeclContext* dc = todo.back();
+        todo.pop_back();
+        for (const clang::Decl* d : dc->decls()) {
+          if (llvm::isa<clang::NamespaceDecl, clang::LinkageSpecDecl>(d)) {
+            todo.push_back(llvm::cast<clang::DeclContext>(d));
+            continue;
+          }
+          const auto* ct            = llvm::dyn_cast<clang::ClassTemplateDecl>(d);
+          const clang::TagDecl* tag = ct ? ct->getTemplatedDecl() : llvm::dyn_cast<clang::TagDecl>(d);
+          if (!tag || !tag->isThisDeclarationADefinition() || llvm::isa<clang::ClassTemplateSpecializationDecl>(tag))
+            continue;
+          if (tag->getIdentifier() == id && llvm::StringRef("::" + tag->getQualifiedNameAsString()).ends_with(suffix) &&
+              found.insert(tag).second)
+            out.push_back(tag);
+          if (const auto* rd = llvm::dyn_cast<clang::CXXRecordDecl>(tag)) todo.push_back(rd);  // the nested types
+        }
+      }
+      const auto is_project = [&](const clang::TagDecl* _t) { return !sm.isInSystemHeader(_t->getLocation()); };
+      if (llvm::count_if(out, is_project) == 1) return {*llvm::find_if(out, is_project)};
+      return out;
+    }  // tags_ending_with
+
   }  // namespace Detail
 
   // the class or the enum of a declaration: a class, an enum, a type alias of one of them, or a constructor or a

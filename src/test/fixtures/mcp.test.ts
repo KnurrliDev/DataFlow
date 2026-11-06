@@ -128,7 +128,7 @@ suite('MCP server on the fixture', () => {
 	test('The server lists its tools, and get_view gives the file of the editor', async () => {
 		const list = await rpc('tools/list');
 		assert.deepStrictEqual(list.result.tools.map((t: { name: string }) => t.name), [
-			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_threads', 'get_hidden', 'get_includes', 'show_blocks', 'show_flow',
+			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'show_blocks', 'show_flow',
 			'highlight', 'comment_lines', 'add_detail', 'clear', 'get_review', 'show_review_plan', 'review_step',
 		]);
 		const prompts = await rpc('prompts/list');
@@ -409,6 +409,16 @@ suite('MCP server on the fixture', () => {
 		assert.ok(variable.data.refs.length >= 2, variable.text);
 		assert.ok(!(await tool('get_hidden', { function: 'process' })).isError);
 		assert.ok((await tool('get_includes')).data.includes.length > 0);
+		// the outline of a type by its name, and at the line of its definition in the header
+		const header = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'include', 'battery', 'types.hpp');
+		const byName = await tool('get_outline', { file: header, name: 'HomeBatteryCtrl' });
+		assert.strictEqual(byName.data?.type, 'electricity::power_ctrl::HomeBatteryCtrl', byName.text);
+		assert.ok(byName.data.layout.size > 0, byName.text);
+		assert.strictEqual(byName.data.members.filter((m: any) => m.kind === 'field').length, 10, byName.text);
+		const headerLine = readFileSync(header, 'utf8').split(/\r?\n/).findIndex((l) => l.includes('struct HomeBatteryCtrl {')) + 1;
+		const byLine = await tool('get_outline', { file: header, line: headerLine });
+		assert.deepStrictEqual([byLine.data?.type, byLine.data?.line], ['electricity::power_ctrl::HomeBatteryCtrl', headerLine], byLine.text);
+		assert.ok((await tool('get_outline', { file: header })).isError);
 	});
 
 	test('get_calls gives the callers in other files from the call hierarchy of VS Code', async function () {

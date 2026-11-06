@@ -2845,6 +2845,8 @@ test('gives the outline of a class: the bases, the members in the source, the an
 		' signals:',
 		'  void valueChanged(int v);',
 		'};',
+		'namespace grid { struct Meter { int id = 0; }; }',
+		'namespace home { struct Meter { int id = 0; }; struct Panel { int watts = 0; }; }',
 		'',
 	].join('\n');
 	const sourceText = [
@@ -2917,6 +2919,12 @@ test('gives the outline of a class: the bases, the members in the source, the an
 		assert.deepEqual(widget.members.map((x) => [x.kind, x.name, x.section ?? '']),
 			[['property', 'value', ''], ['method', 'value', ''], ['method', 'setValue', 'slots'], ['method', 'valueChanged', 'signals']]);
 		assert.equal(widget.members[0].text, 'Q_PROPERTY(int value READ value WRITE setValue)');
+		// a name with no namespaces or with a part of them: the search finds it. A name of two types gives the candidates
+		assert.equal((await outline({ name: 'Panel' })).outline?.qualifiedName, 'home::Panel');
+		assert.equal((await outline({ name: 'State' })).outline?.qualifiedName, 'Battery::State');
+		const meter = await outline({ name: 'Meter' });
+		assert.deepEqual([meter.outline, meter.candidates?.slice().sort()], [null, ['grid::Meter', 'home::Meter']]);
+		assert.equal((await outline({ name: 'grid::Meter' })).outline?.qualifiedName, 'grid::Meter');
 
 		// a type with no definition in the translation unit gives its declaration, and a function gives nothing
 		const unknown = await outline(at(4, 'Unknown'));
@@ -2950,6 +2958,9 @@ test('tells for each include if forward declarations can replace it, or the firs
 		'ring.h': 'template <class T, int N> class Ring {};',
 		'gate.h': 'template <class T> concept Small = sizeof(T) < 8; template <Small T> class Gate {};',
 		'later.h': 'template <class T, class U> class Later; template <class T, class U = int> class Later {};',
+		// only argument-dependent lookup in the instantiation finds touch()
+		'generic.h': 'template <class T> void call_touch(T p) { touch(p); }',
+		'touch.h': 'struct Probe {}; inline void touch(Probe*) {}',
 	};
 	for (const [name, text] of Object.entries(headers)) writeFileSync(path.join(dir, name), `#pragma once\n${text}\n`);
 	const source = path.join(dir, 'main.cpp');
@@ -2977,6 +2988,7 @@ test('tells for each include if forward declarations can replace it, or the firs
 		'Ring<int, 4>* df_ring = nullptr;',
 		'Gate<int>* df_gate = nullptr;',
 		'Later<int>* df_later = nullptr;',
+		'void df_probe(Probe* probe) { call_touch(probe); }',
 		'',
 	].join('\n');
 	writeFileSync(source, sourceText);
@@ -3021,6 +3033,21 @@ test('tells for each include if forward declarations can replace it, or the firs
 		assert.deepEqual(blocker('later.h'), { name: 'Later', kind: 'a type with no forward declaration', line: lineOf('Later<int>') });
 		// a header of the standard library gets no check
 		assert.equal(forward['<memory>'], null);
+
+		// the check parses a copy of the file with the declarations in the place of the include
+		const check = (line, text) => own.send('dataflow/checkForward', { file: source, line, text });
+		const clean = await check(lineOf('#include "battery.h"'), forward['"battery.h"'].text);
+		assert.equal(clean.error, undefined, JSON.stringify(clean.error));
+		assert.deepEqual([clean.result.errorCount, clean.result.errors], [0, []]);
+		// the check of the uses does not see the instantiation of call_touch(), but the parse finds the error. Its note in
+		// the file gives the line of the call
+		assert.deepEqual([forward['"touch.h"']?.state, forward['"touch.h"']?.text], ['possible', 'struct Probe;']);
+		const failing = await check(lineOf('#include "touch.h"'), forward['"touch.h"'].text);
+		assert.equal(failing.result?.errorCount, 1, JSON.stringify(failing));
+		assert.match(failing.result.errors[0].message, /touch/);
+		assert.deepEqual([path.basename(failing.result.errors[0].file), failing.result.errors[0].at], ['generic.h', lineOf('call_touch(probe)')]);
+		// a line with no include
+		assert.match((await check(lineOf('power::Plan df_plan'), 'struct Plan;')).error?.message ?? '', /has no #include/);
 
 		// a parse with an error gives no result, because the ast is not complete
 		own.notify('textDocument/didOpen', { file: source, text: `${sourceText}int df_error = df_missing;\n`, version: 2 });

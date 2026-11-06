@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import type { SideIncludeNode, SideIncluders, SideIncludes } from '../side/protocol';
+import type { SideForwardCheck, SideIncludeNode, SideIncluders, SideIncludes } from '../side/protocol';
 import { vscode } from './vscode';
 
 // Include Hierarchy in the side view: the hints on the include lines of the file, and the details column with the
@@ -32,13 +32,14 @@ export function includeHints(includes: SideIncludes | null): Map<number, Include
 export interface IncludeDetailsProps {
 	includes: SideIncludes | null;
 	includers?: SideIncluders; // the translation units of the compile databases that include a file
+	forwardCheck?: SideForwardCheck; // the result of the button Check of the forward declarations
 	selected?: number; // the selected node
 	onSelect: (node: number) => void;
 }
 
 // The details column of Include Hierarchy. "Includes" shows the tree and the path of the selected header. "Included
 // by" shows the places in the translation unit that include it, and the translation units of the compile databases.
-export function IncludeDetails({ includes, includers, selected, onSelect }: IncludeDetailsProps) {
+export function IncludeDetails({ includes, includers, forwardCheck, selected, onSelect }: IncludeDetailsProps) {
 	const [tab, setTab] = useState<'tree' | 'back'>('tree');
 	const [open, setOpen] = useState<Set<number>>(() => new Set([0]));
 
@@ -97,7 +98,7 @@ export function IncludeDetails({ includes, includers, selected, onSelect }: Incl
 				<>
 					<LineGroups includes={includes} />
 					<IncludeTree includes={includes} open={open} selected={selected} onToggle={toggle} onSelect={onSelect} />
-					<WhyPath includes={includes} node={sel} />
+					<WhyPath includes={includes} node={sel} check={forwardCheck} />
 				</>
 			) : (
 				<IncludedBy includes={includes} includers={includers} node={sel} onSelect={onSelect} />
@@ -193,7 +194,7 @@ function IncludeTree({ includes, open, selected, onToggle, onSelect }: TreeProps
 }
 
 // The path that brings the selected header into the file. A click on a step opens its include line
-function WhyPath({ includes, node }: { includes: SideIncludes; node?: SideIncludeNode }) {
+function WhyPath({ includes, node, check }: { includes: SideIncludes; node?: SideIncludeNode; check?: SideForwardCheck }) {
 	if (!node || node.id === 0) {
 		return <p class="sub">Select a header to see the path that brings it into the file.</p>;
 	}
@@ -241,7 +242,7 @@ function WhyPath({ includes, node }: { includes: SideIncludes; node?: SideInclud
 					remove the include.
 				</p>
 			)}
-			{node.forward && <ForwardCheck includes={includes} node={node} />}
+			{node.forward && <ForwardCheck includes={includes} node={node} check={check} />}
 			{node.path && <button type="button" class="link small" onClick={() => openPlace(node.path, 1)}>Open {basename(node.path)}</button>}
 		</div>
 	);
@@ -252,7 +253,7 @@ const MAX_FORWARD_LINES = 12;
 
 // The forward declaration check of an include of the file: the declarations that can replace it, with the lines that
 // use each type, or the first line that needs the include. A click on a line opens it
-function ForwardCheck({ includes, node }: { includes: SideIncludes; node: SideIncludeNode }) {
+function ForwardCheck({ includes, node, check }: { includes: SideIncludes; node: SideIncludeNode; check?: SideForwardCheck }) {
 	const f = node.forward!;
 	const lineLink = (line: number) => (
 		<button type="button" class="link mono" title={`Open line ${line}`} onClick={() => openPlace(includes.file, line)}>line {line}</button>
@@ -264,14 +265,21 @@ function ForwardCheck({ includes, node }: { includes: SideIncludes; node: SideIn
 			</p>
 		);
 	}
+	const result = check && check.file === includes.file && check.line === node.line ? check : undefined;
 	return (
 		<div class="fwd">
 			<div class="sub-title">Forward declarations can replace this include</div>
 			<div class="fwd-code">
 				<pre>{f.text}</pre>
-				<button type="button" class="link small" title="Put the forward declarations on the clipboard"
-					onClick={() => vscode.postMessage({ type: 'copyForward', text: f.text })}>Copy</button>
+				<div class="fwd-actions">
+					<button type="button" class="link small" title="Put the forward declarations on the clipboard"
+						onClick={() => vscode.postMessage({ type: 'copyForward', text: f.text })}>Copy</button>
+					<button type="button" class="link small fwd-check" disabled={result?.state === 'running'}
+						title="Parse a copy of the file with these declarations in the place of the include. The copy is only in memory: the file does not change."
+						onClick={() => vscode.postMessage({ type: 'checkForward', line: node.line, text: f.text })}>Check</button>
+				</div>
 			</div>
+			{result && <ForwardCheckResult check={result} file={includes.file} />}
 			{f.types.map((t) => (
 				<div class="fwd-type">
 					<span class="mono">{t.name}</span>
@@ -280,6 +288,42 @@ function ForwardCheck({ includes, node }: { includes: SideIncludes; node: SideIn
 				</div>
 			))}
 			<p class="sub">The file uses these types only in ways that need no full type, for example through a pointer or a reference.</p>
+		</div>
+	);
+}
+
+// For example 850 ms or 2.4 s
+const duration = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
+
+// The result of the button Check: the errors of the parse with the declarations. An error in a header opens the line of
+// the file that leads to it, if the engine found one, for example the line of a call that needs the instantiation
+function ForwardCheckResult({ check, file }: { check: SideForwardCheck; file: string }) {
+	if (check.state === 'running') {
+		return <p class="sub fwd-result">Check: the engine parses a copy of the file…</p>;
+	}
+	if (check.state === 'failed') {
+		return <p class="sub problem fwd-result">Check failed: {check.message}</p>;
+	}
+	if (check.errorCount === 0) {
+		return <p class="sub fwd-result fwd-ok">Check: no errors with these declarations (parse {duration(check.ms)}).</p>;
+	}
+	return (
+		<div class="fwd-result fwd-errors">
+			<div class="sub problem">
+				Check: {check.errorCount} {check.errorCount === 1 ? 'error' : 'errors'} with these declarations (parse {duration(check.ms)}).
+			</div>
+			{check.errors.map((e) => {
+				const target = e.file ? (e.at ? { file, line: e.at } : { file: e.file, line: e.line }) : { file, line: e.line };
+				return (
+					<button type="button" class="ref fwd-error" title={`Open ${basename(target.file)} at line ${target.line}`}
+						onClick={() => openPlace(target.file, target.line)}>
+						<span class="line">line {target.line}</span>
+						<span class="fwd-message">{e.message}</span>
+						{e.file && <span class="sub">in {basename(e.file)}:{e.line}</span>}
+					</button>
+				);
+			})}
+			{check.errorCount > check.errors.length && <span class="sub">And {check.errorCount - check.errors.length} more errors.</span>}
 		</div>
 	);
 }

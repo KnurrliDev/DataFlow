@@ -99,6 +99,7 @@ test('side view: the colors, the guides, the scroll sync in both directions, the
 	assert.deepEqual(f.badges, ['<battery/types.hpp>'], JSON.stringify(f));
 	assert.ok(f.stats.includes('1 replaceable by forward declarations'), JSON.stringify(f.stats));
 	assert.equal(f.copied, true, JSON.stringify(f));
+	assert.match(f.check, /^Check: no errors with these declarations \(parse [\d.]+ m?s\)\.$/, JSON.stringify(f));
 	assert.match(f.needed ?? '', /^The file needs the full header: line \d+ uses electricity::WorkerPool, a data member of the type\.$/, JSON.stringify(f));
 	assert.match(r.afterReload, /^battery\.cpp, \d+ spans$/);
 	assert.equal(r.dirty, false);

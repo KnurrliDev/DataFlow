@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { outlineGroups, paddingAfter, typeDefinitionLine } from '../../side/outline';
+import { outlineGroups, paddingAfter, typeDefinitionLine, typeNameColumns } from '../../side/outline';
 import type { SideOutlineData, SideOutlineMember } from '../../side/protocol';
 
 // The panel of "Outline": the groups of the members, the padding after a data member, and the header of a type
@@ -65,5 +65,12 @@ suite('Outline of a type', () => {
 		assert.strictEqual(typeDefinitionLine(text, 'game::EState'), 5);
 		assert.strictEqual(typeDefinitionLine(text, 'Plan'), 6);
 		assert.strictEqual(typeDefinitionLine(text, 'Actor'), -1);
+	});
+
+	test('The search for a type at a line tries the name after the keyword first, also after an export macro', () => {
+		const names = (text: string) => typeNameColumns(text).map((c) => /\w+/.exec(text.slice(c))![0]);
+		assert.deepStrictEqual(names('class ENGINE_API AActor : public UObject'), ['AActor', 'class', 'ENGINE_API', 'public', 'UObject']);
+		assert.deepStrictEqual(names('enum class EState : uint8 {'), ['EState', 'enum', 'class', 'uint8']);
+		assert.deepStrictEqual(names('  std::vector<Plan> plans;'), ['std', 'vector', 'Plan', 'plans']);
 	});
 });

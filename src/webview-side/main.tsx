@@ -1,7 +1,7 @@
 import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type {
-	FromSide, SideCallList, SideCalls, SideCommand, SideCost, SideDetailsTab, SideFlow, SideFrame, SideGuide, SideIncluders, SideIncludes, SideLens,
+	FromSide, SideCallList, SideCalls, SideCommand, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideIncluders, SideIncludes, SideLens,
 	SideLogic, SideModel, SideOutline, SideRipple, SideRow, SideSettings, SideStory, SideThreads, SideWhy, ToSide,
 } from '../side/protocol';
 import { CallListPanel } from './calllist';
@@ -41,6 +41,7 @@ interface ViewState {
 	includes: SideIncludes | null;
 	includeSel?: number; // the selected node of Include Hierarchy
 	includers?: SideIncluders; // the source files of the compile databases that include a file
+	forwardCheck?: SideForwardCheck; // the result of the button Check of the forward declarations of an include
 	calls: SideCalls | null;
 	threads: SideThreads | null;
 	threadSel?: string; // the selected item of Threads and races
@@ -380,6 +381,9 @@ function App() {
 				case 'includers':
 					setState((s) => ({ ...s, includers: message.includers ?? undefined }));
 					break;
+				case 'forwardCheck':
+					setState((s) => ({ ...s, forwardCheck: message.check ?? undefined }));
+					break;
 				case 'ripple':
 					setState((s) => ({ ...s, ripple: message.ripple }));
 					break;
@@ -650,7 +654,7 @@ function App() {
 								onGraph={() => setState((s) => ({ ...s, isCallGraphOpen: !s.isCallGraphOpen }))} />
 						)}
 						{detailsLens === 'includes' && (
-							<IncludeDetails includes={includes} includers={state.includers} selected={state.includeSel}
+							<IncludeDetails includes={includes} includers={state.includers} forwardCheck={state.forwardCheck} selected={state.includeSel}
 								onSelect={(node) => setState((s) => ({ ...s, includeSel: node }))} />
 						)}
 						{detailsLens === 'flow' && <FlowDetails flow={flow} />}
