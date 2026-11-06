@@ -371,7 +371,9 @@ button.badge:hover { background: color-mix(in srgb, var(--c) 26%, transparent); 
 .hint.inc-hint.k-large { --c: var(--vscode-dataflow-write); }
 .hint.inc-hint.k-unused, .hint.inc-hint.k-missing { --c: var(--vscode-dataflow-problem); }
 .hint.inc-hint.k-forward, .badge.k-forward { --c: var(--vscode-dataflow-check); }
-.fwd { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+/* min-width 0: the long lines of the declarations do not make the section wider than the details column. The lines scroll
+   in their box */
+.fwd { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; min-width: 0; }
 .fwd-code { display: flex; align-items: flex-start; gap: 8px; }
 .fwd-code pre { flex: 1; min-width: 0; margin: 0; padding: 4px 8px; border-radius: 4px; overflow-x: auto; white-space: pre;
   font-family: var(--vscode-editor-font-family); font-size: 0.92em;
