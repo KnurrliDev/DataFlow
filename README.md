@@ -67,9 +67,13 @@ Hidden C++ shows the operations that the compiler adds: copies, conversions, tem
 
 ### Include Hierarchy
 
-Include Hierarchy shows the lines that each include adds after the preprocessor. The tree shows the includes and the path that brings a header into the file. It also shows the includes that forward declarations can replace. **Check** lets the engine parse a copy of the file in memory with the declarations. The file does not change. [Use Include Hierarchy](docs/usage.md#include-hierarchy)
+Include Hierarchy shows the lines that each include adds after the preprocessor. The tree shows the includes and the path that brings a header into the file. [Use Include Hierarchy](docs/usage.md#include-hierarchy)
 
 ![Include Hierarchy shows the lines of each include, the tree of the includes and the path to vector.](docs/images/include-hierarchy.png)
+
+Include Hierarchy also shows the includes that forward declarations can replace. **Check** lets the engine parse a copy of the file in memory with the declarations. The file does not change.
+
+![Include Hierarchy of planner.hpp: five forward declarations can replace types.hpp, and Check found no errors.](docs/images/include-forward.png)
 
 ### Call Hierarchy
 
@@ -92,6 +96,12 @@ Threads and races shows the code that runs on a worker thread, the data that two
 Change Ripple shows the code that the changes of your branch affect. The story follows a changed line through the functions, the lambdas and the async calls. [Use Change Ripple](docs/usage.md#change-ripple)
 
 ![Change Ripple shows the diff of a changed limit, and a card for each function that the change affects.](docs/images/change-ripple.png)
+
+### Outline of a type
+
+The outline shows the members of a type in the sequence of the source, with the offset and the size of each data member. The bar shows the memory layout, with the padding in yellow. It also shows the annotations of Unreal Engine and Qt, and the members of the bases. [Use the outline](docs/usage.md#outline-of-a-type)
+
+![The outline of HomeBatteryCtrl: 168 bytes with 6 bytes of padding after is_charging_underway, and the offset and the size of each data member.](docs/images/outline.png)
 
 ### MCP tools
 

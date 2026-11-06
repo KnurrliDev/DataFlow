@@ -386,8 +386,8 @@ const L = {
 };
 
 try {
-	if (isWanted('flow-lens', 'flow-lens-member', 'logic-map', 'hidden-cpp', 'include-hierarchy', 'call-hierarchy', 'show-calls', 'threads',
-		'model-blocks', 'model-notes', 'model-comments', 'model-detail', 'overview')) {
+	if (isWanted('flow-lens', 'flow-lens-member', 'logic-map', 'hidden-cpp', 'include-hierarchy', 'call-hierarchy', 'show-calls', 'outline',
+		'threads', 'model-blocks', 'model-notes', 'model-comments', 'model-detail', 'overview')) {
 		await session('battery', battery, batteryCpp, L.process, { 'git.enabled': false }, async (s) => {
 			await s.openSide('DataFlow: Open Side View');
 			await s.splitAt(EDITOR_WIDTH);
@@ -514,6 +514,20 @@ try {
 				await sleep(500);
 			}
 
+			// Outline: the members of HomeBatteryCtrl in the sequence of the source, and the layout with the padding
+			if (isWanted('outline')) {
+				await s.setLenses([]);
+				await s.details(null);
+				await s.goToLine(`${L.process}:${colOf(L.process, 'HomeBatteryCtrl') + 2}`);
+				await s.scrollSide(L.process - 2);
+				await s.command('DataFlow: Outline');
+				await s.until(() => s.inSide(`return doc.querySelectorAll('.outline-panel .ol-item').length > 0;`), 'outline panel', 120);
+				await sleep(1000);
+				await s.shot('outline', await s.sideBox());
+				await s.inSide(`doc.defaultView.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true;`);
+				await sleep(500);
+			}
+
 			// Threads and races: the race on is_dirty, with its accesses in the code and the two lanes
 			if (isWanted('threads')) {
 				await s.setLenses(['Threads']);
@@ -630,6 +644,28 @@ try {
 					await s.shot('overview');
 				}
 			}
+		});
+	}
+
+	// Include Hierarchy in planner.hpp: the include that forward declarations can replace, and the result of the button Check
+	if (isWanted('include-forward')) {
+		const planner = path.join(battery, 'include', 'battery', 'planner.hpp');
+		await session('planner', battery, planner, 3, { 'git.enabled': false }, async (s) => {
+			await s.openSide('DataFlow: Open Side View');
+			await s.splitAt(EDITOR_WIDTH);
+			await s.until(() => s.inSide(`return /Engine: ready/.test(doc.querySelector('.status')?.textContent ?? '');`), 'ready engine', 160);
+			await sleep(2000);
+			await s.setLenses(['Includes']);
+			await s.details('Includes');
+			const item = (name) => `[...doc.querySelectorAll('.itree [role="treeitem"]')].find((x) => (x.querySelector('.f')?.textContent ?? '').replace(/[<>"]/g, '').split('/').pop() === '${name}')`;
+			await s.until(() => s.inSide(`return !!${item('types.hpp')}?.querySelector('.badge.k-forward');`), 'include with the badge fwd', 120);
+			await s.inSide(`${item('types.hpp')}.click(); return true;`);
+			await s.until(() => s.inSide(`return !!doc.querySelector('.fwd .fwd-check');`), 'forward declarations');
+			await s.clickIn('.fwd .fwd-check', 'Check');
+			await s.until(() => s.inSide(`return !!doc.querySelector('.fwd-ok, .fwd-errors, .fwd-result.problem');`), 'result of Check', 240);
+			await sleep(800);
+			await s.scrollSide(1);
+			await s.shot('include-forward', await s.sideBox());
 		});
 	}
 
