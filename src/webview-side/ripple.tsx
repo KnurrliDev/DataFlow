@@ -32,7 +32,7 @@ export function rippleDecorations(ripple: SideRipple | null): { lines: Map<numbe
 }
 
 // The length of the indent that all rows with text have, so that the rows do not start with a large empty part
-function commonIndent(texts: string[]): number {
+export function commonIndent(texts: string[]): number {
 	let indent: string | undefined;
 	for (const text of texts) {
 		if (text.trim() === '') {
@@ -65,15 +65,15 @@ function cut(row: SideRow, n: number): SideRow {
 }
 
 // The text of a row with its tokens, and a box on its changed characters
-function rowCode(row: SideRow, indent: number, changed: [number, number] | undefined) {
+export function rowCode(row: SideRow, indent: number, changed: [number, number] | undefined) {
 	const box = changed && changed[1] - indent > 0 ? [{ start: Math.max(0, changed[0] - indent), end: changed[1] - indent, cls: 'chg-text' }] : undefined;
 	return codeParts(cut(row, indent), undefined, box);
 }
 
-const digits = (lines: number[]) => `${Math.max(2, ...lines.map((l) => String(l).length))}ch`;
+export const digits = (lines: number[]) => `${Math.max(2, ...lines.map((l) => String(l).length))}ch`;
 
 // A click on a row opens its line in the file view and in the text editor. A selection of text does not.
-function onRowClick(file: string) {
+export function onRowClick(file: string) {
 	return (e: MouseEvent) => {
 		const selection = window.getSelection();
 		const row = (e.target as HTMLElement).closest('[data-line]') as HTMLElement | null;

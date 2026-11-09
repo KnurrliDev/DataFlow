@@ -33,11 +33,11 @@ export default defineConfig([
 	{ label: 'project', files: 'out/test/fixtures/project.test.js', ...common },
 	// A folder with no compile database at the start. scripts/prepare-fixtures.mjs makes it from the CMake fixture.
 	{ label: 'late-db', files: 'out/test/fixtures/latedb.test.js', workspaceFolder: 'build/fixtures/late-db', ...common },
-	// The acceptance test of P5 and the test of the story of S5 need a git repository. scripts/prepare-fixtures.mjs makes
-	// it from the CMake fixture.
+	// The acceptance test of P5, the test of the story of S5 and the tests of the diff walk need a git repository.
+	// scripts/prepare-fixtures.mjs makes it from the CMake fixture.
 	{
 		label: 'review',
-		files: ['out/test/fixtures/ripple.test.js', 'out/test/fixtures/side-ripple.test.js'],
+		files: ['out/test/fixtures/ripple.test.js', 'out/test/fixtures/side-ripple.test.js', 'out/test/fixtures/walk.test.js'],
 		workspaceFolder: 'build/fixtures/battery-review',
 		...common,
 	},

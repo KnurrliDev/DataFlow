@@ -505,6 +505,21 @@ export interface SideDiffRow {
 	count?: number; // a fold: the number of lines
 }
 
+// A row of the diff of a step of a diff walk. It has no tokens: the side view gets them from the code of the file, or
+// from the lexer.
+export type SideStepRow = Omit<SideDiffRow, 'spans'>;
+
+// The diff of a step of a diff walk: the rows for the tab Guide, and the marks of the code view. Lines start at 1, in
+// the working tree.
+export interface SideStepDiff {
+	rows: SideStepRow[]; // the unified diff of the hunks of the step, with the lines of context
+	added: [number, number][]; // the ranges of the added lines
+	changed: { line: number; start: number; end: number }[]; // an added line that replaces a line: the UTF-16 columns of the changed characters
+	removed: { at: number; count: number; texts: string[] }[]; // the removed lines before the line "at". The last line + 1 is the end of the file
+	plus: number; // the number of added lines
+	minus: number; // the number of removed lines
+}
+
 // A row of a card of the story: a line that the ripple reaches, a line of context, or a fold for a gap
 export interface SideCardRow {
 	line: number;
@@ -637,14 +652,17 @@ export interface SideMcp {
 	error?: string;
 }
 
-// A guided review: the plan of a language model to review the changes of a branch, one step after the other. The model
-// sends the plan through the MCP server. The user goes from step to step in the side view, or asks the model. Lines
-// start at 1.
+// A guide: a guided review or a diff walk, one step after the other. In a guided review, a language model sends the plan
+// through the MCP server. A diff walk goes through the changes of a diff: the command of DataFlow makes the steps, or a
+// model sends them. The user goes from step to step in the side view, or asks the model. Lines start at 1.
 export interface SideGuide {
+	kind?: 'review' | 'diff'; // undefined is a guided review
 	title: string;
 	summary?: string; // what the changes do, in the words of the model
 	client?: string; // the name of the MCP client, for example claude-code
 	target?: string; // the target branch of the review, for example main
+	base?: string; // a diff walk: the base of the diff, for example "HEAD (1a2b3c4)"
+	baseCommit?: string; // a diff walk: the commit of the base, for the diff editor
 	steps: SideGuideStep[];
 	current: number; // the index of the step that the side view shows
 	seq: number; // a new plan gets a new number
@@ -667,6 +685,7 @@ export interface SideGuideStep {
 	kind?: SideGuideKind;
 	status: SideGuideStatus;
 	note?: string; // a note of the model on the step, for example the answer to a question of the user
+	diff?: SideStepDiff; // a diff walk: the diff of the step
 }
 
 // A tab of the details column: the tab of a lens, the tab of the layers of a model, or the tab of a guided review
@@ -746,10 +765,11 @@ export type SideAction =
 	| { type: 'parseMemberFile'; file: string } // adds the accesses of a different source file of the class to the member trace
 	| { type: 'parseMemberFiles' } // the user put a function in the center of Call Hierarchy. The extension asks VS Code for its callers in other files
 	| { type: 'clearModel' } // removes the blocks and the notes of the model in the file of the side view
-	| { type: 'guideGo'; index: number } // shows a step of the guided review
+	| { type: 'guideDiff'; index: number } // opens the diff editor of a step of the diff walk at the lines of the step
+	| { type: 'guideGo'; index: number } // shows a step of the guide
 	| { type: 'guideStatus'; index: number; status: SideGuideStatus } // the mark of the user on a step
-	| { type: 'guideCopy' } // puts the summary of the guided review on the clipboard
-	| { type: 'guideClose' }; // removes the guided review
+	| { type: 'guideCopy' } // puts the summary of the guide on the clipboard
+	| { type: 'guideClose' }; // removes the guide
 
 export type FromSide =
 	| { type: 'ready' }

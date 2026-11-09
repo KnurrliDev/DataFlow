@@ -2,6 +2,7 @@ import {
 	COMMENT_COLORS, MAX_BLOCK_LEVELS, MAX_COMMENTS, type ModelBlockInput, type ModelCommentInput, type ModelDetailInput, type ModelNoteInput,
 } from '../lenses/blocks';
 import { GUIDE_KINDS, GUIDE_STATUSES, MAX_GUIDE_STEPS, MAX_STEP_CHECKS, type GuidePlanInput } from '../review/guide';
+import { MAX_WALK_STEPS, type WalkPlanInput } from '../review/walk';
 import type { McpPrompt, McpTool } from './server';
 
 // The tools and the prompt of the MCP server of DataFlow. The read tools give the facts of the engine. The view tools
@@ -32,6 +33,8 @@ export interface McpHost {
 	review(paths: unknown): Promise<object>;
 	showReviewPlan(plan: GuidePlanInput): Promise<object>;
 	reviewStep(step: number, note: unknown, status: string | undefined): Promise<object>;
+	diff(base: string | undefined, paths: unknown): Promise<object>;
+	showDiffWalk(plan: WalkPlanInput): Promise<object>;
 }
 
 export const INSTRUCTIONS = [
@@ -44,6 +47,8 @@ export const INSTRUCTIONS = [
 	'The side view marks your titles, summaries, notes, comments and details as text of a model. The lines and the data of each block come from the engine, so use the data of the results in your answers.',
 	'For a guided review of the files or the folders that the user names, call get_review with their paths, read the code with the other tools, '
 	+ 'then call show_review_plan with a plan of steps, and walk the user through the plan with review_step. The prompt guided-review gives the steps.',
+	'To walk the user through the changes of the working tree, of the branch or since a commit, for example the changes that you made, call get_diff, '
+	+ 'read the changed code, then call show_diff_walk with steps of hunks, and go on with review_step. The prompt diff-walk gives the steps.',
 ].join(' ');
 
 const FILE = { type: 'string', description: 'The C++ file: an absolute path, or a path relative to the workspace folder. Default: the file of the active editor, or else the file of the side view.' };
@@ -306,8 +311,56 @@ export function createTools(host: McpHost): McpTool[] {
 				},
 			},
 			['steps'], false, (a) => host.showReviewPlan({ title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps') })),
-		tool('review_step', 'Go to a review step',
-			'Shows a step of the guided review in the DataFlow side view, as the buttons of the user do. Give "note" to add your explanation, an answer or a finding to the step: '
+		tool('get_diff', 'Get the changes for a diff walk',
+			'The hunks of the changed C and C++ files against a base, for a diff walk. Each hunk has an id, its first and last changed line in the working tree, the functions that it changes, '
+			+ 'and its diff with the line numbers of the working tree. suggestedSteps puts the hunks of one function in one step. The engine finds the functions, so a large diff can take some seconds. '
+			+ 'Read the changed code with get_structure, get_flow and get_calls. Then make the plan of a diff walk for show_diff_walk.',
+			{
+				base: {
+					type: 'string',
+					description: '"uncommitted" (default): the changes against HEAD. "target": the changes of the branch against its target branch, as Change Ripple. '
+						+ 'Else a commit, a tag or a branch, for example HEAD~1: the changes since its merge base with HEAD. '
+						+ 'Each diff goes to the working tree, with the changes that are not saved and the C and C++ files that git does not track yet.',
+				},
+				paths: {
+					type: 'array', minItems: 1, items: { type: 'string' },
+					description: 'Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. Default: all changed files.',
+				},
+			},
+			[], true, (a) => host.diff(a.text('base'), a.raw('paths'))),
+		tool('show_diff_walk', 'Show a diff walk',
+			'Shows a diff walk in the DataFlow side view: a plan of steps that walks the user through the changes of get_diff, in the order that explains them best. Each step names its hunks. '
+			+ 'The side view goes to the lines of step 1, marks the added and the removed lines, and shows the diff and the text of the step. DataFlow adds a step at the end for each hunk that no step names. '
+			+ 'A new plan replaces the old plan or the guided review. Call get_diff first.',
+			{
+				title: { type: 'string', description: 'A short title of the walk, for example "The new charge limit". Maximum 80 characters.' },
+				summary: { type: 'string', description: 'One to three sentences: what the changes do. Maximum 1000 characters.' },
+				steps: {
+					type: 'array', minItems: 1, maxItems: MAX_WALK_STEPS, description: 'The steps, in the order of the walk.',
+					items: object({
+						title: { type: 'string', description: 'A short title, for example "Add the limit to the settings". Maximum 80 characters.' },
+						hunks: {
+							type: 'array', minItems: 1, items: { type: 'string' },
+							description: 'The ids of the hunks of the step from get_diff, for example ["h2", "h3"]. All hunks of a step must be in one file.',
+						},
+						text: {
+							type: 'string',
+							description: 'What changed in this step and why, in 2 to 5 sentences. A small part of Markdown: paragraphs, lists, `code` and **bold**. Maximum 2000 characters.',
+						},
+						checks: {
+							type: 'array', maxItems: MAX_STEP_CHECKS, items: { type: 'string' },
+							description: 'Questions that the user can answer in this step, for example "Can the limit be 0?".',
+						},
+						kind: {
+							type: 'string', enum: [...GUIDE_KINDS],
+							description: 'change: the main change. ripple: code that a change reaches. context: code that explains a change. risk: a possible problem. test: the tests of the change.',
+						},
+					}, ['title', 'hunks', 'text']),
+				},
+			},
+			['steps'], false, (a) => host.showDiffWalk({ title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps') })),
+		tool('review_step', 'Go to a step',
+			'Shows a step of the guided review or of the diff walk in the DataFlow side view, as the buttons of the user do. Give "note" to add your explanation, an answer or a finding to the step: '
 			+ 'the side view shows it under the text of the step. Give "status" to mark the step. get_view gives the step that the user looks at and the marks of the user.',
 			{
 				step: { type: 'integer', minimum: 1, description: 'The number of the step, from 1.' },
@@ -356,6 +409,28 @@ export function createPrompts(): McpPrompt[] {
 			'6. When I ask for the next step, call get_view: it gives the step that I look at and my marks. Explain that step, or call review_step to go to the next step. '
 			+ 'If you find a problem, add it with review_step as a note with the status issue.',
 			'Use the facts of the tool results. If you are not sure of a fact, say so.',
+		].join('\n'),
+	}, {
+		name: 'diff-walk',
+		title: 'Walk through the changes step by step',
+		description: 'Explains the changes of the working tree, of the branch or since a commit one step after the other, with the diff of each step in the DataFlow side view.',
+		arguments: [
+			{ name: 'base', description: 'The changes: uncommitted (default), target for the changes of the branch, or a commit, for example HEAD~1.', required: false },
+			{ name: 'focus', description: 'What the walk explains first, for example the new settings or the tests. Default: the main change.', required: false },
+		],
+		text: (args) => [
+			`Walk me through the changes${args.base ? ` against ${args.base}` : ' that are not committed'}, one step after the other. Use the DataFlow tools:`,
+			`1. Call get_diff${args.base ? ` with the base "${args.base}"` : ''}. It gives the hunks of the changed C and C++ files with their ids, and suggested steps.`,
+			'2. Read the changed code: call get_structure for the changed functions. Where the data or the callers matter, call get_flow or get_calls.',
+			'3. Make a plan of 2 to 12 steps, in the order that explains the change best: first the main change, for example a new type or the new logic, '
+			+ 'then the code that uses it, then the tests. Put each hunk in a step. All hunks of a step must be in one file. The suggested steps are a good start.',
+			...(args.focus ? [`   Explain first: ${args.focus}.`] : []),
+			'   Give each step a short title, its hunks, and a text that says what changed and why, in 2 to 5 sentences.',
+			'4. Call show_diff_walk. The side view shows step 1 with its diff.',
+			'5. Explain step 1 in a few sentences. Then stop, and wait for me.',
+			'6. When I ask for the next step, call get_view: it gives the step that I look at. Explain that step, or call review_step to go to the next step. '
+			+ 'If you find a problem, add it with review_step as a note with the status issue.',
+			'Use the facts of the tool results. If you are not sure why a line changed, say so.',
 		].join('\n'),
 	}];
 }

@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
@@ -165,6 +165,7 @@ export interface ReviewFile {
 	uri: vscode.Uri;
 	changes: DiffChanges;
 	hunks: DiffLine[][];
+	isNew: boolean; // the base does not have the file, or the file is empty at the base
 }
 
 export interface ReviewDiff {
@@ -172,6 +173,8 @@ export interface ReviewDiff {
 	target: string; // the target branch, for example origin/dev
 	label: string; // for example "main (merge base 1a2b3c4)"
 	files: ReviewFile[];
+	deleted: string[]; // the C and C++ files that are not in the working tree, with their full paths
+	other: string[]; // the changed files that are not C or C++ files, with their full paths
 	baseUri(uri: vscode.Uri): vscode.Uri; // the file at the base, for the diff editor
 }
 
@@ -227,6 +230,18 @@ export class ReviewRepository {
 		return heads.find((h) => h.startsWith('origin/')) ?? heads[0];
 	}
 
+	// The commit of a ref, for example HEAD~2, a tag or a branch. Undefined if git does not find a commit for the ref. A
+	// ref that starts with "-" is not a ref, because git reads it as an option
+	async commitOf(ref: string): Promise<string | undefined> {
+		return ref.startsWith('-') ? undefined : (await this.git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])) || undefined;
+	}
+
+	// The files that git does not track and does not ignore, with their full paths
+	private async untrackedFiles(): Promise<string[]> {
+		const out = await this.gitOutput(['ls-files', '--others', '--exclude-standard', '-z']);
+		return (out ?? '').split('\0').filter(Boolean).map((f) => path.join(this.root, f));
+	}
+
 	// The output of a git command that only reads, or '' if git fails
 	private async git(args: string[]): Promise<string> {
 		return (await this.gitOutput(args))?.trim() ?? '';
@@ -267,8 +282,9 @@ export class ReviewRepository {
 	// The C and C++ files that changed against the merge base of HEAD and the target branch, with their changes. The
 	// changes include the changes that are not committed. With the target HEAD, only these changes are in the diff.
 	// The engine slices the text of the editors, so a file with changes that are not saved gets the diff of the text
-	// of its editor. A file of the base also gets a diff if only its editor has changes.
-	async diff(target: string): Promise<ReviewDiff> {
+	// of its editor. A file of the base also gets a diff if only its editor has changes. With untracked, the C and C++
+	// files that git does not track yet are new files of the diff.
+	async diff(target: string, options: { untracked?: boolean } = {}): Promise<ReviewDiff> {
 		const mergeBase = await this.mergeBase(target);
 		if (!mergeBase) {
 			throw new Error(`The target branch ${target} does not exist, or it has no commit in common with HEAD. `
@@ -283,28 +299,55 @@ export class ReviewRepository {
 		}
 
 		const files: ReviewFile[] = [];
+		const deleted: string[] = [];
+		const other: string[] = [];
 		const add = (uri: vscode.Uri, patch: string | undefined): void => {
 			const changes = parseDiff(patch ?? '');
 			if (changes.lines.length > 0 || changes.deleted.length > 0) {
-				files.push({ uri, changes, hunks: diffHunks(patch ?? '') });
+				// a hunk from line 0 of the base: the base has no text of the file
+				files.push({ uri, changes, hunks: diffHunks(patch ?? ''), isNew: /^@@ -0,0 /m.test(patch ?? '') });
 			}
 		};
 		for (const change of await this.repo.diffWith(mergeBase)) {
-			if (DELETED.has(change.status) || !isCppFile(change.uri.fsPath)) {
+			if (!isCppFile(change.uri.fsPath)) {
+				other.push(change.uri.fsPath);
+				continue;
+			}
+			if (DELETED.has(change.status)) {
+				deleted.push(change.uri.fsPath);
 				continue;
 			}
 			const doc = unsaved.get(pathKey(change.uri.fsPath));
 			unsaved.delete(pathKey(change.uri.fsPath));
 			add(change.uri, doc ? await this.diffText(mergeBase, doc.uri.fsPath, doc.getText(), true) : await this.repo.diffWith(mergeBase, change.uri.fsPath));
 		}
+		if (options.untracked) {
+			const known = new Set(files.map((f) => pathKey(f.uri.fsPath)));
+			for (const file of (await this.untrackedFiles()).filter(isCppFile)) {
+				if (known.has(pathKey(file))) {
+					continue;
+				}
+				const doc = unsaved.get(pathKey(file));
+				unsaved.delete(pathKey(file));
+				const text = doc ? doc.getText() : await readFile(file, 'utf8').catch(() => undefined);
+				if (text !== undefined) {
+					add(vscode.Uri.file(file), await this.diffText(mergeBase, file, text, true));
+				}
+			}
+		}
 		for (const doc of unsaved.values()) {
 			add(doc.uri, await this.diffText(mergeBase, doc.uri.fsPath, doc.getText(), false));
 		}
 		return {
-			base: mergeBase, target, label: `${target} (merge base ${mergeBase.slice(0, 7)})`, files,
+			base: mergeBase, target, label: `${target} (merge base ${mergeBase.slice(0, 7)})`, files, deleted, other,
 			baseUri: (uri) => this.api.toGitUri(uri, mergeBase),
 		};
 	}
+}
+
+// The text of a file at a commit, for the left side of the diff editor
+export async function commitUri(uri: vscode.Uri, commit: string): Promise<vscode.Uri> {
+	return (await gitApi()).toGitUri(uri, commit);
 }
 
 async function gitApi(): Promise<GitApi> {

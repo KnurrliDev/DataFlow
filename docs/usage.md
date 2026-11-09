@@ -510,10 +510,11 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | **DataFlow: Copy MCP Setup** | | Puts the setup of an MCP client on the clipboard. |
 | **DataFlow: Show or Hide Model Layers** | | Shows or hides the blocks, the notes, the comments and the details of the model. |
 | **DataFlow: Remove Model Layers** | | Removes the blocks, the notes, the comments and the details of the model. |
-| **DataFlow: Next Review Step** | | Goes to the next step of the guided review. The commands of the guided review show only while a guide shows. See [Guided review](tools.md#guided-review). |
-| **DataFlow: Previous Review Step** | | Goes to the step before the current step of the guided review. |
-| **DataFlow: Copy Review Summary** | | Puts the summary of the guided review on the clipboard, in Markdown. |
-| **DataFlow: Close Guided Review** | | Removes the guided review from the side view. |
+| **DataFlow: Walk Through the Changes** | | Starts a diff walk: one step for each changed function, with the diff of each step. See [Diff walk](tools.md#diff-walk). |
+| **DataFlow: Next Guide Step** | | Goes to the next step of the guided review or of the diff walk. The commands of the guide show only while a guide shows. See [Guided review](tools.md#guided-review). |
+| **DataFlow: Previous Guide Step** | | Goes to the step before the current step of the guide. |
+| **DataFlow: Copy Guide Summary** | | Puts the summary of the guide on the clipboard, in Markdown. |
+| **DataFlow: Close Guide** | | Removes the guided review or the diff walk from the side view. |
 
 ## All settings
 

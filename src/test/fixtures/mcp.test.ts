@@ -129,10 +129,10 @@ suite('MCP server on the fixture', () => {
 		const list = await rpc('tools/list');
 		assert.deepStrictEqual(list.result.tools.map((t: { name: string }) => t.name), [
 			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'show_blocks', 'show_flow',
-			'highlight', 'comment_lines', 'add_detail', 'clear', 'get_review', 'show_review_plan', 'review_step',
+			'highlight', 'comment_lines', 'add_detail', 'clear', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step',
 		]);
 		const prompts = await rpc('prompts/list');
-		assert.deepStrictEqual(prompts.result.prompts.map((p: { name: string }) => p.name), ['explain-function', 'guided-review']);
+		assert.deepStrictEqual(prompts.result.prompts.map((p: { name: string }) => p.name), ['explain-function', 'guided-review', 'diff-walk']);
 		const view = await tool('get_view');
 		assert.strictEqual(view.data.file, file());
 		assert.strictEqual(view.data.engine, 'ready');

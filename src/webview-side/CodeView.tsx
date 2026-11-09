@@ -8,6 +8,8 @@ import { CallHint, callHints } from './calls';
 import { codeParts } from './code';
 import { CostCard, CostChip, costDecorations, LookupConnector, RangePoint } from './cost';
 import { Decoration, FlowCard, FlowCurves, flowDecorations, FlowLane, laneWidth, MarkPoint } from './flow';
+import { chipText, chipTitle, type DiffChip, type WalkMarks } from './guide';
+import { lexSpans } from '../side/model';
 import { IncludeHint, includeHints } from './includes';
 import { LogicHint, logicDecorations, WhyCard } from './logic';
 import { commentClass, DetailCard, detailBoxes, DetailMark, ModelBarMark, ModelTag, modelDecorations } from './model';
@@ -47,7 +49,8 @@ export interface CodeViewProps {
 	threadItem?: SideThreadItem; // the selected item of Threads and races
 	ripple: SideRipple | null;
 	model: SideModel | null; // the blocks and the notes of a language model
-	guideLines?: { first: number; last: number; label: string }; // the lines of the current step of a guided review
+	guideLines?: { first: number; last: number; label: string; isWalk: boolean }; // the lines of the current step of a guide
+	diff?: WalkMarks; // the marks of a diff walk in the file: the added and the removed lines
 	why?: SideWhy; // the last answer to the question why a line runs
 	stepLine?: number; // the line of a step of the path: the step of "Play path", or the step under the mouse
 	reveal?: { line: number; seq: number }; // the view scrolls to the line if it is not visible. seq changes for each step
@@ -118,8 +121,12 @@ interface RowProps {
 	isInactive: boolean; // a condition of the preprocessor skips the line
 	isPathStep: boolean; // the line of a step of the path of Logic Map
 	isStep: boolean; // the line of the current step of the path
-	reviewStep?: 'first' | 'mid' | 'last' | 'only'; // the line is in the current step of a guided review
-	reviewTag?: string; // the step of a guided review, on its first line
+	reviewStep?: 'first' | 'mid' | 'last' | 'only'; // the line is in the current step of a guide
+	reviewTag?: string; // the step of a guide, on its first line
+	isWalk: boolean; // the guide is a diff walk
+	diffClass?: string; // the classes of a diff walk: an added line, or a line after removed lines
+	diffChip?: DiffChip; // the removed lines of the current step of a diff walk at the line
+	onChipFocus: (el: HTMLElement | null) => void; // the chip of removed lines got or lost the focus of the keyboard
 	lead?: SideFlowColor; // the color of the guide line from the dot to the first reference
 	leadY: number;
 }
@@ -146,7 +153,8 @@ function Row(props: RowProps) {
 	const classes = `row${props.isCursor ? ' cursor' : ''}${props.isDim ? ' dim' : ''}${props.isInactive ? ' inactive' : ''}${
 		props.isPathStep ? ' path-step' : ''}${props.isStep ? ' step' : ''}${
 		props.ripple ? ` ${props.ripple}` : ''}${props.threadLane ? ` lane-${props.threadLane}` : ''}${
-		props.noteKind ? ` note-${props.noteKind}` : ''}${props.reviewStep ? ` rg-line rg-${props.reviewStep}` : ''}`;
+		props.noteKind ? ` note-${props.noteKind}` : ''}${props.reviewStep ? ` rg-line rg-${props.reviewStep}${props.isWalk ? ' rg-walk' : ''}` : ''}${
+		props.diffClass ? ` ${props.diffClass}` : ''}`;
 	const shortTexts = props.isShortEnds ? endTexts(props.hints, props.logicHints) : [];
 	return (
 		<div class={classes} data-line={line}>
@@ -162,9 +170,16 @@ function Row(props: RowProps) {
 				</span>
 			)}
 			<span class="code">{parts}</span>
-			{(props.reviewTag || props.modelTags || props.flowTags || props.includeHints || props.callHints || props.threadHints || props.chips || props.rippleHints) && (
+			{(props.reviewTag || props.diffChip || props.modelTags || props.flowTags || props.includeHints || props.callHints || props.threadHints || props.chips
+				|| props.rippleHints) && (
 				<span class="tags">
-					{props.reviewTag && <span class="hint rg-tag"><span class="rg-pill">review</span>{props.reviewTag}</span>}
+					{props.reviewTag && <span class="hint rg-tag"><span class="rg-pill">{props.isWalk ? 'diff' : 'review'}</span>{props.reviewTag}</span>}
+					{props.diffChip && (
+						<button type="button" class="hint df-chip" data-del-line={line} aria-label={`${chipTitle(props.diffChip)}: ${props.diffChip.texts.join('\n')}`}
+							onFocus={(e) => props.onChipFocus(e.currentTarget as HTMLElement)} onBlur={() => props.onChipFocus(null)}>
+							{chipText(props.diffChip)}
+						</button>
+					)}
 					{props.modelTags?.map((t) => (t.kind === 'comment' ? (
 						<button type="button" class={`hint model-tag k-comment${commentClass(t.color)}`} title={t.title} onClick={() => props.onModelTag(t.block)}>
 							{t.text}
@@ -245,6 +260,31 @@ function EndsCard(props: { texts: string[]; right: number; top: number; isAbove:
 	);
 }
 
+// The card of a chip of removed lines of a diff walk: the removed lines with the tokens of the lexer. The card starts at
+// the left edge of the chip. If its right edge is outside of the visible part of the view, it moves to the left
+function RemovedCard(props: {
+	chip: DiffChip; left: number; top: number; isAbove: boolean; minLeft: number; maxRight: number; onEnter: () => void; onLeave: () => void;
+}) {
+	const { chip } = props;
+	const ref = useRef<HTMLDivElement>(null);
+	useLayoutEffect(() => {
+		const el = ref.current;
+		if (el && props.left + el.offsetWidth > props.maxRight) {
+			el.style.left = `${Math.max(props.minLeft, props.maxRight - el.offsetWidth)}px`;
+		}
+	});
+	return (
+		<div ref={ref} class={props.isAbove ? 'card df-card above' : 'card df-card'} role="tooltip" style={{ left: `${props.left}px`, top: `${props.top}px` }}
+			onMouseEnter={props.onEnter} onMouseLeave={props.onLeave}>
+			<div class="card-title">{chipTitle(chip)}</div>
+			<div class="df-card-rows">
+				{chip.texts.map((t) => <div class="df-card-row">{codeParts({ line: 0, text: t, spans: lexSpans(t) }, undefined, undefined)}</div>)}
+				{chip.count > chip.texts.length && <div class="df-card-more">{`⋯ ${chip.count - chip.texts.length} more lines`}</div>}
+			</div>
+		</div>
+	);
+}
+
 // The visual column of a UTF-16 column, with each tab to the next tab stop
 function visualColumn(text: string, col: number, tabSize: number): number {
 	let out = 0;
@@ -280,6 +320,9 @@ export function CodeView(props: CodeViewProps) {
 	const reportedWidth = useRef(0); // the width of the view in the last message, for the tests
 	const [endsAt, setEndsAt] = useState<{ line: number; right: number; top: number; isAbove: boolean } | undefined>(undefined);
 	const endsClose = useRef(0);
+	// the card of the removed lines of a diff walk, which the chip of the removed lines opens
+	const [chipAt, setChipAt] = useState<{ line: number; left: number; top: number; isAbove: boolean; minLeft: number; maxRight: number } | undefined>(undefined);
+	const chipClose = useRef(0);
 	const expectedTop = useRef<number | undefined>(undefined); // the scroll position after the last scroll from the extension
 	const reportedLine = useRef(0);
 	const frame = useRef(0);
@@ -358,6 +401,7 @@ export function CodeView(props: CodeViewProps) {
 		clearTimeout(costClose.current);
 		clearTimeout(endsClose.current);
 		clearTimeout(detailClose.current);
+		clearTimeout(chipClose.current);
 	}, []);
 
 	// a new trace removes the card of the old trace. A new file removes the card of a line. New items of Hidden C++
@@ -366,6 +410,7 @@ export function CodeView(props: CodeViewProps) {
 	useEffect(() => setWhyAt(undefined), [props.file, logic?.fn]);
 	useEffect(() => setCostAt(undefined), [cost]);
 	useEffect(() => setEndsAt(undefined), [props.file, flow, logic]);
+	useEffect(() => setChipAt(undefined), [props.file, props.diff]);
 
 	// A step of "Play path", or a place that the extension shows with no text editor: if its line is not in the middle
 	// part of the view, the view scrolls the line to the middle. This scroll is a scroll of the user, so a text editor
@@ -660,6 +705,41 @@ export function CodeView(props: CodeViewProps) {
 		}
 	};
 
+	// The card of a chip of removed lines closes in the same way. It shows below the chip, or above it in the lower part of
+	// the view, and the card moves into the visible part of the view
+	const closeChip = () => {
+		clearTimeout(chipClose.current);
+		chipClose.current = window.setTimeout(() => setChipAt(undefined), 200);
+	};
+	const keepChip = () => clearTimeout(chipClose.current);
+	const showChipCard = (el: HTMLElement) => {
+		const scrollEl = scroller.current;
+		const line = Number(el.dataset.delLine);
+		if (!spacer.current || !scrollEl || !(line > 0)) {
+			return;
+		}
+		keepChip();
+		if (chipAt?.line === line) {
+			return;
+		}
+		const rect = el.getBoundingClientRect();
+		const base = spacer.current.getBoundingClientRect();
+		const view = scrollEl.getBoundingClientRect();
+		const minLeft = scrollEl.scrollLeft + 8;
+		const isAbove = rect.bottom > view.top + scrollEl.clientHeight * 0.55;
+		setChipAt({
+			line, left: Math.max(minLeft, rect.left - base.left), top: isAbove ? rect.top - base.top - 4 : rect.bottom - base.top + 4, isAbove,
+			minLeft, maxRight: scrollEl.scrollLeft + scrollEl.clientWidth - 8,
+		});
+	};
+	const onChipFocus = (el: HTMLElement | null) => {
+		if (el) {
+			showChipCard(el);
+		} else {
+			closeChip();
+		}
+	};
+
 	// The card of an item of Hidden C++: a mark in the code, or a chip at the end of a line. The card stays in the
 	// visible part of the view.
 	const showCostCard = (el: HTMLElement) => {
@@ -696,6 +776,10 @@ export function CodeView(props: CodeViewProps) {
 		const endMark = target.closest('.end-mark') as HTMLElement | null;
 		if (endMark) {
 			showEndsCard(endMark);
+		}
+		const chipEl = target.closest('.df-chip') as HTMLElement | null;
+		if (chipEl) {
+			showChipCard(chipEl);
 		}
 		const ln = target.closest('.ln') as HTMLElement | null;
 		if (ln && logic && spacer.current) {
@@ -811,6 +895,10 @@ export function CodeView(props: CodeViewProps) {
 		if (fromMark && !related?.closest?.('.detail-card') && fromMark !== related?.closest?.('[data-detail-mark]')) {
 			closeDetail();
 		}
+		const fromChip = target.closest('.df-chip');
+		if (fromChip && !related?.closest?.('.df-card') && fromChip !== related?.closest?.('.df-chip')) {
+			closeChip();
+		}
 		const from = target.closest('[data-mark]');
 		const to = related?.closest?.('[data-mark]');
 		if (from && from !== to) {
@@ -843,7 +931,7 @@ export function CodeView(props: CodeViewProps) {
 	// the boxes of Logic Map and of Hidden C++ on each line, in the sequence for codeParts
 	const wraps = useMemo(() => {
 		const out = new Map<number, Wrap[]>();
-		for (const source of [logicDecos.wraps, costDecos.wraps, threadDecos.wraps, detailDecos.wraps]) {
+		for (const source of [logicDecos.wraps, costDecos.wraps, threadDecos.wraps, detailDecos.wraps, props.diff?.wraps ?? new Map<number, Wrap[]>()]) {
 			for (const [line, list] of source) {
 				out.set(line, [...(out.get(line) ?? []), ...list]);
 			}
@@ -852,7 +940,7 @@ export function CodeView(props: CodeViewProps) {
 			out.set(line, nestWraps(list));
 		}
 		return out;
-	}, [logicDecos, costDecos, threadDecos, detailDecos]);
+	}, [logicDecos, costDecos, threadDecos, detailDecos, props.diff]);
 
 	const gutter = Math.max(4, String(lineCount).length);
 	const lanes = laneWidth(flow);
@@ -925,6 +1013,10 @@ export function CodeView(props: CodeViewProps) {
 				isStep={line === props.stepLine}
 				reviewStep={reviewStepOf(props.guideLines, line)}
 				reviewTag={props.guideLines?.first === line ? props.guideLines.label : undefined}
+				isWalk={!!props.guideLines?.isWalk}
+				diffClass={props.diff?.lines.get(line)}
+				diffChip={props.diff?.chips.get(line)}
+				onChipFocus={onChipFocus}
 				lead={decorations.leads.get(line)}
 				leadY={leadY}
 			/>,
@@ -979,6 +1071,10 @@ export function CodeView(props: CodeViewProps) {
 				{detailAt && props.model?.details.some((d) => d.id === detailAt.id) && (
 					<DetailCard detail={props.model.details.find((d) => d.id === detailAt.id)!} left={detailAt.left} top={detailAt.top}
 						isAbove={detailAt.isAbove} onEnter={keepDetail} onLeave={closeDetail} />
+				)}
+				{chipAt && props.diff?.chips.get(chipAt.line) && (
+					<RemovedCard chip={props.diff.chips.get(chipAt.line)!} left={chipAt.left} top={chipAt.top} isAbove={chipAt.isAbove} minLeft={chipAt.minLeft}
+						maxRight={chipAt.maxRight} onEnter={keepChip} onLeave={closeChip} />
 				)}
 				{endsAt && shortEnds.has(endsAt.line) && (
 					<EndsCard texts={endTexts(decorations.hints.get(endsAt.line), logicDecos.hints.get(endsAt.line))} right={endsAt.right}

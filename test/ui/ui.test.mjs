@@ -171,6 +171,53 @@ test('Guided review: the files of a folder, a plan of the model, the marks, the 
 	assert.equal(r.closed, true);
 });
 
+test('Diff walk: the command with the list of branches, the marks of the diff in the code, the card of the removed line, the diff in the tab Guide, the diff editor and a plan of the model', { timeout: 600000 }, async () => {
+	const r = await run('side-walk-snapshot.mjs');
+	// the list of the changes: the label and the detail of each item
+	for (const label of ['Changes that are not committed', 'Changes of the branch', 'Changes against a branch…', 'Changes since a commit…']) {
+		assert.ok(r.items.includes(label), JSON.stringify(r.items));
+	}
+	// the list of branches has main, and not the active branch review
+	assert.ok(r.branches.includes('main') && !r.branches.includes('review'), JSON.stringify(r.branches));
+	// step 1: the committed change in solve_power_plan(). The changed line is green with the changed digit, and its chip
+	// gives the old line
+	const s1 = r.step1;
+	assert.equal(s1.guideTitle, 'Changes of review against main');
+	assert.equal(s1.pill, 'diff');
+	assert.deepEqual(s1.steps, ['Changes in solve_power_plan()', 'Changes in process()']);
+	assert.equal(s1.current, 1);
+	assert.equal(s1.stats, '+1 −1');
+	assert.deepEqual(s1.frame, [69]);
+	assert.deepEqual(s1.added, [69]);
+	assert.deepEqual(s1.removedAt, [69]);
+	assert.equal(s1.chip, '−1  if (cost < 1e-5) {');
+	assert.deepEqual(s1.changedText, ['4']);
+	assert.equal(s1.tag, 'diff1/2 Changes in solve_power_plan()');
+	assert.match(s1.source, /^Changes against main \([0-9a-f]{7}\)$/);
+	assert.equal(s1.modelPill, false);
+	// the diff in the tab Guide, with no common indent
+	const rows = s1.diffRows.map((t) => t[0] + t.slice(1).trim());
+	assert.ok(rows.includes('-if (cost < 1e-5) {') && rows.includes('+if (cost < 1e-4) {'), JSON.stringify(s1.diffRows));
+	assert.deepEqual(s1.changedInDiff, ['5', '4']);
+	assert.equal(r.card.title, 'Before the change: 1 line');
+	assert.deepEqual(r.card.rows, ['      if (cost < 1e-5) {']);
+	assert.ok(r.card.spans > 0);
+	// step 2: the new line in process() that is not saved
+	assert.deepEqual([r.step2.current, r.step2.added, r.step2.removedAt, r.step2.chip, r.step2.stats], [2, [99], [], null, '+1 −0']);
+	assert.match(r.diffEditor, /^battery\.cpp: main \([0-9a-f]{7}\) to working tree$/);
+	// the model: get_diff, a plan with the new line first, and a note with the mark issue
+	assert.ok(r.prompts.includes('diff-walk'), JSON.stringify(r.prompts));
+	assert.deepEqual(r.hunks, ['src/battery.cpp h1 69-69 electricity::power_ctrl::solve_power_plan', 'src/battery.cpp h2 99-99 electricity::power_ctrl::process']);
+	assert.deepEqual(r.plan.steps.map((s) => s.title), ['Add the counter of the cycles', 'Loosen the limit of the cost']);
+	assert.deepEqual([r.model1.title, r.model1.added, r.model1.modelPill], ['Add the counter of the cycles', [99], true]);
+	assert.match(r.model1.source, /^modelPlan of claude-code\. Changes against main \([0-9a-f]{7}\)$/);
+	assert.deepEqual([r.model2.current, r.model2.statuses], [2, ['st-todo', 'st-issue']]);
+	assert.match(r.model2.note ?? '', /Check the tests of the prices/);
+	assert.equal(r.view.kind, 'diff walk');
+	assert.equal(r.view.currentStep, 2);
+	assert.equal(r.closed, true);
+});
+
 test('Flow Lens: the rails, the dimmed lines, the hover card with its curve, a click trace and the details column', { timeout: 600000 }, async () => {
 	const r = await run('side-flow-snapshot.mjs');
 	assert.ok(r.bestFit.rails > 0 && r.bestFit.dim > 0, JSON.stringify(r.bestFit).slice(0, 300));

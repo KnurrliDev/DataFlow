@@ -3,7 +3,7 @@ import { buildRippleViews, ReviewState } from '../lenses/ripple';
 import type { DiffLine } from '../review/git';
 import { functionKey, RippleBody, RippleChange } from '../review/ripple';
 import type { RippleLayerState } from '../state/store';
-import { changedRange, lexSpans, pairedSpans } from './model';
+import { changedPart, lexSpans, pairedSpans } from './model';
 import { functionTitle, withBrackets } from './names';
 import type { SideCard, SideCardRow, SideDiffRow, SideRipple, SideRow, SideStory, SideStoryChange } from './protocol';
 
@@ -14,9 +14,6 @@ import type { SideCard, SideCardRow, SideDiffRow, SideRipple, SideRow, SideStory
 const MAX_CONTEXT_GAP = 2;
 // The diff of a change shows a maximum of this number of rows
 const MAX_DIFF_ROWS = 80;
-// A pair of a removed line and an added line marks its changed characters only if they are a maximum of this part of
-// the longer line
-const MAX_CHANGED_PART = 0.75;
 
 // The row of a line with the tokens of the engine, or undefined if the story has no row for the line
 export type RowSource = (file: string, line: number) => SideRow | undefined;
@@ -129,14 +126,6 @@ export function lineRanges(lines: number[], maxGap: number): [number, number][] 
 		}
 	}
 	return out;
-}
-
-// The changed characters of a line of a pair, or undefined if most of the line changed
-function changedPart(oldText: string, newText: string, isOld: boolean): [number, number] | undefined {
-	const { prefix, suffix } = changedRange(oldText, newText);
-	const size = Math.max(oldText.length, newText.length) - prefix - suffix;
-	const end = (isOld ? oldText : newText).length - suffix;
-	return end > prefix && size <= MAX_CHANGED_PART * Math.max(oldText.length, newText.length) ? [prefix, end] : undefined;
 }
 
 // The rows of the diff of a change. A run of removed lines and the added lines after it make pairs: removed line k and

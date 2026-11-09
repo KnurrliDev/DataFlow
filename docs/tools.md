@@ -2,13 +2,14 @@
 
 DataFlow has an MCP server (Model Context Protocol). A language model in an MCP client can read the analysis of the engine and change the side view. Claude Code and the agent mode of VS Code are examples of MCP clients.
 
-The model can show the logical blocks of a function with names and summaries, and start Flow Lens on a variable. It can also color lines with notes, add comments to single lines, and add details to code. The engine gives the facts, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other.
+The model can show the logical blocks of a function with names and summaries, and start Flow Lens on a variable. It can also color lines with notes, add comments to single lines, and add details to code. The engine gives the facts, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other. In a diff walk, the model or DataFlow goes through the changes of a diff with you. The side view shows the diff of each step.
 
 - [Connect Claude Code](#connect-claude-code)
 - [Connect a different client](#connect-a-different-client)
 - [Ask the model](#ask-the-model)
 - [What the side view shows](#what-the-side-view-shows)
 - [Guided review](#guided-review)
+- [Diff walk](#diff-walk)
 - [The tools](#the-tools)
 - [Security and privacy](#security-and-privacy)
 - [Settings](#settings)
@@ -87,6 +88,8 @@ The server also has the prompt **explain-function**. It tells the model the step
 
 The server also has the prompt **guided-review**. It tells the model the steps of a guided review of the files and the folders in its argument `paths`. The optional argument `focus` tells the model what to look at first, for example threads or error handling. [Guided review](#guided-review) tells more.
 
+The server also has the prompt **diff-walk**. It tells the model the steps of a diff walk. The optional argument `base` gives the changes: `uncommitted` (the default), `target` or a commit. The optional argument `focus` tells the model what to explain first. [Diff walk](#diff-walk) tells more.
+
 ## What the side view shows
 
 The layers of the model show in the side view:
@@ -160,11 +163,54 @@ The model does these steps:
 - To put the summary of the review on the clipboard, click **Copy summary**. The summary is Markdown, for example for a comment on a pull request. It has each step with its place, its mark and the note of the model.
 - To remove the guide, click **Close review**. A new plan of the model replaces the old plan.
 
-These commands do the same as the buttons: **DataFlow: Next Review Step**, **DataFlow: Previous Review Step**, **DataFlow: Copy Review Summary** and **DataFlow: Close Guided Review**. They show in the Command Palette while a guide shows. You can give them keys in the keyboard shortcuts of VS Code.
+These commands do the same as the buttons: **DataFlow: Next Guide Step**, **DataFlow: Previous Guide Step**, **DataFlow: Copy Guide Summary** and **DataFlow: Close Guide**. They show in the Command Palette while a guided review or a diff walk shows. You can give them keys in the keyboard shortcuts of VS Code.
 
 During an edit, the steps move with their code. After a reload of the window, the guide comes back at the same step with your marks. Each step goes to the nearest place where its first and its last line have the same text as before.
 
 The color of the guide is the theme color `dataflow.reviewGuide`. The default is the blue of the chart colors of your color theme.
+
+## Diff walk
+
+A diff walk goes through the changes of a diff with you, one step after the other. Each step has the changes of one function, or of one part of a file. The side view marks the changed lines of the current step in the code. The tab **Guide** shows the diff of the step with a text.
+
+![Step 1 of a diff walk: the changed line is green, a card shows the old line, and the tab Guide shows the diff.](images/diff-walk.png)
+
+### Start a diff walk
+
+You can start a diff walk in two ways:
+
+- Run **DataFlow: Walk Through the Changes**, and select the changes. DataFlow makes one step for each changed function. The text of a step gives the number of added and removed lines.
+- Ask the model to walk you through the changes. Examples are "Walk me through the changes that you made" and "Walk me through the changes of this branch". For the changes against a different branch, name the branch, for example "Walk me through the changes against develop". You can also use the prompt **diff-walk** of DataFlow. The model puts the changes in the sequence that explains them best, and each step tells what changed and why.
+
+The changes come from one of these diffs. Each diff goes to the working tree, with the text of the editors that is not saved. The C and C++ files that git does not track yet are new files.
+
+| Changes | Base of the diff |
+| --- | --- |
+| Changes that are not committed | HEAD |
+| Changes of the branch | The merge base of HEAD and the target branch of Change Ripple, for example main |
+| Changes against a branch | The merge base of HEAD and a local or a remote branch that you select in a list |
+| Changes since a commit | The merge base of HEAD and a commit, a tag or a branch that you type, for example HEAD~1 |
+
+The model does these steps:
+
+1. It calls `get_diff`. DataFlow gives the hunks of the changed C and C++ files. Each hunk has an id, for example h3, and the functions that it changes.
+2. It reads the changed code with the read tools, for example `get_structure` and `get_flow`.
+3. It calls `show_diff_walk` with the steps. Each step names its hunks. DataFlow adds a step at the end for each hunk that no step names. The side view goes to step 1.
+4. It explains step 1, and waits for you.
+
+### Go through the changes
+
+A diff walk has the bar, the tab Guide, the marks and the commands of the guided review. The bar shows **DIFF**. These items are different:
+
+- The added lines of the current step have a green background. In a changed line, the changed characters have a darker green.
+- A red line is at the place of removed lines. A chip after the code gives the first removed line, or the number of removed lines. To see the removed lines, move the mouse on the chip.
+- The changes of the other steps in the file have a mark next to the line numbers.
+- The current step in the tab **Guide** shows its diff, with the lines around the changes. To show a line in the code, click it. To open the diff editor of VS Code at the lines of the step, click **Diff editor**.
+- Each step gives its number of added and removed lines, for example +3 −1.
+
+During an edit, the steps and their marks move with their code, but the diff of a step does not change. To see the new changes, start the walk again.
+
+The side view shows only C and C++ files. The summary of a walk of the command gives the deleted files, and the changed files that are not C or C++ files.
 
 ## The tools
 
@@ -182,6 +228,7 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`get_includes`](#get_includes) | read | The data of Include Hierarchy, with the translation units of the compile database that include the file |
 | [`get_outline`](#get_outline) | read | The outline of a type: the members, the annotations and the memory layout |
 | [`get_review`](#get_review) | read | The C and C++ files under the paths of a guided review, with the diff of each changed file against the target branch |
+| [`get_diff`](#get_diff) | read | The hunks of the changed C and C++ files against a base, with their functions and their diff, for a diff walk |
 | [`show_blocks`](#show_blocks) | view | Shows the logical blocks of a function, with a maximum of five levels. A new call replaces the blocks of its function. The blocks of the other functions of the file stay. |
 | [`show_flow`](#show_flow) | view | Starts Flow Lens on a variable or a data member, as a click does |
 | [`highlight`](#highlight) | view | Colors ranges of lines or blocks, with a note for each range |
@@ -189,7 +236,8 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`add_detail`](#add_detail) | view | Adds a detail to an expression, a line or the selection of the user: an explanation or examples in a card on the code |
 | [`clear`](#clear) | view | Removes the blocks, the notes, the comments and the details |
 | [`show_review_plan`](#show_review_plan) | view | Shows the plan of a guided review, at its first step |
-| [`review_step`](#review_step) | view | Goes to a step of the guided review, and adds a note or a mark of the model |
+| [`show_diff_walk`](#show_diff_walk) | view | Shows the plan of a diff walk, at its first step |
+| [`review_step`](#review_step) | view | Goes to a step of the guided review or of the diff walk, and adds a note or a mark of the model |
 
 Lines start at 1. Many tools use these parameters:
 
@@ -446,9 +494,46 @@ If a step has a problem, for example lines that are not in the file, the view do
 
 Example request: "Make a review plan for these files."
 
+### get_diff
+
+Gives the changes for a diff walk: the hunks of the changed C and C++ files against a base. Each hunk has an id, its first and its last changed line in the working tree, and its number of added and removed lines. It also has its diff with the line numbers of the working tree. A removed line in a diff has no line number. The engine gives the functions with a changed line, and the functions that a hunk adds. With many files, this can take some seconds.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `base` | text | `uncommitted` (the default): the changes against HEAD. `target`: the changes of the branch against the target branch of Change Ripple. A different text is a commit, a tag or a branch, for example `HEAD~1`: the changes since its merge base with HEAD. Each diff goes to the working tree, with the text of the editors and the C and C++ files that git does not track yet. |
+| `paths` | list of texts | Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. The default is all changed files. |
+
+The result also gives `suggestedSteps`: the hunks of one function in one step, as the command of DataFlow makes them. It also gives the deleted files (`deletedFiles`) and the changed files that are not C or C++ files (`otherChangedFiles`). After 1500 lines of diff, a hunk has no diff, and `isDiffTruncated` is true. The model reads such a hunk with the other read tools.
+
+Example request: "Walk me through the changes that you made."
+
+### show_diff_walk
+
+Shows the plan of a diff walk in the side view, and goes to the lines of step 1. A new plan replaces the old plan, also a guided review. Call `get_diff` first: the steps name the hunks of the last `get_diff`.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `title` | text | A short title of the walk. DataFlow cuts a title after 80 characters. |
+| `summary` | text | One to three sentences: what the changes do. DataFlow cuts a summary after 1000 characters. |
+| `steps` | list | Necessary. The steps in the order of the walk, from 1 to 40 steps. |
+
+Each step has these fields:
+
+| Field | Type | Function |
+| --- | --- | --- |
+| `title` | text | Necessary. A short title, for example "Add the limit to the settings". DataFlow cuts a title after 80 characters. |
+| `hunks` | list of texts | Necessary. The ids of the hunks of the step, for example `["h2", "h3"]`. All hunks of a step must be in one file. |
+| `text` | text | Necessary. What changed in this step and why. It can use the small part of Markdown of `show_review_plan`. DataFlow cuts a text after 2000 characters. |
+| `checks` | list of texts | Questions for the user in this step, a maximum of 5. |
+| `kind` | text | `change`, `ripple`, `context`, `risk` or `test`, as in `show_review_plan`. |
+
+DataFlow adds a step at the end for each hunk that no step names, so the walk shows all changes. The result gives these steps in `addedSteps`. If a step has a problem, for example an id that is not in the diff, the view does not change. The model gets each problem.
+
+Example request: "Show the walk, with the new settings first."
+
 ### review_step
 
-Goes to a step of the guided review in the side view, as the buttons of the user do. The model can also add a note to the step, for example an answer or a finding, and mark the step.
+Goes to a step of the guided review or of the diff walk in the side view, as the buttons of the user do. The model can also add a note to the step, for example an answer or a finding, and mark the step.
 
 | Parameter | Type | Function |
 | --- | --- | --- |

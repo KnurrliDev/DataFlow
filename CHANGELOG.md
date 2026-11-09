@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Diff walk: the side view goes through the changes of a diff, one step after the other. The changes are the changes that are not committed, the changes against a branch, or the changes since a commit. The C and C++ files that git does not track yet are new files.
+- The code view marks the added lines of the current step in green, with the changed characters. A red line marks the place of removed lines. A card shows the removed lines. The tab Guide shows the diff of each step, and **Diff editor** opens the diff editor of VS Code at the step.
+- The command **DataFlow: Walk Through the Changes** makes one step for each changed function. For the changes against a different branch, it shows a list of the local and the remote branches.
+- The MCP server has the new tools `get_diff` and `show_diff_walk`, and the prompt `diff-walk`. The model puts the changes in a sequence, and tells what changed and why. `review_step` also goes to a step of a diff walk.
+- The commands of the guide have new names: **DataFlow: Next Guide Step**, **DataFlow: Previous Guide Step**, **DataFlow: Copy Guide Summary** and **DataFlow: Close Guide**.
+
 ## 0.3.1
 
 - Include Hierarchy: the details of an include that forward declarations can replace fit in the details column. In 0.3.0, the long lines of the declarations made the details wider than the column, and **Copy** and **Check** were outside of the view.

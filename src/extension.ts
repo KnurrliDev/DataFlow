@@ -34,13 +34,15 @@ import { DataFlowMcpHost } from './mcp/host';
 import { LayerKeeper } from './mcp/layers';
 import { McpManager } from './mcp/manager';
 import { createPrompts, createTools } from './mcp/tools';
-import { INCLUDE_FILE, isCppFile, openReviewRepository, ReviewDiff, ReviewRepository } from './review/git';
+import { commitUri, INCLUDE_FILE, isCppFile, openReviewRepository, ReviewDiff, ReviewRepository } from './review/git';
 import { MAX_REVIEW_FILES, moveGuide, type ReviewFilesInput } from './review/guide';
 import { CallSite, RippleModel, runRipple } from './review/ripple';
-import { targetCandidates, targetItems } from './review/targets';
+import { targetCandidates, targetItems, walkBranchItems } from './review/targets';
+import { commandWalk, walkTitle, type WalkFile, type WalkFunction, type WalkInput } from './review/walk';
 import { SideViewController } from './side/controller';
+import { functionTitle, withBrackets } from './side/names';
 import { typeDefinitionLine } from './side/outline';
-import type { SideAction, SideCallListSite, SideViewState } from './side/protocol';
+import type { SideAction, SideCallListSite, SideGuide, SideViewState } from './side/protocol';
 import { Lens, LogicPathState, StateStore } from './state/store';
 import { StatusBar } from './statusbar';
 
@@ -74,6 +76,10 @@ const TARGETS_KEY = 'dataflow.ripple.targets';
 // The C++ extensions that give a call hierarchy. If none is active, Change Ripple follows only the callers in the
 // same file, and the side view tells the user.
 const CALL_HIERARCHY_EXTENSIONS = ['ms-vscode.cpptools', 'llvm-vs-code-extensions.vscode-clangd'];
+// A diff walk asks the engine for the functions of each changed file, for the titles and the steps. A file gets this
+// time, and all files together get WALK_ENGINE_MS. A file after the time has no functions
+const WALK_FILE_MS = 20000;
+const WALK_ENGINE_MS = 60000;
 const CALL_HIERARCHY_MS = 5000;
 // Call Hierarchy asks a C/C++ extension with no answer again after this time, a maximum of this number of times
 const CALL_RETRY_MS = 10000;
@@ -2071,6 +2077,195 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		};
 	};
 
+	// The changes of a diff walk: the C and C++ files that changed against a base, with their hunks and the functions of
+	// the engine. The base "uncommitted" gives the changes against HEAD. "target" gives the changes of the branch against
+	// the target branch of Change Ripple. A different base is a commit, a tag or a branch: the diff starts at its merge
+	// base with HEAD. Each diff goes to the working tree, with the text of the editors and the C and C++ files that git
+	// does not track yet. With paths, only the files under the paths
+	const walkInput = async (base: string | undefined, paths?: string[], token?: vscode.CancellationToken): Promise<WalkInput | { message: string }> => {
+		const folder = reviewFolder();
+		if (!folder) {
+			return { message: 'Open a folder of a git repository, or select a project with "DataFlow: Open Project".' };
+		}
+		let repo: ReviewRepository;
+		try {
+			repo = await openReviewRepository(folder);
+		} catch (error) {
+			return { message: error instanceof Error ? error.message : String(error) };
+		}
+		const kind = base?.trim() || 'uncommitted';
+		let ref = kind === 'uncommitted' ? 'HEAD' : kind;
+		if (kind === 'target') {
+			const target = (await selectedTarget(repo)) ?? await automaticTarget(repo, folder);
+			if (!target) {
+				return { message: 'The repository has no target branch. "DataFlow: Select Target Branch" selects one.' };
+			}
+			ref = target;
+		}
+		const commit = await repo.commitOf(ref);
+		const mergeBase = commit && await repo.mergeBase(ref);
+		if (!commit || !mergeBase) {
+			return {
+				message: kind === 'uncommitted' ? 'The repository has no commit yet, so DataFlow cannot compare the files with HEAD.'
+					: `Git does not find the commit ${ref}, or ${ref} has no commit in common with HEAD.`,
+			};
+		}
+		// a branch as the base gives the names of the two branches in the title
+		const [branches, active] = await Promise.all([repo.branches(), repo.activeBranch()]);
+		const title = walkTitle(ref, branches, active);
+		// the engine gets the text of the editors first, for the functions
+		vscode.workspace.textDocuments.forEach(flushChange);
+		let diff: ReviewDiff;
+		try {
+			diff = await repo.diff(ref, { untracked: true });
+		} catch (error) {
+			return { message: error instanceof Error ? error.message : String(error) };
+		}
+		const wanted = paths?.map((p) => (path.isAbsolute(p) ? p : path.join(repo.root, p)));
+		const isWanted = (file: string) => !wanted || wanted.some((p) => fileKey(p) === fileKey(file) || isInside(file, p));
+		// the files in the sequence of their paths in the repository: the files of git, the new files and the editors together
+		const sortKey = (file: string) => path.relative(repo.root, file).replace(/\\/g, '/').toLowerCase();
+		const changed = diff.files.filter((f) => isWanted(f.uri.fsPath))
+			.sort((a, b) => (sortKey(a.uri.fsPath) < sortKey(b.uri.fsPath) ? -1 : sortKey(a.uri.fsPath) > sortKey(b.uri.fsPath) ? 1 : 0));
+
+		// the functions of the engine, for the titles and the steps. A file that the engine cannot parse in time has none
+		const client = engine?.currentState === 'ready' ? engine : undefined;
+		const started = Date.now();
+		const files: WalkFile[] = [];
+		for (const f of changed) {
+			if (token?.isCancellationRequested) {
+				return { message: 'The diff walk was canceled.' };
+			}
+			const file = f.uri.fsPath;
+			let functions: WalkFunction[] | undefined;
+			if (client && Date.now() - started < WALK_ENGINE_MS) {
+				const result = await withTimeout(client.functions(file).catch(() => undefined), WALK_FILE_MS);
+				functions = result?.functions.map((fn) => ({
+					name: withBrackets(functionTitle(fn)), qualified: functionTitle(fn, true), first: fn.range.begin.line, last: fn.range.end.line,
+				}));
+			}
+			const doc = vscode.workspace.textDocuments.find((d) => fileKey(d.uri.fsPath) === fileKey(file));
+			const lineCount = doc ? doc.lineCount : (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/).length;
+			files.push({ file, lineCount, hunks: f.hunks, ...(f.isNew ? { isNew: true } : {}), ...(functions ? { functions } : {}) });
+		}
+		const short = mergeBase.slice(0, 7);
+		return {
+			root: repo.root,
+			title,
+			base: commit === mergeBase ? `${ref} (${short})` : `${ref} (merge base ${short})`,
+			baseCommit: mergeBase,
+			files,
+			deleted: diff.deleted.filter(isWanted),
+			other: diff.other.filter(isWanted),
+			...(client ? {} : { notice: 'The engine was not ready, so the steps do not use the functions of the files.' }),
+		};
+	};
+
+	// The list of branches for the item "Changes against a branch" of the command "Walk Through the Changes". Undefined if
+	// the user closes the list, or if the repository has no branch other than the active branch
+	const pickWalkBranch = async (repo: ReviewRepository | undefined, problem: string | undefined): Promise<string | undefined> => {
+		if (!repo) {
+			void vscode.window.showWarningMessage(problem ?? 'Open a folder of a git repository, or select a project with "DataFlow: Open Project".');
+			return undefined;
+		}
+		const [branches, active, defaultBranch] = await Promise.all([repo.branches(), repo.activeBranch(), repo.defaultBranch()]);
+		const items = walkBranchItems(branches, active, defaultBranch);
+		if (items.length === 0) {
+			void vscode.window.showInformationMessage('DataFlow: The repository has no branch other than the active branch.');
+			return undefined;
+		}
+		const pick = await vscode.window.showQuickPick(items, { title: 'Changes against a branch', placeHolder: 'Select the branch', matchOnDescription: true });
+		return pick?.ref;
+	};
+
+	// The list of the changes for the command "Walk Through the Changes". Undefined if the user closes a list
+	const pickWalkBase = async (): Promise<string | undefined> => {
+		const folder = reviewFolder();
+		let repo: ReviewRepository | undefined;
+		let target: string | undefined;
+		let problem: string | undefined;
+		try {
+			repo = folder && await openReviewRepository(folder);
+			target = repo && folder ? (await selectedTarget(repo)) ?? await automaticTarget(repo, folder) : undefined;
+		} catch (error) {
+			// no repository: the walk or the list of branches gives the message
+			problem = error instanceof Error ? error.message : String(error);
+		}
+		const items: (vscode.QuickPickItem & { base: string; isBranchList?: boolean })[] = [
+			{
+				label: '$(git-commit) Changes that are not committed', description: 'against HEAD', base: 'uncommitted',
+				detail: 'The changes in the working tree and in the index, with the C and C++ files that git does not track yet',
+			},
+			{
+				label: '$(git-branch) Changes of the branch', description: target ? `against ${target}` : 'against the target branch', base: 'target',
+				detail: 'The commits since the merge base with the target branch of Change Ripple, and the changes that are not committed',
+			},
+			{
+				label: '$(git-compare) Changes against a branch…', base: '', isBranchList: true,
+				detail: 'Select a local or a remote branch. The diff starts at its merge base with HEAD',
+			},
+			{
+				label: '$(history) Changes since a commit…', base: '',
+				detail: 'A commit, a tag or a branch, for example HEAD~1. The diff starts at its merge base with HEAD',
+			},
+		];
+		const pick = await vscode.window.showQuickPick(items, { title: 'DataFlow: Walk Through the Changes', placeHolder: 'Select the changes for the walk' });
+		if (!pick || pick.base) {
+			return pick?.base;
+		}
+		if (pick.isBranchList) {
+			return pickWalkBranch(repo, problem);
+		}
+		const ref = await vscode.window.showInputBox({
+			title: 'Changes since a commit',
+			prompt: 'A commit, a tag or a branch. The walk shows the changes from its merge base with HEAD to the working tree.',
+			placeHolder: 'HEAD~1',
+			validateInput: (value) => (value.trim() ? undefined : 'Type a commit, a tag or a branch.'),
+		});
+		return ref?.trim() || undefined;
+	};
+
+	// The command "Walk Through the Changes": a diff walk with the default steps of DataFlow, one step for each changed
+	// function. The tests give the base
+	const startDiffWalk = async (base?: string): Promise<SideGuide | undefined> => {
+		const choice = base ?? await pickWalkBase();
+		if (choice === undefined) {
+			return undefined;
+		}
+		const input = await vscode.window.withProgress(
+			{ location: vscode.ProgressLocation.Notification, title: 'DataFlow: Reading the changes for the diff walk…', cancellable: true },
+			(_, token) => walkInput(choice, undefined, token),
+		);
+		if ('message' in input) {
+			void vscode.window.showWarningMessage(input.message);
+			return undefined;
+		}
+		const guide = commandWalk(input, (store.state.guide?.seq ?? 0) + 1);
+		if (!guide) {
+			void vscode.window.showInformationMessage(`DataFlow: No C or C++ file changed against ${input.base}.`);
+			return undefined;
+		}
+		store.update({ guide });
+		side.open();
+		await side.goToGuideStep(0);
+		side.showDetails('guide');
+		return guide;
+	};
+
+	// Opens the diff editor of a step of the diff walk: the file at the base on the left, the working tree on the right,
+	// at the first line of the step. The side view gives the column of its text editor
+	const openWalkDiff = async (index: number): Promise<void> => {
+		const guide = store.state.guide;
+		const step = guide?.steps[index];
+		if (!guide?.baseCommit || !step) {
+			return;
+		}
+		const uri = vscode.Uri.file(step.file);
+		const line = Math.max(0, step.first - 1);
+		await vscode.commands.executeCommand('vscode.diff', await commitUri(uri, guide.baseCommit), uri,
+			`${step.name}: ${guide.base ?? 'base'} to working tree`, { viewColumn: side.editorColumn(), selection: new vscode.Range(line, 0, line, 0) });
+	};
+
 	// Selects the target branch of the repository of the review, then reviews again. The tests give the target. The
 	// target '' is Automatic.
 	const selectTarget = async (target?: string): Promise<void> => {
@@ -2339,6 +2534,9 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			case 'openDiff':
 				void openDiff(action.file, side.editorColumn());
 				break;
+			case 'guideDiff':
+				void openWalkDiff(action.index);
+				break;
 			case 'clearModel':
 				if (side.file) {
 					mcpHost.removeLayer(side.file);
@@ -2374,6 +2572,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		client: (): string | undefined => mcp.clientName,
 		incomingCalls: (file, line, col) => editorIncomingCalls(file, line, col),
 		reviewFiles: (paths) => reviewFiles(paths),
+		walkInput: (base, paths) => walkInput(base, paths),
 		definitionHeader: (name, place) => definitionHeaderOf(name, place),
 	});
 	const mcp: McpManager = new McpManager(context, store, log, createTools(mcpHost), createPrompts(), () => projectRoots());
@@ -2567,6 +2766,8 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		vscode.commands.registerCommand('dataflow.guide.previous', () => store.state.guide && side.goToGuideStep(store.state.guide.current - 1)),
 		vscode.commands.registerCommand('dataflow.guide.copySummary', () => side.copyGuideSummary()),
 		vscode.commands.registerCommand('dataflow.guide.close', () => store.update({ guide: undefined })),
+		// the diff walk of DataFlow. A menu can give a different argument, so only a text is a base
+		vscode.commands.registerCommand('dataflow.diffWalk.start', (base?: unknown) => startDiffWalk(typeof base === 'string' ? base : undefined)),
 		// The tests use these commands, as the side view does. They are not in the Command Palette.
 		vscode.commands.registerCommand('dataflow.logic.setChoice', (key: string, value: string) => setChoice(key, value)),
 		vscode.commands.registerCommand('dataflow.cost.notUseful', (pattern: string) => notUseful(pattern)),

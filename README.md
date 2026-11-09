@@ -22,7 +22,7 @@ Ctrl+click on a name in the side view goes to its definition, and Alt+Left goes 
 
 **Outline** shows the members and the memory layout of a class, a struct, a union or an enum. To open it, right-click the name of the type in the side view, and click **Outline**. [Outline of a type](docs/usage.md#outline-of-a-type)
 
-DataFlow also has an MCP server. A language model reads the facts of the engine through the tools of the server. Then the model shows logical blocks, notes, comments and details in the side view. The engine gives the lines and the data, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other.
+DataFlow also has an MCP server. A language model reads the facts of the engine through the tools of the server. Then the model shows logical blocks, notes, comments and details in the side view. The engine gives the lines and the data, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other. In a diff walk, the side view goes through the changes of a diff with you, for example the changes that the model made.
 
 DataFlow works on Windows 64-bit with VS Code 1.120 or later. Your project needs a compile database, for example the `compile_commands.json` file of CMake or a qmake build folder. For an Unreal Engine 5 project, DataFlow makes the compile database with UnrealBuildTool.
 
@@ -130,6 +130,12 @@ The view tools of the MCP server put the words of the model into the side view. 
 Name the files or the folders to review, for example "Do a guided review of src/power". The model makes a plan of steps with `get_review` and `show_review_plan`. The side view shows one step after the other: its lines in the code, what to look at, and the questions to answer. Mark each step as OK, issue or question, and ask the model about it. With `review_step`, the model goes to a step and adds its answer or a finding. [Guided review](docs/tools.md#guided-review)
 
 ![A guided review at step 4 of 4: the lines of the step in the code, the plan in the tab Guide with the marks, and a note of the model on an issue.](docs/images/guided-review.png)
+
+### Diff walk
+
+Run **DataFlow: Walk Through the Changes**, or ask the model to walk you through the changes, for example "Walk me through the changes that you made". The changes can be the changes that are not committed, the changes against a branch, or the changes since a commit. The side view shows one step after the other. The added lines are green, and a red line marks the place of removed lines. The tab Guide shows the diff of the step. The command makes one step for each changed function. With `get_diff` and `show_diff_walk`, the model puts the changes in a sequence, and tells what changed and why. [Diff walk](docs/tools.md#diff-walk)
+
+![Step 1 of a diff walk: the changed line is green, a card shows the old line, and the tab Guide shows the diff.](docs/images/diff-walk.png)
 
 ## Documents
 

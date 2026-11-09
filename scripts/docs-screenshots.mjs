@@ -739,6 +739,62 @@ try {
 			await s.shot('guided-review', await s.sideBox());
 		});
 	}
+
+	// the diff walk on the review fixture: the committed limit and a change in the editor that is not saved, in the plan of
+	// a model. Step 1 shows the changed line and the card of the old line
+	if (isWanted('diff-walk')) {
+		const review = path.join(repo, 'build', 'fixtures', 'battery-review');
+		const reviewCpp = path.join(review, 'src', 'battery.cpp');
+		const text = readFileSync(reviewCpp, 'utf8').split(/\r?\n/);
+		const at = (s) => text.findIndex((l) => l.includes(s)) + 1;
+		const changed = at('if (cost < 1e-4)');
+		// the typed text gets no closing bracket and no indent of the text editor
+		const typing = { 'editor.autoClosingBrackets': 'never', 'editor.autoIndent': 'none' };
+		await session('walk', review, reviewCpp, changed, { 'git.enabled': true, 'files.hotExit': 'off', ...typing }, async (s) => {
+			await s.openSide('DataFlow: Open Side View');
+			await s.splitAt(EDITOR_WIDTH);
+			await s.until(() => s.inSide(`return /Engine: ready/.test(doc.querySelector('.status')?.textContent ?? '');`), 'ready engine', 160);
+			await s.setLenses([]);
+			// a change in process() that is not saved: Ctrl+L selects the line, and the new text replaces it
+			const line = at('if (tariff_plans.active.size() == 0) {');
+			await s.goToLine(String(line));
+			await s.wb.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'l', code: 'KeyL', windowsVirtualKeyCode: 76, modifiers: 2 });
+			await s.wb.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'l', code: 'KeyL', windowsVirtualKeyCode: 76, modifiers: 2 });
+			await sleep(300);
+			await s.wb.send('Input.insertText', { text: '  if (tariff_plans.active.empty()) {\n' });
+			try {
+				await s.until(() => s.inSide(`return ${s.row(line)}?.querySelector('.code')?.textContent === '  if (tariff_plans.active.empty()) {'
+					&& ${s.row(line + 1)}?.querySelector('.code')?.textContent === '    return std::nullopt;';`), 'change in the side view');
+			} catch (error) {
+				console.error(await s.inSide(`return [${line - 1}, ${line}, ${line + 1}, ${line + 2}]
+					.map((l) => l + ': ' + JSON.stringify(doc.querySelector('.rows > .row[data-line="' + l + '"]')?.querySelector('.code')?.textContent));`));
+				throw error;
+			}
+			const tool = await s.startMcp();
+			await tool('get_diff', { base: 'target' });
+			await tool('show_diff_walk', {
+				title: 'A larger cost limit',
+				summary: 'The solver accepts a plan with a larger cost, and process() checks the tariff plans with empty().',
+				steps: [
+					{
+						title: 'Loosen the limit of the cost', hunks: ['h1'], kind: 'change',
+						text: 'The solver now accepts a plan with a cost under `1e-4`, ten times the old limit. More plans converge, but a plan can be **less exact**.',
+						checks: ['Is 1e-4 small enough for the price data?'],
+					},
+					{
+						title: 'Check the tariff plans with empty()', hunks: ['h2'], kind: 'context',
+						text: '`empty()` gives the same result as `size() == 0`. The behavior does not change.',
+					},
+				],
+			});
+			await s.until(() => s.inSide(`return !!doc.querySelector('.rg-diff') && !!doc.querySelector('.df-chip');`), 'diff walk');
+			await sleep(1500);
+			await s.hover(`doc.querySelector('.df-chip')`);
+			await s.until(() => s.inSide(`return !!doc.querySelector('.df-card');`), 'card of the old line');
+			await sleep(800);
+			await s.shot('diff-walk', await s.sideBox());
+		});
+	}
 } finally {
 	rmSync(temp, { recursive: true, force: true });
 }

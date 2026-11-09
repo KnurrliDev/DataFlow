@@ -531,6 +531,7 @@ export class SideViewController implements vscode.Disposable {
 			case 'reviewChanges':
 			case 'clearReview':
 			case 'openDiff':
+			case 'guideDiff':
 			case 'callFocus':
 			case 'callsShown':
 			case 'includersShown':

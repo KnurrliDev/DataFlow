@@ -208,23 +208,28 @@
         "category": "DataFlow"
       },
       {
+        "command": "dataflow.diffWalk.start",
+        "title": "Walk Through the Changes",
+        "category": "DataFlow"
+      },
+      {
         "command": "dataflow.guide.next",
-        "title": "Next Review Step",
+        "title": "Next Guide Step",
         "category": "DataFlow"
       },
       {
         "command": "dataflow.guide.previous",
-        "title": "Previous Review Step",
+        "title": "Previous Guide Step",
         "category": "DataFlow"
       },
       {
         "command": "dataflow.guide.copySummary",
-        "title": "Copy Review Summary",
+        "title": "Copy Guide Summary",
         "category": "DataFlow"
       },
       {
         "command": "dataflow.guide.close",
-        "title": "Close Guided Review",
+        "title": "Close Guide",
         "category": "DataFlow"
       },
       {
@@ -696,7 +701,7 @@
       },
       {
         "id": "dataflow.reviewGuide",
-        "description": "DataFlow: the color of the guided review: the bar, the lines of the current step and the steps of the plan.",
+        "description": "DataFlow: the color of the guided review and of the diff walk: the bar, the lines of the current step and the steps of the plan.",
         "defaults": {
           "light": "charts.blue",
           "dark": "charts.blue",

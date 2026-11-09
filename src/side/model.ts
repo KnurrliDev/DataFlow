@@ -1,4 +1,4 @@
-import type { TokenLegend, TokenLine } from '../engine/client';
+import type { TokenLegend, TokenLine } from '../engine/tokens';
 import type { SideRow } from './protocol';
 
 // The style keys of the side view. Each token span gets the index of a style key, and side/theme.ts finds the style
@@ -243,6 +243,19 @@ export function changedRange(a: string, b: string): { prefix: number; suffix: nu
 		suffix++;
 	}
 	return { prefix, suffix };
+}
+
+// A pair of a removed line and an added line marks its changed characters only if they are a maximum of this part of
+// the longer line
+const MAX_CHANGED_PART = 0.75;
+
+// The changed characters of a line of a pair: the UTF-16 columns in the old line or in the new line. Undefined if most
+// of the line changed
+export function changedPart(oldText: string, newText: string, isOld: boolean): [number, number] | undefined {
+	const { prefix, suffix } = changedRange(oldText, newText);
+	const size = Math.max(oldText.length, newText.length) - prefix - suffix;
+	const end = (isOld ? oldText : newText).length - suffix;
+	return end > prefix && size <= MAX_CHANGED_PART * Math.max(oldText.length, newText.length) ? [prefix, end] : undefined;
 }
 
 // The spans of an old line from the spans of the new line that replaces it. The common start and the common end keep

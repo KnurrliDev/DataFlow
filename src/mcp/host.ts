@@ -16,6 +16,7 @@ import { isCppFile } from '../review/git';
 import {
 	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex, withNote, withStatus,
 } from '../review/guide';
+import { groupTitle, resolveWalkPlan, walkFacts, walkHunks, type WalkHunk, type WalkInput, type WalkPlanInput } from '../review/walk';
 import type { SideViewController } from '../side/controller';
 import type { CodePlace } from '../side/details';
 import { functionTitle } from '../side/names';
@@ -51,6 +52,9 @@ export interface HostDeps {
 	// the C and C++ files under the paths that the user wants to review, with their changes against the target branch of
 	// the git repository, or the reason why no file is available. Paths are absolute, or relative to the project
 	reviewFiles(paths: string[]): Promise<ReviewFilesInput | { message: string }>;
+	// the changes of a diff walk against a base: "uncommitted", "target", or a commit, a tag or a branch. With paths, only
+	// the files under the paths. Or the reason why no diff is available
+	walkInput(base: string | undefined, paths?: string[]): Promise<WalkInput | { message: string }>;
 	// the header with the definition of a type that a translation unit only declares: the definition provider of VS Code
 	// at the place of the name, if a place is known, else a search of the headers of the project
 	definitionHeader(name: string, place?: { doc: vscode.TextDocument; pos: vscode.Position }): Promise<string | undefined>;
@@ -127,6 +131,8 @@ export function nameColumn(text: string, name: string): number {
 export class DataFlowMcpHost implements McpHost {
 	// the folder and the target branch of the last get_review, for the relative paths of a plan
 	private lastReview?: { root: string; target?: string };
+	// the changes and the hunks of the last get_diff, for the ids of the hunks in show_diff_walk
+	private lastWalk?: { input: WalkInput; hunks: WalkHunk[] };
 
 	constructor(private readonly deps: HostDeps) {}
 
@@ -590,16 +596,68 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	// Goes to a step of the guided review, and adds a note or a mark to it
+	//-------------------
+	// Diff walk
+
+	// The changes of a diff walk: the hunks of the changed C and C++ files against the base, with an id for each hunk
+	async diff(base: string | undefined, paths: unknown): Promise<object> {
+		if (paths !== undefined && (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.trim().length > 0))) {
+			throw new Error('"paths" must be a list of files and folders.');
+		}
+		const input = await this.deps.walkInput(base, (paths as string[] | undefined)?.map((p) => p.trim()));
+		if ('message' in input) {
+			throw new Error(input.message);
+		}
+		const hunks = walkHunks(input.files);
+		this.lastWalk = { input, hunks };
+		const facts = walkFacts(input, hunks);
+		return hunks.length > 0 ? facts : { ...facts, note: `No C or C++ file changed against ${input.base}, so a diff walk has no steps.` };
+	}
+
+	// Shows the plan of a diff walk in the side view, at its first step
+	async showDiffWalk(plan: WalkPlanInput): Promise<object> {
+		const { store, side } = this.deps;
+		const walk = this.lastWalk;
+		if (!walk) {
+			throw new Error('Call get_diff first. The steps of a diff walk name the hunks of get_diff.');
+		}
+		if (walk.hunks.length === 0) {
+			throw new Error(`The last get_diff has no hunks: no C or C++ file changed against ${walk.input.base}.`);
+		}
+		const { guide, problems, added } = resolveWalkPlan(plan, walk.hunks, {
+			input: walk.input, seq: (store.state.guide?.seq ?? 0) + 1, client: this.deps.client(),
+		});
+		if (!guide) {
+			throw new Error(`The view did not change.\n${problems.join('\n')}`);
+		}
+		store.update({ guide });
+		await side.goToGuideStep(0);
+		side.showDetails('guide');
+		const root = walk.input.root;
+		const rel = (f: string) => (isInside(f, root) ? path.relative(root, f).replace(/\\/g, '/') : f);
+		const planned = guide.steps.length - added.length;
+		return {
+			title: guide.title,
+			steps: guide.steps.map((s, i) => ({ step: i + 1, title: s.title, file: rel(s.file), lines: [s.first, s.last], ...(i >= planned ? { addedByDataFlow: true } : {}) })),
+			...(added.length > 0 ? {
+				addedSteps: added.map((g) => ({ title: groupTitle(g), hunks: g.map((h) => h.id) })),
+				addedNote: 'Your plan has no step for these hunks, so DataFlow added a step for each of them after your steps. To change this, call show_diff_walk again with all hunks.',
+			} : {}),
+			shown: 1,
+			note: 'The side view shows step 1 with its diff. The user goes to the next step with the button Next, or asks you. get_view gives the step that the user looks at.',
+		};
+	}
+
+	// Goes to a step of the guided review or of the diff walk, and adds a note or a mark to it
 	async reviewStep(step: number, note: unknown, status: string | undefined): Promise<object> {
 		const { store, side } = this.deps;
 		const guide = store.state.guide;
 		if (!guide) {
-			throw new Error('No guided review shows. Call show_review_plan first.');
+			throw new Error('No guided review or diff walk shows. Call show_review_plan or show_diff_walk first.');
 		}
 		const index = step - 1;
 		if (stepIndex(guide, index) === undefined) {
-			throw new Error(`The review has ${guide.steps.length} steps. Give a step from 1 to ${guide.steps.length}.`);
+			throw new Error(`The ${guide.kind === 'diff' ? 'diff walk' : 'review'} has ${guide.steps.length} steps. Give a step from 1 to ${guide.steps.length}.`);
 		}
 		if (status !== undefined && !GUIDE_STATUSES.includes(status as SideGuideStatus)) {
 			throw new Error(`"status" must be one of ${GUIDE_STATUSES.join(', ')}.`);

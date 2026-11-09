@@ -1,6 +1,6 @@
 import * as path from 'path';
 import type { TextChange } from '../lenses/blocks';
-import type { SideGuide, SideGuideKind, SideGuideStatus, SideGuideStep } from '../side/protocol';
+import type { SideGuide, SideGuideKind, SideGuideStatus, SideGuideStep, SideStepDiff } from '../side/protocol';
 import type { DiffLine } from './git';
 
 // A guided review: the user names the files and the folders to review, a language model makes a plan for them, and the
@@ -40,7 +40,7 @@ export interface ReviewFilesInput {
 }
 
 // A line of the diff for the model: + for an added line, - for a removed line, with the line in the working tree
-function diffText(line: DiffLine): string {
+export function diffText(line: DiffLine): string {
 	const mark = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
 	const at = line.kind === 'removed' ? '' : String(line.newLine);
 	return `${mark}${at.padStart(5)} | ${line.text}`;
@@ -231,8 +231,30 @@ function moveRange(first: number, last: number, change: TextChange): [number, nu
 	return [from, Math.max(from, map(last, false))];
 }
 
+// The last line of a step with its diff: the diff can have lines of context after the step, and a removed block at the
+// end of the file
+function stepExtent(s: SideGuideStep): number {
+	const d = s.diff;
+	return d ? Math.max(s.last, ...d.rows.map((r) => r.at), ...d.removed.map((r) => r.at)) : s.last;
+}
+
+// Moves the lines of the diff of a step of a diff walk with a change of the text. A changed line in the change loses the
+// box of its changed characters, because its text is new. A removed row keeps its line in the base
+function moveStepDiff(diff: SideStepDiff, change: TextChange): SideStepDiff {
+	const one = (line: number) => moveRange(line, line, change)[0];
+	const isEdited = (line: number) => line - 1 >= change.range.start.line && line - 1 <= change.range.end.line;
+	return {
+		...diff,
+		rows: diff.rows.map((r) => ({ ...r, line: r.kind === 'removed' ? r.line : one(r.line), at: one(r.at) })),
+		added: diff.added.map(([a, b]) => moveRange(a, b, change)),
+		changed: diff.changed.filter((c) => !isEdited(c.line)).map((c) => ({ ...c, line: one(c.line) })),
+		removed: diff.removed.map((r) => ({ ...r, at: one(r.at) })),
+	};
+}
+
 // Moves the lines of the steps in a file with the changes of an edit. A step whose lines the edit deleted keeps the line
-// of the change, so the plan keeps its steps. Returns the same guide if no step moved
+// of the change, so the plan keeps its steps. The diff of a step of a diff walk moves with the step. Returns the same
+// guide if no step moved
 export function moveGuide(guide: SideGuide, file: string, changes: readonly TextChange[]): SideGuide {
 	const key = fileKey(file);
 	let isMoved = false;
@@ -241,16 +263,36 @@ export function moveGuide(guide: SideGuide, file: string, changes: readonly Text
 			return s;
 		}
 		let [first, last] = [s.first, s.last];
+		let diff = s.diff;
 		for (const change of changes) {
+			// a change after all lines of the step does not move it
+			if (change.range.start.line + 1 > stepExtent({ ...s, first, last, diff })) {
+				continue;
+			}
 			[first, last] = moveRange(first, last, change);
+			diff = diff && moveStepDiff(diff, change);
 		}
-		if (first === s.first && last === s.last) {
+		if (first === s.first && last === s.last && diff === s.diff) {
 			return s;
 		}
 		isMoved = true;
-		return { ...s, first, last };
+		return { ...s, first, last, ...(diff ? { diff } : {}) };
 	});
 	return isMoved ? { ...guide, steps } : guide;
+}
+
+// The diff of a step that moved a number of lines, for a new session
+function shiftStepDiff(diff: SideStepDiff, shift: number): SideStepDiff {
+	if (shift === 0) {
+		return diff;
+	}
+	return {
+		...diff,
+		rows: diff.rows.map((r) => ({ ...r, line: r.kind === 'removed' ? r.line : r.line + shift, at: r.at + shift })),
+		added: diff.added.map(([a, b]) => [a + shift, b + shift]),
+		changed: diff.changed.map((c) => ({ ...c, line: c.line + shift })),
+		removed: diff.removed.map((r) => ({ ...r, at: r.at + shift })),
+	};
 }
 
 // The lines of a file in a session: the text of a line from 1, and the number of lines. Undefined if the file is gone
@@ -294,7 +336,9 @@ export function restoreGuide(stored: StoredGuide, lines: GuideFileLines): SideGu
 			shift = (d === 0 ? [0] : [d, -d]).find((x) => s.first + x >= 1 && s.last + x <= l.count && isSame(s.first + x, texts.first) && isSame(s.last + x, texts.last));
 		}
 		const first = Math.min(Math.max(1, s.first + (shift ?? 0)), l.count);
-		steps.push({ ...s, first, last: Math.min(Math.max(first, s.last + (shift ?? 0)), l.count) });
+		steps.push({
+			...s, first, last: Math.min(Math.max(first, s.last + (shift ?? 0)), l.count), ...(s.diff ? { diff: shiftStepDiff(s.diff, shift ?? 0) } : {}),
+		});
 	});
 	if (steps.length === 0) {
 		return undefined;
@@ -323,26 +367,33 @@ export function guideProgress(guide: SideGuide): string {
 // The guide for the model in get_view: the step that the user looks at, and the marks of the user
 export function guideFacts(guide: SideGuide): object {
 	return {
+		...(guide.kind === 'diff' ? { kind: 'diff walk', base: guide.base } : {}),
 		title: guide.title,
 		currentStep: guide.current + 1,
 		progress: guideProgress(guide),
 		steps: guide.steps.map((s, i) => ({
 			step: i + 1, title: s.title, file: s.name, lines: [s.first, s.last], status: s.status, ...(s.note ? { hasNote: true } : {}),
+			...(s.diff ? { added: s.diff.plus, removed: s.diff.minus } : {}),
 		})),
 	};
 }
 
-// The summary of the review in Markdown, for example for a comment on the pull request
+// The summary of the guide in Markdown, for example for a comment on the pull request. A step of a diff walk also gives
+// its number of added and removed lines
 export function guideSummary(guide: SideGuide): string {
 	const out = [`## ${guide.title}`, ''];
 	if (guide.summary) {
 		out.push(guide.summary, '');
 	}
+	if (guide.kind === 'diff' && guide.base) {
+		out.push(`Changes against ${guide.base}.`, '');
+	}
 	out.push(`${guideProgress(guide)}.`, '');
 	guide.steps.forEach((s, i) => {
 		const box = s.status === 'todo' ? '[ ]' : '[x]';
 		const lines = s.first === s.last ? `${s.first}` : `${s.first}-${s.last}`;
-		out.push(`- ${box} ${i + 1}. **${s.title}** (\`${s.name}:${lines}\`): ${STATUS_TEXT[s.status]}`);
+		const stats = s.diff ? `, +${s.diff.plus} −${s.diff.minus}` : '';
+		out.push(`- ${box} ${i + 1}. **${s.title}** (\`${s.name}:${lines}\`${stats}): ${STATUS_TEXT[s.status]}`);
 		if (s.note) {
 			out.push(...s.note.split(/\r?\n/).map((l) => `  > ${l}`));
 		}

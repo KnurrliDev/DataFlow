@@ -795,6 +795,40 @@ button.mnote { cursor: pointer; }
 .rg-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .rg-gap { flex: 1; }
 .rg-footer { display: flex; gap: 8px; padding-top: 6px; border-top: 1px solid var(--vscode-panel-border, transparent); }
+
+/* the diff walk: the frame of the current step has no background, so the colors of the diff show. The added lines of the
+   current step are green, with the changed characters, and a red line is at the place of removed lines. The other steps
+   of the file have a mark in the line numbers. The colors are the colors of the diff editor of VS Code */
+.row.rg-walk.rg-line, .row.rg-walk.rg-line .ends { background: var(--vscode-editor-background); }
+.row.df-add, .row.df-add .ends, .row.rg-line.df-add, .row.rg-line.df-add .ends {
+  background: linear-gradient(var(--vscode-diffEditor-insertedLineBackground, rgba(155, 185, 85, 0.2)),
+  var(--vscode-diffEditor-insertedLineBackground, rgba(155, 185, 85, 0.2))), var(--vscode-editor-background); }
+.row.df-add .ln, .row.rg-line.df-add .ln { box-shadow: inset -3px 0 0 var(--vscode-editorGutter-addedBackground, #587c0c); }
+.df-chg { border-radius: 2px; background: var(--vscode-diffEditor-insertedTextBackground, rgba(155, 185, 85, 0.3)); }
+.row.df-add-x .ln { box-shadow: inset -2px 0 0 color-mix(in srgb, var(--vscode-editorGutter-addedBackground, #587c0c) 70%, transparent); }
+.row.df-del, .row.df-del-end { position: relative; }
+.row.df-del::before, .row.df-del-end::after { content: ""; position: absolute; left: 0; right: 0; z-index: 2; height: 2px; pointer-events: none;
+  background: var(--vscode-editorGutter-deletedBackground, #ad0707); }
+.row.df-del::before { top: -1px; }
+.row.df-del-end::after { bottom: -1px; }
+.row.df-del-x .ln::after { content: ""; position: absolute; right: 0; top: -4px; border: 4px solid transparent; border-right-width: 0;
+  border-left-color: var(--vscode-editorGutter-deletedBackground, #ad0707); }
+.hint.df-chip { padding: 0 6px; border: 0; border-radius: 4px; font: inherit; font-size: 0.88em; font-style: normal;
+  line-height: calc(var(--row-height) - 4px); cursor: default; white-space: pre;
+  color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-dataflow-problem));
+  background: color-mix(in srgb, var(--vscode-editorGutter-deletedBackground, #ad0707) 14%, transparent); }
+.hint.df-chip:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+.card.df-card { display: grid; gap: 4px; pointer-events: auto; max-width: min(480px, calc(100vw - 24px)); max-height: min(50vh, 420px); overflow: auto; }
+.df-card-rows { overflow-x: auto; padding: 2px 0; border-radius: 3px; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size);
+  background: linear-gradient(var(--vscode-diffEditor-removedLineBackground, rgba(255, 0, 0, 0.2)),
+  var(--vscode-diffEditor-removedLineBackground, rgba(255, 0, 0, 0.2))), var(--vscode-editor-background); }
+.df-card-row { min-height: 1.4em; padding: 0 8px; white-space: pre; }
+.df-card-more { padding: 0 8px; font-style: italic; color: var(--vscode-descriptionForeground); }
+.df-stats { flex: none; font-family: var(--vscode-editor-font-family); font-size: 0.85em; white-space: nowrap; }
+.df-plus { color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-dataflow-check)); }
+.df-minus { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-dataflow-problem)); }
+.rg-body > .rg-diff { margin: 0 -8px 0 -32px; border-top: 1px solid var(--vscode-panel-border, transparent);
+  border-bottom: 1px solid var(--vscode-panel-border, transparent); }
 `;
 
 // The number of levels with their own rule for the indent guides, as in the text editor

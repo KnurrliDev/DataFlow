@@ -19,6 +19,16 @@ export function targetCandidates(setting: string, defaultBranch: string | undefi
 		'origin/main', 'main', 'origin/master', 'master'])];
 }
 
+// The local and the remote branches, with a separator before each group. The groups do not have the active branch and
+// the default branch of the remote.
+function branchGroups(branches: { local: string[]; remote: string[] }, active: string | undefined, defaultBranch: string | undefined,
+	item: (ref: string, label: string) => TargetItem): TargetItem[] {
+	const separator = (label: string): TargetItem => ({ label, kind: vscode.QuickPickItemKind.Separator });
+	const local = branches.local.filter((b) => b !== active && b !== defaultBranch).map((b) => item(b, `$(git-branch) ${b}`));
+	const remote = branches.remote.filter((b) => b !== defaultBranch).map((b) => item(b, `$(cloud) ${b}`));
+	return [...(local.length > 0 ? [separator('Local branches'), ...local] : []), ...(remote.length > 0 ? [separator('Remote branches'), ...remote] : [])];
+}
+
 // The list of target branches: Automatic, the default branch of the remote and HEAD, then the local and the remote
 // branches. The active branch is not in the list, because it gives the same diff as HEAD. The selected item has a mark.
 export function targetItems(branches: { local: string[]; remote: string[] }, active: string | undefined, defaultBranch: string | undefined,
@@ -26,14 +36,21 @@ export function targetItems(branches: { local: string[]; remote: string[] }, act
 	const item = (ref: string, label: string, description = ''): TargetItem => ({
 		ref, label, description: [description, ref === (selected ?? '') ? 'selected' : ''].filter(Boolean).join(' · '),
 	});
-	const separator = (label: string): TargetItem => ({ label, kind: vscode.QuickPickItemKind.Separator });
-	const local = branches.local.filter((b) => b !== active && b !== defaultBranch).map((b) => item(b, `$(git-branch) ${b}`));
-	const remote = branches.remote.filter((b) => b !== defaultBranch).map((b) => item(b, `$(cloud) ${b}`));
 	return [
 		item('', '$(sparkle) Automatic', 'the branch that this branch comes from, the default branch of the remote, or main or master'),
 		...(defaultBranch ? [item(defaultBranch, `$(git-branch) ${defaultBranch}`, 'the default branch of the remote')] : []),
 		item('HEAD', '$(git-commit) HEAD', 'only the changes that are not committed'),
-		...(local.length > 0 ? [separator('Local branches'), ...local] : []),
-		...(remote.length > 0 ? [separator('Remote branches'), ...remote] : []),
+		...branchGroups(branches, active, defaultBranch, item),
+	];
+}
+
+// The list of branches for a diff walk against a branch: the default branch of the remote, then the local and the remote
+// branches. The active branch is not in the list, because it gives only the changes that are not committed. An empty
+// list: the repository has no other branch.
+export function walkBranchItems(branches: { local: string[]; remote: string[] }, active: string | undefined, defaultBranch: string | undefined): TargetItem[] {
+	const item = (ref: string, label: string, description?: string): TargetItem => ({ ref, label, ...(description ? { description } : {}) });
+	return [
+		...(defaultBranch ? [item(defaultBranch, `$(git-branch) ${defaultBranch}`, 'the default branch of the remote')] : []),
+		...branchGroups(branches, active, defaultBranch, item),
 	];
 }

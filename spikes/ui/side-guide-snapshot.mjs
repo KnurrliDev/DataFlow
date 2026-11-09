@@ -253,8 +253,8 @@ try {
 	await shot('window');
 	result.view = (await tool('get_view')).review;
 
-	// the command Previous Review Step goes to step 3
-	await command('DataFlow: Previous Review Step');
+	// the command Previous Guide Step goes to step 3
+	await command('DataFlow: Previous Guide Step');
 	await until(async () => (await guideState()).current === 3, 'step 3 after the command');
 	result.afterCommand = (await guideState()).current;
 	await sleep(1500); // the state of the workspace keeps the guide after a short pause

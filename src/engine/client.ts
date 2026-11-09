@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import * as vscode from 'vscode';
 import type { SideOutlineData, SideOutlinePlace } from '../side/protocol';
 import { RpcConnection } from './rpc';
+import type { TokenLegend, TokenLine } from './tokens';
 
 // The types of the engine protocol. Lines and columns start at 1.
 
@@ -554,17 +555,9 @@ export interface FileResult {
 }
 
 // The data of dataflow/tokens. Each token is 4 numbers: the column and the length in UTF-8 bytes, the kind and the
-// modifier bits. The legend gives the names of the kinds and of the bits. side/model.ts converts the tokens.
-export interface TokenLegend {
-	kinds: string[];
-	modifiers: string[];
-}
-
-export interface TokenLine {
-	line: number;
-	text: string;
-	tokens: number[];
-}
+// modifier bits. The legend gives the names of the kinds and of the bits. side/model.ts converts the tokens. The types
+// are in tokens.ts, so the script of the side view can use them
+export type { TokenLegend, TokenLine } from './tokens';
 
 export interface TokensResult {
 	lineCount: number;
