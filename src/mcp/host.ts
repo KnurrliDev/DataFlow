@@ -12,7 +12,7 @@ import { findingText, LineText, toUtf8Column, variableAt } from '../lenses/flow'
 import { buildSideIncludes } from '../lenses/includes';
 import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../lenses/member';
 import { buildSideThreads } from '../lenses/threads';
-import { isCppFile } from '../review/git';
+import { INCLUDE_FILE, isCppFile } from '../review/git';
 import {
 	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex, withNote, withStatus,
 } from '../review/guide';
@@ -803,7 +803,8 @@ export class DataFlowMcpHost implements McpHost {
 	private async prepare(file?: string): Promise<{ client: EngineClient; doc: vscode.TextDocument; file: string }> {
 		const client = this.ready();
 		const doc = await this.document(file);
-		if (!isCpp(doc)) {
+		// VS Code opens an .inc file as plain text. DataFlow sets its language to C++ only after it opens
+		if (!isCpp(doc) && !INCLUDE_FILE.test(doc.uri.fsPath)) {
 			throw new Error(`${doc.uri.fsPath} is not a C or C++ file.`);
 		}
 		this.deps.flushChange(doc);

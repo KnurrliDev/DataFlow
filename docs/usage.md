@@ -134,7 +134,7 @@ VS Code does not read the `.vscode/settings.json` file of the project, because i
 
 VS Code opens `.inc` files as plain text. In the folder of a compile database, an `.inc` file is usually a part of a C or C++ file. An example is a unity build. Thus DataFlow sets the language of these files to C++, and the side view shows them. The list of the files of a project and Change Ripple also include the `.inc` files.
 
-The engine parses an `.inc` file alone, with the compile command of a file with a similar path. If this parse has errors, DataFlow finds the C++ file that includes the `.inc` file. Then the engine parses the `.inc` file after the lines of that C++ file before the `#include`, with the compile command of the C++ file. Thus the `.inc` file gets the declarations of the earlier includes.
+The engine parses an `.inc` file alone, with the compile command of a file with a similar path. If this parse has errors, DataFlow finds the C++ file that includes the `.inc` file. Then the engine parses the `.inc` file after the lines of that C++ file before the `#include`, with the compile command of the C++ file. Thus the `.inc` file gets the declarations of the earlier includes. The side view, the lenses, the MCP tools, Change Ripple and the diff walk all use this parse.
 
 The first parse takes about the time of a parse of the C++ file, because it also parses these lines. A parse after an edit of the `.inc` file is fast. For example, a unity build of a Qt project has 65 `.inc` files in one C++ file. The first parse of the last `.inc` file took 3.9 s, and a parse after an edit took 0.1 s.
 

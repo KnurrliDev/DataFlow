@@ -15,7 +15,7 @@ import {
 import { mkdir, readFile, rm, stat } from 'fs/promises';
 import { HomeView } from './home';
 import {
-	CallGraphModel, CostModel, EngineClient, EngineFunction, FlowModel, FlowOptions, FunctionSelector, LogicModel, LogicOptions, MemberEntry,
+	CallGraphModel, CostModel, EngineClient, EngineFunction, FlowModel, FlowOptions, FunctionSelector, IncludeContext, LogicModel, LogicOptions, MemberEntry,
 	MemberModel, MemberOptions, ThreadsModel,
 } from './engine/client';
 import { ALL_COST_CATEGORIES, buildCostMarks, CostCategory, costCounts, CostFilter, functionItems } from './lenses/cost';
@@ -340,9 +340,11 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			maxThreads: config.get<number>('engine.maxThreads') || undefined,
 			cacheSize: config.get<number>('engine.cacheSize'),
 			log,
+			includeContext: (file) => (INCLUDE_FILE.test(file) ? includeContextOf(file) : undefined),
 		});
 		engine = client;
 		client.onDidChangeState((state) => store.update({ engine: state }));
+		client.onDidSetContext(onDidSetContext);
 		client.onStatus((status) => {
 			const parsing = store.state.parsing.filter((f) => f !== status.file);
 			store.update({ parsing: status.state === 'parsing' ? [...parsing, status.file] : parsing });
@@ -379,7 +381,6 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		clearIncludes();
 		clearCalls();
 		clearThreads();
-		includeContexts.clear();
 		headerUnits.clear();
 		if (isReviewShown) {
 			reviewRun++;
@@ -529,33 +530,33 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 	};
 
 	// An .inc file of a unity build can need the code before its #include in the source file, for example a declaration
-	// of an earlier header. If its parse alone has errors, the engine parses it again after the lines of the source file
-	// before the #include. Each file gets one try for each engine, and its lenses come again from the new parse.
-	const includeContexts = new Set<string>();
-	const useIncluderContext = async (file: string): Promise<void> => {
-		const key = fileKey(file);
-		const client = engine;
-		if (!client || includeContexts.has(key)) {
-			return;
-		}
-		includeContexts.add(key);
+	// of an earlier header. If its parse alone has errors, the engine client asks for the source file of the project that
+	// includes the file and the line of the #include. Then the engine parses the file after the lines of the source file
+	// before the #include. The client asks once for each file
+	const includeContextOf = async (file: string): Promise<{ unit: string; line: number } | undefined> => {
 		const unit = await findIncluder(await projectSourceFiles(), readSource, file);
 		const text = unit ? await readSource(unit) : undefined;
 		const line = unit && text ? includeLine(text, file) : 0;
-		if (!unit || line === 0 || engine !== client) {
-			return;
-		}
+		return unit && line > 0 ? { unit, line } : undefined;
+	};
+
+	// The side view and the lenses of a file with a new context came from the parse alone, so they come again
+	const onDidSetContext = ({ file, unit, line }: IncludeContext): void => {
 		log.info(`${path.basename(file)} has errors alone. The engine parses it after the lines of ${unit} before line ${line}.`);
-		client.setContext(file, unit, line);
 		side.onDidChangeParse(file);
-		clearTrace();
-		clearLogic();
-		clearCost();
-		clearIncludes();
-		clearCalls();
-		clearThreads();
-		flowCache = undefined;
-		scheduleCursorUpdate(0);
+		if (flowCache && fileKey(flowCache.file) === fileKey(file)) {
+			flowCache = undefined;
+		}
+		const place = currentPlace();
+		if (place && fileKey(place.doc.uri.fsPath) === fileKey(file)) {
+			clearTrace();
+			clearLogic();
+			clearCost();
+			clearIncludes();
+			clearCalls();
+			clearThreads();
+			scheduleCursorUpdate(0);
+		}
 	};
 
 	// The source file of a header for Hidden C++: a source file of the project that includes the header. The engine finds
@@ -596,9 +597,6 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 				return;
 			}
 			store.update({ file, fn: res.function, parseMs: res.parseMs, errorCount: res.errorCount, errors: res.errors });
-			if (res.errorCount > 0 && INCLUDE_FILE.test(file)) {
-				void useIncluderContext(file);
-			}
 			if (store.state.lenses.logic && res.function) {
 				// a lambda has its own logic. Its name in the key comes from the engine: <function>::(lambda <n>)
 				const lambda = res.lambda ? `::(lambda ${res.lambda.index + 1})` : '';

@@ -584,15 +584,37 @@ export interface EngineStatus {
 
 export type EngineState = 'stopped' | 'starting' | 'ready' | 'failed';
 
+// The context of a file that a source file includes as a part of its code, for example an .inc file of a unity build:
+// the source file and the line of the #include. The engine parses the file after the lines of the source file before
+// the #include
+export interface IncludeContext {
+	file: string;
+	unit: string;
+	line: number;
+}
+
 export interface EngineOptions {
 	enginePath: string;
 	compileCommands: string[];
 	maxThreads?: number;
 	cacheSize?: number;
 	log: vscode.LogOutputChannel;
+	// The source file that includes a file and the line of the #include, or undefined if no source file includes it. For
+	// a file that never needs a context, the function gives undefined and no promise. The client asks once for each file,
+	// after a parse of the file alone has errors
+	includeContext?: (file: string) => Promise<{ unit: string; line: number } | undefined> | undefined;
 }
 
 const MAX_RESTARTS = 3;
+
+// The key of a path. The paths of Windows do not use the case of the letters
+const pathKey = (file: string): string => (process.platform === 'win32' ? file.replace(/\//g, '\\').toLowerCase() : file);
+
+// True for a result of a parse with errors
+const hasParseErrors = (res: unknown): boolean => {
+	const count = (res as { errorCount?: unknown } | null | undefined)?.errorCount;
+	return typeof count === 'number' && count > 0;
+};
 
 export class EngineClient implements vscode.Disposable {
 	private rpc?: RpcConnection;
@@ -602,11 +624,18 @@ export class EngineClient implements vscode.Disposable {
 	private initializeResult?: InitializeResult;
 	// The text of the open files. After a restart, the client sends them again.
 	private readonly openFiles = new Map<string, { text: string; version: number }>();
+	// The contexts of the files, by the key of the path. After a restart, the client sends them again.
+	private readonly contexts = new Map<string, IncludeContext>();
+	// The try of a context for each file with parse errors: true if the file got a context. One try for each file
+	private readonly contextTries = new Map<string, Promise<boolean>>();
 
 	private readonly stateEmitter = new vscode.EventEmitter<EngineState>();
 	readonly onDidChangeState = this.stateEmitter.event;
 	private readonly statusEmitter = new vscode.EventEmitter<EngineStatus>();
 	readonly onStatus = this.statusEmitter.event;
+	// A file got a context after a parse alone with errors. The earlier results of the file came from the parse alone
+	private readonly contextEmitter = new vscode.EventEmitter<IncludeContext>();
+	readonly onDidSetContext = this.contextEmitter.event;
 
 	constructor(private readonly options: EngineOptions) {}
 
@@ -650,6 +679,9 @@ export class EngineClient implements vscode.Disposable {
 			log.info(`${result.name} ${result.version}, ${result.clang}, ${result.threads} threads`);
 			for (const [file, doc] of this.openFiles) {
 				this.rpc.notify('textDocument/didOpen', { file, text: doc.text, version: doc.version });
+			}
+			for (const { file, unit, line } of this.contexts.values()) {
+				this.rpc.notify('dataflow/context', { file, unit, line });
 			}
 			this.setState('ready');
 			return result;
@@ -781,6 +813,11 @@ export class EngineClient implements vscode.Disposable {
 	// The source file that includes a file, and the line of the #include. The engine then parses the file after the lines
 	// of the source file before the #include. With no unit, the file has no context. Each change makes a new parse
 	setContext(file: string, unit?: string, line?: number): void {
+		if (unit && line) {
+			this.contexts.set(pathKey(file), { file, unit, line });
+		} else {
+			this.contexts.delete(pathKey(file));
+		}
 		this.rpc?.notify('dataflow/context', unit && line ? { file, unit, line } : { file });
 	}
 
@@ -788,13 +825,57 @@ export class EngineClient implements vscode.Disposable {
 		void this.stop();
 		this.stateEmitter.dispose();
 		this.statusEmitter.dispose();
+		this.contextEmitter.dispose();
 	}
 
-	private request<T>(method: string, params: unknown, token?: vscode.CancellationToken): Promise<T> {
+	// A request for a file. If the parse of the file alone has errors, and the file is a part of a source file, for
+	// example an .inc file of a unity build, the file gets the context of the source file and the request runs again.
+	// Thus each user of the engine gets the same parse of the file: the side view, the lenses, the MCP tools, Change
+	// Ripple and the diff walk
+	private async request<T>(method: string, params: unknown, token?: vscode.CancellationToken): Promise<T> {
+		const value = (params as { file?: unknown } | undefined)?.file;
+		const file = typeof value === 'string' ? value : undefined;
+		const tried = file !== undefined ? this.contextTries.get(pathKey(file)) : undefined;
+		if (tried) {
+			// the context of the file comes before its parse
+			await tried;
+		}
+		const res = await this.send<T>(method, params, token);
+		if (file === undefined || tried || token?.isCancellationRequested || !hasParseErrors(res)) {
+			return res;
+		}
+		const hasContext = await this.tryContext(file);
+		return hasContext && !token?.isCancellationRequested ? this.send<T>(method, params, token) : res;
+	}
+
+	private send<T>(method: string, params: unknown, token?: vscode.CancellationToken): Promise<T> {
 		if (!this.rpc || this.state !== 'ready') {
 			return Promise.reject(new Error('The engine is not ready.'));
 		}
 		return this.rpc.request<T>(method, params, token);
+	}
+
+	// Gives a file the context of the source file that includes it, after a parse of the file alone with errors. One try
+	// for each file. True if the file got a context
+	private tryContext(file: string): Promise<boolean> {
+		const key = pathKey(file);
+		let tried = this.contextTries.get(key);
+		if (!tried) {
+			const found = this.options.includeContext?.(file);
+			tried = !found ? Promise.resolve(false) : found.then((ctx) => {
+				if (!ctx || this.state !== 'ready') {
+					return false;
+				}
+				this.setContext(file, ctx.unit, ctx.line);
+				this.contextEmitter.fire({ file, unit: ctx.unit, line: ctx.line });
+				return true;
+			}, (error) => {
+				this.options.log.warn(`DataFlow found no source file that includes ${file}: ${error}`);
+				return false;
+			});
+			this.contextTries.set(key, tried);
+		}
+		return tried;
 	}
 
 	private onExit(code: number | null): void {

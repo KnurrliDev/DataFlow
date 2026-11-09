@@ -7,6 +7,7 @@
 - The command **DataFlow: Walk Through the Changes** makes one step for each changed function. For the changes against a different branch, it shows a list of the local and the remote branches.
 - The MCP server has the new tools `get_diff` and `show_diff_walk`, and the prompt `diff-walk`. The model puts the changes in a sequence, and tells what changed and why. `review_step` also goes to a step of a diff walk.
 - The commands of the guide have new names: **DataFlow: Next Guide Step**, **DataFlow: Previous Guide Step**, **DataFlow: Copy Guide Summary** and **DataFlow: Close Guide**.
+- `.inc` files: all parts of DataFlow parse an `.inc` file of a unity build after the lines of its C++ file before the `#include`. Before, DataFlow used this parse only after the cursor was in the `.inc` file. The MCP tools also accept an `.inc` file that no editor shows. After a restart of the engine, the `.inc` files keep this parse.
 
 ## 0.3.1
 

@@ -187,6 +187,39 @@ suite('A project that is not open in VS Code', () => {
 		}
 	});
 
+	test('The MCP tools parse an .inc file that no editor shows after the lines of the source file that includes it', async function () {
+		this.timeout(120000);
+		const tmp = mkdtempSync(path.join(os.tmpdir(), 'dataflow-unity-'));
+		const unity = path.join(tmp, 'src', 'unity.cpp');
+		const part = path.join(tmp, 'src', 'part.inc');
+		try {
+			// a unity build: the .inc file defines a member function of a class of scaler.h, and only unity.cpp includes
+			// scaler.h. Alone, the .inc file does not know the class
+			write(path.join(tmp, 'CMakeLists.txt'), 'project(Unity CXX)\n');
+			write(path.join(tmp, 'src', 'scaler.h'), 'struct Scaler {\n\tint scale(int value) const;\n\tint factor_ = 3;\n};\n');
+			write(part, 'int Scaler::scale(int value) const {\n\tconst int out = value * factor_;\n\treturn out;\n}\n');
+			write(unity, '#include "scaler.h"\n#include "part.inc"\n\nint main() { return Scaler().scale(2); }\n');
+			write(path.join(tmp, 'build', 'compile_commands.json'), JSON.stringify([
+				{ directory: path.join(tmp, 'build'), file: unity, arguments: ['clang++', '-std=c++20', '-c', unity] },
+			]));
+			await useProject(tmp);
+			assert.ok(!vscode.workspace.textDocuments.some((d) => isFile(d.uri.fsPath, part)), 'the .inc file is open');
+
+			// list_functions gives the member function with no parse errors
+			const listed = await api.mcpHost.functions(part) as { functions: { name: string; lines: number[] }[]; parseErrors?: unknown[] };
+			assert.deepStrictEqual([listed.functions.map((f) => [f.name, ...f.lines]), listed.parseErrors], [[['Scaler::scale', 1, 4]], undefined],
+				JSON.stringify(listed));
+			// get_structure of the function also has no parse errors
+			const structure = await api.mcpHost.structure(part, { function: 'Scaler::scale' }) as { parseErrors?: unknown[] };
+			assert.strictEqual(structure.parseErrors, undefined, JSON.stringify(structure).slice(0, 600));
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+			await vscode.commands.executeCommand('dataflow.closeProject');
+			await waitFor(() => api.store.state.project === undefined, 30000, state);
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test('With no main and no master, Change Ripple uses the default branch of the remote', async function () {
 		this.timeout(120000);
 		// scripts/prepare-fixtures.mjs makes the repository: as in a clone, the remote origin has the default branch dev,
