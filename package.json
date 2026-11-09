@@ -2,7 +2,7 @@
   "name": "dataflow",
   "displayName": "DataFlow",
   "description": "Shows the data flow, the logic, the hidden costs and the ripple of changes of C++ code in a view beside the editor.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "KnurrliDev",
   "license": "MIT",
   "repository": {

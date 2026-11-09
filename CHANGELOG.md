@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Diff walk: the side view goes through the changes of a diff, one step after the other. The changes are the changes that are not committed, the changes against a branch, or the changes since a commit. The C and C++ files that git does not track yet are new files.
 - The code view marks the added lines of the current step in green, with the changed characters. A red line marks the place of removed lines. A card shows the removed lines. The tab Guide shows the diff of each step, and **Diff editor** opens the diff editor of VS Code at the step.
