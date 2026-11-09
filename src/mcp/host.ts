@@ -14,7 +14,7 @@ import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../len
 import { buildSideThreads } from '../lenses/threads';
 import { INCLUDE_FILE, isCppFile } from '../review/git';
 import {
-	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex, withNote, withStatus,
+	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, GUIDE_TYPES, guideType, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex, withNote, withStatus,
 } from '../review/guide';
 import { groupTitle, resolveWalkPlan, walkFacts, walkHunks, type WalkHunk, type WalkInput, type WalkPlanInput } from '../review/walk';
 import type { SideViewController } from '../side/controller';
@@ -679,6 +679,26 @@ export class DataFlowMcpHost implements McpHost {
 		side.showDetails('guide');
 		const s = next.steps[index];
 		return { step, title: s.title, file: s.file, lines: [s.first, s.last], status: s.status, progress: guideProgress(next) };
+	}
+
+	// Closes the guided review or the diff walk, as the button Close review or Close walk of the user does. The state of
+	// the workspace then also has no guide. With a kind, only a guide of this kind closes
+	async closeGuide(kind: string | undefined): Promise<object> {
+		if (kind !== undefined && !(GUIDE_TYPES as readonly string[]).includes(kind)) {
+			throw new Error(`"kind" must be one of ${GUIDE_TYPES.map((t) => `"${t}"`).join(', ')}.`);
+		}
+		const { store } = this.deps;
+		const guide = store.state.guide;
+		if (!guide) {
+			return { closed: false, note: 'No guided review or diff walk shows, so the view did not change.' };
+		}
+		const shown = guideType(guide);
+		if (kind !== undefined && kind !== shown) {
+			const name = (k: string) => (k === 'review' ? 'guided review' : 'diff walk');
+			throw new Error(`The side view shows a ${name(shown)}, not a ${name(kind)}. The view did not change.`);
+		}
+		store.update({ guide: undefined });
+		return { closed: true, kind: shown, title: guide.title, steps: guide.steps.length, progress: guideProgress(guide) };
 	}
 
 	// The full path of a file of a step: an absolute path, or a path relative to the root of the last get_review or to a

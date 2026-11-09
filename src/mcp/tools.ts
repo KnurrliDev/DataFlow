@@ -1,7 +1,7 @@
 import {
 	COMMENT_COLORS, MAX_BLOCK_LEVELS, MAX_COMMENTS, type ModelBlockInput, type ModelCommentInput, type ModelDetailInput, type ModelNoteInput,
 } from '../lenses/blocks';
-import { GUIDE_KINDS, GUIDE_STATUSES, MAX_GUIDE_STEPS, MAX_STEP_CHECKS, type GuidePlanInput } from '../review/guide';
+import { GUIDE_KINDS, GUIDE_STATUSES, GUIDE_TYPES, MAX_GUIDE_STEPS, MAX_STEP_CHECKS, type GuidePlanInput } from '../review/guide';
 import { MAX_WALK_STEPS, type WalkPlanInput } from '../review/walk';
 import type { McpPrompt, McpTool } from './server';
 
@@ -35,6 +35,7 @@ export interface McpHost {
 	reviewStep(step: number, note: unknown, status: string | undefined): Promise<object>;
 	diff(base: string | undefined, paths: unknown): Promise<object>;
 	showDiffWalk(plan: WalkPlanInput): Promise<object>;
+	closeGuide(kind: string | undefined): Promise<object>;
 }
 
 export const INSTRUCTIONS = [
@@ -49,6 +50,7 @@ export const INSTRUCTIONS = [
 	+ 'then call show_review_plan with a plan of steps, and walk the user through the plan with review_step. The prompt guided-review gives the steps.',
 	'To walk the user through the changes of the working tree, of the branch or since a commit, for example the changes that you made, call get_diff, '
 	+ 'read the changed code, then call show_diff_walk with steps of hunks, and go on with review_step. The prompt diff-walk gives the steps.',
+	'When the user asks you to close or delete the guided review or the diff walk, call close_guide.',
 ].join(' ');
 
 const FILE = { type: 'string', description: 'The C++ file: an absolute path, or a path relative to the workspace folder. Default: the file of the active editor, or else the file of the side view.' };
@@ -269,7 +271,8 @@ export function createTools(host: McpHost): McpTool[] {
 			},
 			['text'], false, (a) => host.detail(a.text('file'), { line: a.line('line'), expression: a.text('expression'), title: a.text('title'), text: a.requiredText('text') })),
 		tool('clear', 'Remove the model layers',
-			'Removes the blocks, the notes, the comments and the details of the model from the DataFlow side view.',
+			'Removes the blocks, the notes, the comments and the details of the model from the DataFlow side view. '
+			+ 'The guided review and the diff walk stay: close_guide closes them.',
 			{ file: { ...FILE, description: 'The file. Default: all files.' } }, [], false, (a) => host.clear(a.text('file'))),
 		tool('get_review', 'Get the files to review',
 			'The C and C++ files under the paths that the user wants to review, with their number of lines, the changed files first. If the git repository of the project has a target branch, '
@@ -368,6 +371,20 @@ export function createTools(host: McpHost): McpTool[] {
 				status: { type: 'string', enum: [...GUIDE_STATUSES], description: 'The mark of the step.' },
 			},
 			['step'], false, (a) => host.reviewStep(a.requiredLine('step'), a.raw('note'), a.text('status'))),
+		{
+			...tool('close_guide', 'Close the review or the walk',
+				'Closes the guided review or the diff walk in the DataFlow side view, as the button Close review or Close walk of the user does. '
+				+ 'The marks and the notes of the steps go away, and the guide does not come back in the next session of VS Code. '
+				+ 'Call it only when the user asks you to close or delete the review or the walk. get_view gives the guide that shows.',
+				{
+					kind: {
+						type: 'string', enum: [...GUIDE_TYPES],
+						description: 'Close the guide only if it has this kind: "review" for a guided review, "diff walk" for a diff walk. Default: the guide that shows.',
+					},
+				},
+				[], false, (a) => host.closeGuide(a.text('kind'))),
+			isDestructive: true,
+		},
 	];
 }
 

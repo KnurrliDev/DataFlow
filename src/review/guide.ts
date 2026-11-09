@@ -16,6 +16,13 @@ export const MAX_GUIDE_NOTE = 2000;
 export const MAX_GUIDE_SUMMARY = 1000;
 export const GUIDE_KINDS: readonly SideGuideKind[] = ['change', 'ripple', 'context', 'risk', 'test'];
 export const GUIDE_STATUSES: readonly SideGuideStatus[] = ['todo', 'ok', 'issue', 'question'];
+// The two types of a guide, with the names that the model gets from get_view
+export const GUIDE_TYPES = ['review', 'diff walk'] as const;
+export type GuideType = typeof GUIDE_TYPES[number];
+
+export function guideType(guide: SideGuide): GuideType {
+	return guide.kind === 'diff' ? 'diff walk' : 'review';
+}
 
 // the limits of the facts of a review, so many files or a large change do not fill the context of the model
 export const MAX_REVIEW_FILES = 50;

@@ -116,7 +116,7 @@ suite('Diff walk', () => {
 		}
 	});
 
-	test('The model gets the hunks with get_diff, and show_diff_walk shows its plan with the hunks that the plan does not name', async function () {
+	test('The model gets the hunks with get_diff, show_diff_walk shows its plan with the hunks that the plan does not name, and close_guide closes the walk', async function () {
 		this.timeout(90000);
 		const changed = lineOf('if (cost < 1e-4)');
 		const fire = lineOf('fire_transition(home_battery_ctl, "", true);');
@@ -162,6 +162,16 @@ suite('Diff walk', () => {
 			const view = await api.mcpHost.view() as { review: { kind: string; currentStep: number; steps: { added: number; removed: number }[] } };
 			assert.deepStrictEqual([view.review.kind, view.review.currentStep], ['diff walk', 2]);
 			assert.deepStrictEqual(view.review.steps.map((s) => [s.added, s.removed]), [[1, 0], [1, 1]]);
+
+			// close_guide: a different kind or a wrong value does not close the walk. Then the walk closes, and a second
+			// call finds no guide
+			await assert.rejects(api.mcpHost.closeGuide('review'), /The side view shows a diff walk, not a guided review\. The view did not change\./);
+			await assert.rejects(api.mcpHost.closeGuide('walk'), /"kind" must be one of "review", "diff walk"\./);
+			assert.strictEqual(api.store.state.guide?.title, 'A counter for the cycles');
+			assert.deepStrictEqual(await api.mcpHost.closeGuide('diff walk'),
+				{ closed: true, kind: 'diff walk', title: 'A counter for the cycles', steps: 2, progress: '1 of 2 steps reviewed: 1 question' });
+			assert.strictEqual(api.store.state.guide, undefined);
+			assert.deepStrictEqual(await api.mcpHost.closeGuide(undefined), { closed: false, note: 'No guided review or diff walk shows, so the view did not change.' });
 
 			// a base that git does not find
 			await assert.rejects(api.mcpHost.diff('no-such-branch', undefined), /Git does not find the commit no-such-branch/);

@@ -26,6 +26,7 @@ export interface McpTool {
 	description: string;
 	inputSchema: Record<string, unknown>; // a JSON Schema of the arguments
 	isReadOnly: boolean; // the tool does not change the view
+	isDestructive?: boolean; // the tool removes data of the user, for example the marks of the steps of a guide
 	call(args: Record<string, unknown>): Promise<McpToolResult>;
 }
 
@@ -263,7 +264,7 @@ export class McpServer {
 						title: t.title,
 						description: t.description,
 						inputSchema: t.inputSchema,
-						annotations: { title: t.title, readOnlyHint: t.isReadOnly, destructiveHint: false, idempotentHint: t.isReadOnly, openWorldHint: false },
+						annotations: { title: t.title, readOnlyHint: t.isReadOnly, destructiveHint: t.isDestructive ?? false, idempotentHint: t.isReadOnly, openWorldHint: false },
 					})),
 				};
 			case 'tools/call': {

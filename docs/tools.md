@@ -161,7 +161,7 @@ The model does these steps:
 - To mark a step, click **OK**, **Issue** or **Question** in the bar or in the tab Guide. To remove the mark, click it again.
 - Ask the model about the current step, or ask for the next step. The model reads the current step and your marks with `get_view`. With `review_step`, it goes to a step and adds its answer or a finding as a note.
 - To put the summary of the review on the clipboard, click **Copy summary**. The summary is Markdown, for example for a comment on a pull request. It has each step with its place, its mark and the note of the model.
-- To remove the guide, click **Close review**. A new plan of the model replaces the old plan.
+- To remove the guide, click **Close review**, or ask the model to close it. A new plan of the model replaces the old plan.
 
 These commands do the same as the buttons: **DataFlow: Next Guide Step**, **DataFlow: Previous Guide Step**, **DataFlow: Copy Guide Summary** and **DataFlow: Close Guide**. They show in the Command Palette while a guided review or a diff walk shows. You can give them keys in the keyboard shortcuts of VS Code.
 
@@ -210,6 +210,8 @@ A diff walk has the bar, the tab Guide, the marks and the commands of the guided
 
 During an edit, the steps and their marks move with their code, but the diff of a step does not change. To see the new changes, start the walk again.
 
+To remove the walk, click **Close walk** in the tab Guide, or ask the model, for example "Close the diff walk".
+
 The side view shows only C and C++ files. The summary of a walk of the command gives the deleted files, and the changed files that are not C or C++ files.
 
 ## The tools
@@ -238,6 +240,7 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`show_review_plan`](#show_review_plan) | view | Shows the plan of a guided review, at its first step |
 | [`show_diff_walk`](#show_diff_walk) | view | Shows the plan of a diff walk, at its first step |
 | [`review_step`](#review_step) | view | Goes to a step of the guided review or of the diff walk, and adds a note or a mark of the model |
+| [`close_guide`](#close_guide) | view | Closes the guided review or the diff walk |
 
 Lines start at 1. Many tools use these parameters:
 
@@ -453,7 +456,7 @@ Removes the blocks, the notes, the comments and the details of the model from th
 
 Example request: "Remove your blocks and notes from the side view."
 
-The guide of a guided review stays. A new plan replaces it, and **Close review** removes it.
+The guide of a guided review or of a diff walk stays. A new plan replaces it. **Close review**, **Close walk** and `close_guide` remove it.
 
 ### get_review
 
@@ -542,6 +545,18 @@ Goes to a step of the guided review or of the diff walk in the side view, as the
 | `status` | text | The mark of the step: `todo`, `ok`, `issue` or `question`. |
 
 Example request: "Go to the next step, and mark this step as an issue."
+
+### close_guide
+
+Closes the guided review or the diff walk in the side view, as **Close review** and **Close walk** do. The marks and the notes of the steps go away, and the guide does not come back after a reload of the window. The model calls this tool only when you ask for it.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `kind` | text | `review` or `diff walk`: the tool closes the guide only if it has this kind. The default is the guide that shows. |
+
+Example request: "Delete the diff walk."
+
+If no guide shows, the view does not change. If the guide has a different kind, the tool gives an error, and the guide stays.
 
 ## Security and privacy
 

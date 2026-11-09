@@ -129,8 +129,11 @@ suite('MCP server on the fixture', () => {
 		const list = await rpc('tools/list');
 		assert.deepStrictEqual(list.result.tools.map((t: { name: string }) => t.name), [
 			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'show_blocks', 'show_flow',
-			'highlight', 'comment_lines', 'add_detail', 'clear', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step',
+			'highlight', 'comment_lines', 'add_detail', 'clear', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step', 'close_guide',
 		]);
+		// only close_guide removes data of the user: the marks and the notes of the steps
+		const destructive = list.result.tools.filter((t: { annotations?: { destructiveHint?: boolean } }) => t.annotations?.destructiveHint).map((t: { name: string }) => t.name);
+		assert.deepStrictEqual(destructive, ['close_guide']);
 		const prompts = await rpc('prompts/list');
 		assert.deepStrictEqual(prompts.result.prompts.map((p: { name: string }) => p.name), ['explain-function', 'guided-review', 'diff-walk']);
 		const view = await tool('get_view');
