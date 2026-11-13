@@ -8,6 +8,11 @@
 - `show_diff_walk` accepts `allHunks`. With `false`, the walk shows only the hunks of the plan, and the result gives the other hunks in `notShown`.
 - The new read tool `get_call_graph` gives the state of the scan of the call graph and the frame functions of the project. It does not start or stop a scan. The API gets `getCallGraph`.
 - API: `engineError` and the field `error` of `onDidChangeEngineState` give the reason of a failed engine, or of a stopped engine with no compile database.
+- Heat: the call graph finds the callers that it cannot see. A function whose address the code uses, an override of a virtual function of a library, and a slot that Qt can call get a reason with no points, and they are never siloed. Before, such a function could get half of its risk and history, and thus a band that was too cool. `get_heat` gives `reachUnknown` with the cause.
+- Heat: a connection of a signal of Qt of the project to a slot is a call in the call graph. The functions that emit the signal are the callers of the slot.
+- Heat: a frame path of more than 8 calls gives a reason with no points, and a notice tells it. Before, such a function had no frame path.
+- Heat: the tab Heat and `get_heat` tell the test functions that reach a function. They give no points. The new setting `dataflow.heat.testFolders` gives the folders of the tests.
+- The new read tool `get_callers` gives the callers of a function in all files of the project up to a depth, with the lines of their calls, and the frame paths of the function. The API gets `getCallers`, and the engine has the new request `dataflow/callers`.
 
 ## 0.5.0
 

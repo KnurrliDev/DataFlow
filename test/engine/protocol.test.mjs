@@ -3238,27 +3238,27 @@ test('call graph: the callers, the files of the callers and the frame paths, and
 		assert.deepEqual(state, { state: 'ready' });
 		const qt = 'override of QWidget::paintEvent';
 		const loop = 'called in the main loop of main';
-		assert.deepEqual(fns.draw, { callers: 3, transitiveCallers: 4, callerFiles: 2, frame: { reason: qt, path: ['View::paintEvent'], isInLoop: false } });
-		assert.deepEqual(fns.shade, { callers: 2, transitiveCallers: 6, callerFiles: 2, frame: { reason: qt, path: ['View::paintEvent', 'draw'], isInLoop: true } });
-		assert.deepEqual(fns['Blur::run'], { callers: 1, transitiveCallers: 2, callerFiles: 1, frame: { reason: loop, path: ['frame'], isInLoop: false } });
-		assert.deepEqual(fns['Glow::run'], { callers: 1, transitiveCallers: 2, callerFiles: 1, frame: { reason: loop, path: ['frame'], isInLoop: false } });
+		assert.deepEqual(fns.draw, { callers: 3, transitiveCallers: 4, callerFiles: 2, frame: { reason: qt, path: ['View::paintEvent'], isInLoop: false, calls: 1 } });
+		assert.deepEqual(fns.shade, { callers: 2, transitiveCallers: 6, callerFiles: 2, frame: { reason: qt, path: ['View::paintEvent', 'draw'], isInLoop: true, calls: 2 } });
+		assert.deepEqual(fns['Blur::run'], { callers: 1, transitiveCallers: 2, callerFiles: 1, frame: { reason: loop, path: ['frame'], isInLoop: false, calls: 1 } });
+		assert.deepEqual(fns['Glow::run'], { callers: 1, transitiveCallers: 2, callerFiles: 1, frame: { reason: loop, path: ['frame'], isInLoop: false, calls: 1 } });
 
 		// main calls setup before the loop, and report in a loop that empties a queue. a frame function of the setting starts
 		// a frame path
 		const [, mains] = await reach(main);
 		assert.deepEqual([mains.main, mains.setup, mains.report], [{ callers: 0, transitiveCallers: 0, callerFiles: 0 }, { callers: 1, transitiveCallers: 1, callerFiles: 0 }, { callers: 1, transitiveCallers: 1, callerFiles: 0 }]);
-		assert.deepEqual(mains.frame, { callers: 1, transitiveCallers: 1, callerFiles: 0, frame: { reason: loop, path: [], isInLoop: false } });
+		assert.deepEqual(mains.frame, { callers: 1, transitiveCallers: 1, callerFiles: 0, frame: { reason: loop, path: [], isInLoop: false, calls: 0 } });
 		const [, named] = await reach(main, ['setup']);
-		assert.deepEqual(named.setup.frame, { reason: 'frame function of the setting', path: [], isInLoop: false });
+		assert.deepEqual(named.setup.frame, { reason: 'frame function of the setting', path: [], isInLoop: false, calls: 0 });
 
 		// the instantiations of a template are one node. the functions of the header come from one of the three source
 		// files
 		const [, views] = await reach(view);
 		assert.deepEqual([views.twice, views.lonely], [{ callers: 2, transitiveCallers: 2, callerFiles: 0 }, { callers: 0, transitiveCallers: 0, callerFiles: 0 }]);
-		assert.deepEqual(views['View::paintEvent'], { callers: 0, transitiveCallers: 0, callerFiles: 0, frame: { reason: qt, path: [], isInLoop: false } });
+		assert.deepEqual(views['View::paintEvent'], { callers: 0, transitiveCallers: 0, callerFiles: 0, frame: { reason: qt, path: [], isInLoop: false, calls: 0 } });
 		const [, headers] = await reach(header);
 		assert.deepEqual(headers.helper,
-			{ callers: 2, transitiveCallers: 8, callerFiles: 3, frame: { reason: qt, path: ['View::paintEvent', 'draw', 'shade'], isInLoop: false } });
+			{ callers: 2, transitiveCallers: 8, callerFiles: 3, frame: { reason: qt, path: ['View::paintEvent', 'draw', 'shade'], isInLoop: false, calls: 3 } });
 		// no source file includes unused.h, thus its function has no callers
 		assert.deepEqual((await reach(unused))[1].unused, { callers: 0, transitiveCallers: 0, callerFiles: 0 });
 
@@ -3270,7 +3270,7 @@ test('call graph: the callers, the files of the callers and the frame paths, and
 		own.notify('textDocument/didOpen', { file: view, text: viewLines.join('\n') + '\n', version: 1 });
 		assert.equal((await scan()).scanned, 1);
 		assert.deepEqual((await reach(view))[1].lonely,
-			{ callers: 1, transitiveCallers: 1, callerFiles: 0, frame: { reason: qt, path: ['View::paintEvent'], isInLoop: false } });
+			{ callers: 1, transitiveCallers: 1, callerFiles: 0, frame: { reason: qt, path: ['View::paintEvent'], isInLoop: false, calls: 1 } });
 
 		// a change of the header on disk: the three source files that include it
 		write('include/render.h', [...renderLines, 'inline int extra() { return shade(2); }']);
@@ -3367,6 +3367,137 @@ test('call graph: one scan at a time, and a stop keeps the parsed source files f
 		assert.ok(next.result.isComplete && next.result.scanned > 0 && next.result.scanned < 7, JSON.stringify(next.result));
 		const ready = await metrics();
 		assert.deepEqual([ready.callGraph, ready.functions[0].reach], [{ state: 'ready' }, { callers: 0, transitiveCallers: 0, callerFiles: 0 }]);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('call graph: callers that the graph cannot see, qt connections, a long frame path, the tests, and the callers of a function', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-graph-unknown-'));
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		mkdirSync(path.dirname(file), { recursive: true });
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	// a small copy of the declarations of qt, out of the project folders
+	write('lib/QObject.h', [
+		'#pragma once',
+		'#define slots',
+		'#define signals public',
+		'#define emit',
+		'class QObject {',
+		' public:',
+		'  virtual ~QObject() = default;',
+		'  template <class S, class R> static bool connect(const QObject*, S, const QObject*, R) { return true; }',
+		'  virtual bool event(void* e) { return e != nullptr; }',
+		'};',
+		'class QPushButton : public QObject {',
+		' signals:',
+		'  void clicked();',
+		'};',
+	]);
+	write('include/panel.h', [
+		'#pragma once',
+		'#include <QObject.h>',
+		'class Panel : public QObject {',
+		' public:',
+		'  void build();',
+		'  void refresh();',
+		'  bool event(void* e) override;',
+		' signals:',
+		'  void changed();',
+		' public slots:',
+		'  void onChanged();',
+		'  void onClicked();',
+		'  void onTimer();',
+		'};',
+	]);
+	const chain = Array.from({ length: 10 }, (_, i) => i + 1).reverse()
+		.map((i) => (i === 10 ? 'void c10() {}' : `void c${i}() { c${i + 1}(); }`));
+	const panelLines = [
+		'#include "panel.h"',
+		'static void tick() {}',
+		'static void (*handlers[])() = {&tick};',
+		'void Panel::build() {',
+		'  QPushButton* button = nullptr;',
+		'  connect(this, &Panel::changed, this, &Panel::onChanged);',
+		'  connect(button, &QPushButton::clicked, this, &Panel::onClicked);',
+		'}',
+		'void Panel::refresh() { emit changed(); }',
+		'bool Panel::event(void* e) { return QObject::event(e); }',
+		'void Panel::onChanged() {}',
+		'void Panel::onClicked() {}',
+		'void Panel::onTimer() {}',
+		'void callback() {}',
+		'void install() { void (*f)() = callback; f(); }',
+		...chain,
+		'int main() {',
+		'  bool running = handlers[0] != nullptr;',
+		'  Panel p;',
+		'  while (running) { c1(); p.refresh(); install(); }',
+		'  return 0;',
+		'}',
+	];
+	const panel = write('src/panel.cpp', panelLines);
+	const test = write('tests/test_panel.cpp', ['#include "panel.h"', 'void test_refresh() { Panel p; p.refresh(); }']);
+	const db = path.join(dir, 'compile_commands.json');
+	const args = (file) => ['clang++', '-std=c++20', `-I${path.join(dir, 'include')}`, `-I${path.join(dir, 'lib')}`, '-c', file];
+	writeFileSync(db, JSON.stringify([panel, test].map((file) => ({ directory: dir, file, arguments: args(file) }))));
+	const roots = [path.join(dir, 'include'), path.join(dir, 'src'), path.join(dir, 'tests')];
+	const line = (text) => panelLines.findIndex((l) => l.includes(text)) + 1;
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 4, cacheSize: 4 })).error, undefined);
+		const scan = await own.send('dataflow/callGraph', { roots });
+		assert.equal(scan.error, undefined, JSON.stringify(scan.error));
+		assert.deepEqual([scan.result.units, scan.result.isComplete, scan.result.failed], [2, true, []]);
+		const res = await own.send('dataflow/metrics', { file: panel, testFolders: ['tests'] });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+		const fns = Object.fromEntries(res.result.functions.map((f) => [f.qualifiedName, f.reach]));
+		const unknown = (name) => {
+			const u = fns[name].unknownCallers;
+			return u && [u.cause, u.via, path.basename(u.file), u.line];
+		};
+
+		// the address in a table of a global variable and in a body, an override of a library, a slot of a signal of a
+		// library, and a slot with no caller
+		assert.deepEqual(unknown('tick'), ['address', 'a global variable', 'panel.cpp', line('static void (*handlers')]);
+		assert.deepEqual(unknown('callback'), ['address', 'install', 'panel.cpp', line('void install()')]);
+		assert.deepEqual(unknown('Panel::event'), ['libraryOverride', 'QObject::event', 'panel.cpp', line('bool Panel::event')]);
+		assert.deepEqual(unknown('Panel::onClicked'), ['slot', 'the signal QPushButton::clicked', 'panel.cpp', line('&QPushButton::clicked')]);
+		assert.deepEqual(unknown('Panel::onTimer'), ['slot', 'a slots section', 'panel.cpp', line('void Panel::onTimer')]);
+		// a call that the graph sees: no cause
+		assert.deepEqual([unknown('install'), unknown('c5')], [undefined, undefined]);
+
+		// a connection to a signal of the project: the signal has a node with no body, and its emitters reach the slot. the
+		// slot is on the frame path of the emitter
+		const onChanged = fns['Panel::onChanged'];
+		assert.equal(onChanged.unknownCallers, undefined);
+		assert.deepEqual([onChanged.callers, onChanged.transitiveCallers], [1, 4]);
+		assert.deepEqual(onChanged.frame, { reason: 'called in the main loop of main', path: ['Panel::refresh', 'Panel::changed'], isInLoop: false, calls: 2 });
+		const tests = (reach) => reach.tests && [reach.tests.functions, reach.tests.files.map((x) => path.basename(x))];
+		assert.deepEqual(tests(onChanged), [1, ['test_panel.cpp']]);
+
+		// the frame path goes past the limit of 8 calls
+		assert.deepEqual([fns.c9.frame.calls, fns.c9.frame.isPastLimit, fns.c10.frame.calls, fns.c10.frame.isPastLimit], [8, undefined, 9, true]);
+		assert.deepEqual(tests(fns['Panel::refresh']), [1, ['test_panel.cpp']]);
+		assert.deepEqual(tests(fns.c3), [0, []]);
+
+		// the callers of a function up to a depth, with the lines of their calls, and its frame paths
+		const callers = await own.send('dataflow/callers', { file: panel, function: 'Panel::onChanged', depth: 2 });
+		assert.equal(callers.error, undefined, JSON.stringify(callers.error));
+		const r = callers.result;
+		assert.deepEqual(r.callers.map((c) => [c.name, c.depth, c.calls, c.lines, !!c.isSignal, !!c.isConnection]), [
+			['Panel::changed', 1, 'Panel::onChanged', [line('&Panel::onChanged')], true, true],
+			['Panel::refresh', 2, 'Panel::changed', [line('void Panel::refresh')], false, false],
+		]);
+		assert.deepEqual(r.framePaths, [{ reason: 'called in the main loop of main', calls: 2, path: ['Panel::refresh', 'Panel::changed', 'Panel::onChanged'] }]);
+		assert.equal(r.callGraph.state, 'ready');
+		const deep = await own.send('dataflow/callers', { file: panel, function: 'Panel::onChanged', depth: 5 });
+		assert.deepEqual(deep.result.callers.map((c) => c.name).sort(), ['Panel::changed', 'Panel::refresh', 'main', 'test_refresh']);
 	} finally {
 		await own.close();
 		rmSync(dir, { recursive: true, force: true });

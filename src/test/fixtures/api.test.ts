@@ -43,7 +43,7 @@ suite('API for other extensions on the fixture', () => {
 		assert.throws(() => exports.getApi(2 as 1), /DataFlow has no API version 2/);
 		assert.strictEqual(api.engineState, 'ready');
 		assert.ok(api.compileDatabases.length > 0, JSON.stringify(api.compileDatabases));
-		assert.strictEqual(api.tools.length, 33);
+		assert.strictEqual(api.tools.length, 34);
 		assert.strictEqual(api.engineError, undefined);
 		const view = await api.getView();
 		assert.deepStrictEqual([view.file, view.engine], [file(), 'ready']);
@@ -152,5 +152,15 @@ suite('API for other extensions on the fixture', () => {
 		assert.deepStrictEqual(none.functions, []);
 		assert.match(none.note ?? '', /^No function has a line in the lines 1 to 1 of battery\.cpp\.$/);
 		await assert.rejects(api.getHeat({ lines: [5, 2] }), /"lines" must be two line numbers from 1/);
+
+		// the callers in the call graph. The compile database has no main.cpp, so process() has no callers and no frame path.
+		// process() calls solve_power_plan() in a lambda, and the call belongs to process()
+		const processCallers = await api.getCallers({ function: 'process' });
+		assert.deepStrictEqual([processCallers.function, processCallers.isReachComplete, processCallers.callers, processCallers.framePaths, processCallers.callGraph],
+			[PROCESS, true, [], [], undefined]);
+		const solve = await api.getCallers({ function: 'solve_power_plan' });
+		assert.deepStrictEqual(solve.callers.map((c) => [c.function, c.depth, c.calls, c.callLines, path.basename(c.file)]),
+			[[PROCESS, 1, 'electricity::power_ctrl::solve_power_plan', [lineOf('return solve_power_plan(charge);')], 'battery.cpp']]);
+		await assert.rejects(api.getCallers({ function: 'process', depth: 9 }), /"depth" must be a whole number from 1 to 6\./);
 	});
 });

@@ -81,7 +81,8 @@ The engine parses each file with the command of its compile database, with these
 | `dataflow/logic` | `file`, `function` or `line` and `col`, `lambda`, `eventFunctions`, `nullableFunctions`, `checkFunctions` | The CFG blocks, the decisions, the else-if chains, the events, the nullable pointers and the effects of the function, or of a lambda in it |
 | `dataflow/structure` | `file`, `function` or `line` and `col`, `eventFunctions`, `asyncFunctions` | The statements of the function with their lines, branches and items, and the accesses with their paths, roles and scopes |
 | `dataflow/cost` | `file`, `minCopyBytes`, `unit` | The hidden C++ of all functions of the file: copies, conversions, temporaries, destructors, lookups and more. With `unit`, a source file that includes the header `file`, the engine parses the unit. Then the templates of the header get the items of their instantiations in the unit. The reply then has the parse of the unit. |
-| `dataflow/metrics` | `file`, `frameFunctions` | The metrics of each function of the file, for the heat score: the decisions (`if`, the loops, the `case` labels, `catch`, `&&`, `\|\|` and `?:`), the deepest nesting of the decisions, the first and the last line of each loop, the lines of the body, the writes to data members, globals, static locals and data through reference or pointer parameters, the allocations and the copies in loops, `virtual` and `override`, and the file and the line of the first declaration. With a complete call graph, each function also has `reach`. `callGraph` gives the state of the call graph. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
+| `dataflow/callers` | `file`, `function` or `line` and `col`, `depth`, `frameFunctions` | The callers of a function in the call graph up to `depth` calls (1 to 6, default 3), and its frame paths. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
+| `dataflow/metrics` | `file`, `frameFunctions`, `testFolders` | The metrics of each function of the file, for the heat score: the decisions (`if`, the loops, the `case` labels, `catch`, `&&`, `\|\|` and `?:`), the deepest nesting of the decisions, the first and the last line of each loop, the lines of the body, the writes to data members, globals, static locals and data through reference or pointer parameters, the allocations and the copies in loops, `virtual` and `override`, and the file and the line of the first declaration. With a complete call graph, each function also has `reach`. `callGraph` gives the state of the call graph. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
 | `dataflow/callGraph` | `roots`, `frameFunctions` | Makes the call graph of the project current, for the heat score: the size of the graph and the frame functions. The request needs no `file`. |
 | `dataflow/slice` | `file`, and `lines` and `deleted`, or `call`; `asyncFunctions`, `confidence` | The forward slice of changed lines or of a call: the steps and the exits in each function and lambda, and the callers in the same file |
 | `dataflow/tokens` | `file`, `first`, `last`, `bracketLevelPerType` | The text and the tokens of the lines `first` to `last`. The default is all lines. With `bracketLevelPerType`, the level of a bracket counts only the brackets of its type. |
@@ -212,6 +213,15 @@ The request makes the call graph of the project current. The first request scans
 
 A node of the graph is a function definition in the project, by its USR. All instantiations of a template are one node: the pattern. An edge is a call of a function of the project, with its line and whether a loop runs it. A call in a lambda belongs to the function around the lambda. A virtual call also goes to the overrides of the called function in the project, also through other overrides. A constructor of the project is a call.
 
+Qt: a call of `QObject::connect` with a signal and a slot as pointers to members, for example `connect(a, &A::changed, b, &B::update)`, is an edge from the signal to the slot. A function as the slot also gives an edge. `qOverload`, `QOverload::of` and a cast of the pointer select the signal. Moc writes the body of a signal into a file of the build folder, which the scan skips. Thus a connected signal of the project gets a node with no body, and the calls of `emit` are edges to it. A lambda as the slot is a part of the function with the call of `connect`.
+
+The graph cannot see some callers. A node gets the first of these causes:
+
+- `libraryOverride`: the function overrides a virtual function out of the project, also through other overrides, for example `QObject::event`. An override of a frame function gets the frame path in its place.
+- `slot`: the slot of a signal out of the project, for example `QPushButton::clicked`.
+- `address`: a body, or the initializer of a global or a static variable, uses the address of the function, for example `&Dialog::accept`, or a function as a value of a `std::function`. A call and the signal and the slot of a connection are not such a use.
+- `slot`: a function in a `slots` section of Qt, with no caller in the graph. A string connection or QML can call such a slot.
+
 The frame functions run in each frame:
 
 - An override of `AActor::Tick`, `UActorComponent::TickComponent`, `UUserWidget::NativeTick`, `SWidget::OnPaint`, `FTickableGameObject::Tick`, `QWidget::paintEvent`, `QOpenGLWidget::paintGL`, `QObject::timerEvent` or `QQuickItem::updatePaintNode`, directly or through other overrides.
@@ -229,8 +239,16 @@ The reply:
 `dataflow/metrics` adds `callGraph` with `state`: `none` (no scan), `scanning`, `partial` (a first scan that stopped) or `ready`. During a scan, `done` and `total` give the progress. With a complete graph, also during an update, each function has `reach`:
 
 - `callers`: the functions that call the function directly. `transitiveCallers`: the functions that reach the function through calls, directly or through other functions. The walk up the graph stops at 1000 callers, and then `isCapped` is true. `callerFiles`: the files of the transitive callers, other than the file of the function.
-- `frame`, if the function is on a frame path: `reason`, the reason of the frame function; `path`, the functions from the frame function to the caller before the function; `isInLoop`, a caller on the frame path calls the function in a loop. A frame function has an empty `path`. A frame path follows a maximum of 8 calls.
+- `frame`, if the function is on a frame path: `reason`, the reason of the frame function; `path`, the functions from the frame function to the caller before the function; `isInLoop`, a caller on the frame path calls the function in a loop; `calls`, the number of calls from the frame function. A frame function has an empty `path`. After more than 8 calls, `isPastLimit` is true, and the heat score gives the path no points.
+- `unknownCallers`, if the graph cannot see some callers: `cause`, `via` (the function that uses the address, the overridden function, the signal, or `a slots section`), `file` and `line`.
+- `tests`, with `testFolders`: `functions`, the test functions among the transitive callers, and `files`, their first 5 files. A test function is a function in a file under one of `testFolders`. A folder with no separator is a name of a folder at any place of the path. A folder with a separator is a path, absolute or relative to `roots`.
 - `reach` is null if the graph has no node for the function, for example a function that is newer than the scan. If no source file of the scan includes the file of the function, the function has no callers.
+
+`dataflow/callers` gives `function`, the qualified name, and `callGraph`, the state. With a complete graph and a node for the function, it also gives:
+
+- `callers`: the callers in the sequence of their depth, the first 200. Each caller has `name`, `file`, `first`, `last`, `depth`, `calls` (the function that it calls on the way) and `lines` (the lines of these calls). A signal has `isSignal`, and a connection to its slot has `isConnection` with the line of the call of `connect`. After 200 callers, `isCapped` is true.
+- `framePaths`: one path from each frame function that reaches the function, a maximum of 5, with `reason`, `calls` and `path` from the frame function to the function.
+- `unknownCallers`, as in `reach`.
 
 ## The result of `dataflow/threads`
 

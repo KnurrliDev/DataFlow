@@ -554,6 +554,18 @@
           "scope": "resource",
           "markdownDescription": "More frame functions for the lens Heat, for example `Renderer::frame` or `frame`. A frame function runs in each frame, and the functions that it calls are on the frame path. Use a qualified name with `::` or the end of a qualified name. DataFlow finds the overrides of the frame functions of Unreal Engine and Qt, and the functions that a main loop calls."
         },
+        "dataflow.heat.testFolders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "test",
+            "tests"
+          ],
+          "scope": "resource",
+          "markdownDescription": "The folders of the tests for the lens Heat. The functions in these folders are test functions, and the heat tells the test functions that reach each function. A name with no `/` is a folder with this name at any place in the project, for example `tests`. A path is absolute, or relative to the project folder. The test functions give no points."
+        },
         "dataflow.ripple.asyncFunctions": {
           "type": "array",
           "items": {

@@ -2,14 +2,14 @@ import { existsSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { isInside } from '../cdb/project';
-import type { EngineClient, EngineFunction, FileResult, LogicModel, LogicOptions, StructureModel } from '../engine/client';
+import type { CallersModel, EngineClient, EngineFunction, FileResult, LogicModel, LogicOptions, StructureModel } from '../engine/client';
 import {
 	addDetail, functionLines, MAX_DETAILS, mergeComments, ModelBlockInput, ModelCommentInput, ModelDetailInput, ModelNoteInput, moveModelLayer, resolveComments,
 	resolveDetail, resolveNotes, snapBlocks, structureSummary, TextChange,
 } from '../lenses/blocks';
 import { callFunctionAt, ExternalCaller } from '../lenses/calls';
 import { findingText, LineText, toUtf16Column, toUtf8Column, variableAt } from '../lenses/flow';
-import { bandText, HeatModel } from '../lenses/heat';
+import { bandText, HeatModel, unknownCallersText } from '../lenses/heat';
 import { buildSideIncludes } from '../lenses/includes';
 import { checkChoices, logicFacts } from '../lenses/logic';
 import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../lenses/member';
@@ -67,6 +67,9 @@ export interface HostDeps {
 	definitionHeader(name: string, place?: { doc: vscode.TextDocument; pos: vscode.Position }): Promise<string | undefined>;
 	// the heat of the functions of a document. The side view does not change
 	heat(doc: vscode.TextDocument): Promise<HeatModel>;
+	// the callers of a function from the call graph of the engine, at a position with UTF-8 columns from 1. A call graph
+	// that is not complete starts its scan, as for the heat
+	callers(doc: vscode.TextDocument, at: { line: number; col: number }, depth: number): Promise<FileResult & CallersModel>;
 	// the options of Logic Map for a document: the settings of the event functions, of the functions that can give null,
 	// and of the null checks
 	logicOptions(doc: vscode.TextDocument): LogicOptions;
@@ -450,6 +453,8 @@ export class DataFlowMcpHost implements McpHost {
 			functions: functions.slice(0, MAX_ITEMS).map((h) => ({
 				name: h.qualifiedName || h.name, lines: [h.first, h.last], score: h.score, band: bandText(h.band), flames: h.flames,
 				reach: h.reach, risk: h.risk, history: h.history, ...(h.isSiloed ? { siloed: true } : {}), isReachComplete: h.isReachComplete,
+				...(h.reachUnknown ? { reachUnknown: { ...h.reachUnknown } } : {}),
+				...(h.tests ? { tests: { ...h.tests, files: [...h.tests.files] } } : {}),
 				reasons: h.reasons.map((r) => `${r.text} (+${r.points} ${r.group})`),
 				signals: h.reasons.map((r) => ({ ...r })),
 			})),
@@ -458,6 +463,36 @@ export class DataFlowMcpHost implements McpHost {
 				? { note: `No function${fn ? ` ${fn}` : ''} has a line in the lines ${lines[0]} to ${lines[1]} of ${path.basename(f)}.` } : {}),
 			...(scan ? { callGraph: scan } : {}),
 			notices: model.notices,
+		};
+	}
+
+	// The callers of a function in the call graph up to a depth, with the lines of their calls, and its frame paths. A
+	// call graph that is not complete starts its scan, as for the heat
+	async callers(file: string | undefined, fn: FunctionArg, depth: number | undefined): Promise<Api.CallersFacts> {
+		const d = depth ?? 3;
+		if (!Number.isInteger(d) || d < 1 || d > 6) {
+			throw new Error('"depth" must be a whole number from 1 to 6.');
+		}
+		const { client, doc, file: f } = await this.prepare(file);
+		const at = await this.selector(client, doc, fn);
+		const res = await this.deps.callers(doc, at, d);
+		const isReady = res.callGraph.state === 'ready';
+		const note = !isReady ? this.scanNote() ?? 'The call graph is not complete. Call get_callers again later.'
+			: !res.callers ? 'The call graph has no data for the function, for example a function that is newer than the scan. Call get_callers again after the next scan.'
+				: undefined;
+		return {
+			file: f,
+			function: res.function ?? '',
+			isReachComplete: isReady && !!res.callers,
+			callers: (res.callers ?? []).map((c) => ({
+				function: c.name, file: c.file, lines: [c.first, c.last], depth: c.depth, calls: c.calls, callLines: [...c.lines],
+				...(c.isSignal ? { signal: true } : {}), ...(c.isConnection ? { connection: true } : {}),
+			})),
+			...(res.isCapped ? { more: true } : {}),
+			framePaths: (res.framePaths ?? []).map((p) => ({ reason: p.reason, calls: p.calls, path: [...p.path] })),
+			...(res.unknownCallers ? { reachUnknown: { cause: res.unknownCallers.cause, text: unknownCallersText(res.unknownCallers) } } : {}),
+			...(note ? { callGraph: note } : {}),
+			...parseNote(res),
 		};
 	}
 

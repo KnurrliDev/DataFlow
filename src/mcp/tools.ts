@@ -50,6 +50,7 @@ export interface McpHost {
 	scanCallGraph(): Promise<Api.CallGraphFacts>;
 	stopCallGraph(): Promise<Api.StopCallGraphResult>;
 	callGraph(): Promise<Api.CallGraphFacts>;
+	callers(file: string | undefined, fn: FunctionArg, depth: number | undefined): Promise<Api.CallersFacts>;
 }
 
 export const INSTRUCTIONS = [
@@ -177,6 +178,19 @@ class Args {
 		return this.flag(key);
 	}
 
+	// a whole number, or undefined if the client gives no value. The host checks its range
+	number(key: string): number | undefined {
+		const v = this.args[key];
+		if (v === undefined || v === null) {
+			return undefined;
+		}
+		const n = typeof v === 'string' ? Number(v) : v;
+		if (typeof n !== 'number' || !Number.isInteger(n)) {
+			throw new Error(`"${key}" must be a whole number.`);
+		}
+		return n;
+	}
+
 	// true or false, or undefined if the client gives no value
 	optionalFlag(key: string): boolean | undefined {
 		return this.args[key] === undefined || this.args[key] === null ? undefined : this.flag(key);
@@ -228,6 +242,16 @@ export function createTools(host: McpHost): McpTool[] {
 		tool('get_calls', 'Get the calls of a function',
 			'The callers and the called functions of a function, with what goes in and comes out of each call: written arguments, checked or unchecked results, async calls and events. The callers in other files come from the call hierarchy of the C++ extension, with only the lines of their calls. A virtual call also gives each override of the project, with virtualOf: the function that the call names.',
 			{ file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION }, [], true, (a) => host.calls(a.text('file'), a.fn())),
+		tool('get_callers', 'Get the callers in the call graph',
+			'The callers of a function in all files of the project, from the call graph of the engine: the direct callers, their callers and so on, up to a depth, '
+			+ 'each with its file, its lines and the lines of its calls, and the frame paths of the function: the calls from a frame function, for example a main loop or a tick '
+			+ 'or paint override, to the function. A signal of Qt calls its connected slots. reachUnknown tells if the function has callers that the call graph cannot see, '
+			+ 'for example through a pointer, a library or Qt. The first call starts the scan of the call graph and does not wait: callGraph tells the progress.',
+			{
+				file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION,
+				depth: { type: 'integer', minimum: 1, maximum: 6, description: 'The callers up to this number of calls from the function. Default: 3.' },
+			},
+			[], true, (a) => host.callers(a.text('file'), a.fn(), a.number('depth'))),
 		tool('get_threads', 'Get the threads and races',
 			'The thread starts of a file, the data that two threads share, the protection of each access (lock, order, check), and a verdict for each item: race, check or safe.',
 			{ file: FILE }, [], true, (a) => host.threads(a.text('file'))),

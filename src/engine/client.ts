@@ -351,8 +351,33 @@ export interface MetricsReach {
 	isCapped?: boolean; // the walk up the graph stopped at 1000 callers
 	callerFiles: number; // the files of the transitive callers, other than the file of the function
 	// the frame path: the reason of the frame function, the functions from the frame function to the caller, and whether
-	// a caller on the frame path calls the function in a loop. A frame function has an empty path
-	frame?: { reason: string; path: string[]; isInLoop: boolean };
+	// a caller on the frame path calls the function in a loop. A frame function has an empty path. calls: the calls from
+	// the frame function. isPastLimit: more than 8 calls, so the path gives no points
+	frame?: { reason: string; path: string[]; isInLoop: boolean; calls?: number; isPastLimit?: boolean };
+	// the callers that the call graph cannot see: a use of the address of the function, a library that calls an override,
+	// or qt that calls a slot. via: the function that uses the address, the overridden function, or the signal
+	unknownCallers?: { cause: UnknownCallersCause; via: string; file: string; line: number };
+	// the test functions among the transitive callers, and their first 5 files. Only with the folders of the tests
+	tests?: { functions: number; files: string[]; isCapped?: boolean };
+}
+
+export type UnknownCallersCause = 'address' | 'libraryOverride' | 'slot';
+
+// The data of dataflow/callers: the callers of a function up to a depth, with the lines of their calls, and the frame
+// paths of the function. Only the state of the call graph if the graph is not complete
+export interface CallersModel {
+	function?: string;
+	callers?: {
+		name: string; file: string; first: number; last: number; depth: number;
+		calls: string; // the function that the caller calls on the way to the function
+		lines: number[]; // the lines of these calls, or of the call of connect for a connection
+		isSignal?: boolean; // a signal of qt with no body
+		isConnection?: boolean; // the signal runs the slot through a connection
+	}[];
+	isCapped?: boolean;
+	framePaths?: { reason: string; calls: number; path: string[] }[]; // the path from the frame function to the function
+	unknownCallers?: MetricsReach['unknownCallers'];
+	callGraph: MetricsModel['callGraph'];
 }
 
 // none: no scan. partial: a first scan that stopped. ready: a complete graph, maybe from before the last changes
@@ -830,8 +855,13 @@ export class EngineClient implements vscode.Disposable {
 
 	// The metrics of the functions of the file, for the heat score. With a complete call graph, also the reach of each
 	// function. frameFunctions: the names of more frame functions
-	metrics(file: string, frameFunctions: string[], token?: vscode.CancellationToken): Promise<FileResult & MetricsModel> {
-		return this.request('dataflow/metrics', { file, frameFunctions }, token);
+	metrics(file: string, frameFunctions: string[], testFolders: string[], token?: vscode.CancellationToken): Promise<FileResult & MetricsModel> {
+		return this.request('dataflow/metrics', { file, frameFunctions, testFolders }, token);
+	}
+
+	// The callers of a function in the call graph up to a depth from 1 to 6, and its frame paths
+	callers(file: string, fn: FunctionSelector, depth: number, frameFunctions: string[], token?: vscode.CancellationToken): Promise<FileResult & CallersModel> {
+		return this.request('dataflow/callers', { file, ...fn, depth, frameFunctions }, token);
 	}
 
 	// Makes the call graph of the project current: the first request scans all source files in the roots, a later request

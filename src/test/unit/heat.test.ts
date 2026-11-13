@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import type { MetricsFunction, ThreadsModel } from '../../engine/client';
-import { bandOf, bandText, buildHeat, changedFunctions, flamesOf, heatFact, HeatInputs, hottestIn, parseBlame } from '../../lenses/heat';
+import { bandOf, bandText, buildHeat, changedFunctions, flamesOf, heatFact, HeatInputs, hottestIn, parseBlame, unknownCallersText } from '../../lenses/heat';
 
 // The heat score: the parse of the blame of git, the points of each signal, the maximum of each group, the bands and
 // the flames
@@ -236,6 +236,42 @@ suite('Heat', () => {
 		// the function that is newer than the scan has no reach yet
 		assert.deepStrictEqual(heat.functions.map((f) => f.isReachComplete), [true, false]);
 		assert.deepStrictEqual(heat.functions.map((f) => heatFact(f).isReachComplete), [true, false]);
+	});
+
+	test('Callers that the graph cannot see stop the half points, a frame path past the limit gives no points, and the tests give a reason', () => {
+		const slot = fn('onTimer', 1, 30, {
+			decisions: 24, reach: { callers: 0, transitiveCallers: 0, callerFiles: 0, unknownCallers: { cause: 'slot', via: 'a slots section', file: FILE, line: 1 } },
+		});
+		const plain = fn('helper', 32, 60, { decisions: 24, reach: { callers: 0, transitiveCallers: 0, callerFiles: 0 } });
+		const deep = fn('leaf', 62, 63, {
+			reach: {
+				callers: 1, transitiveCallers: 11, callerFiles: 0,
+				frame: { reason: 'called in the main loop of main', path: ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8', 'c9'], isInLoop: true, calls: 9, isPastLimit: true },
+				tests: { functions: 2, files: ['/repo/tests/test_rate.cpp', '/repo/tests/test_more.cpp'] },
+			},
+		});
+		const heat = buildHeat(inputs([slot, plain, deep]));
+		const [s, p, d] = heat.functions;
+		// the same decisions: the slot is not siloed, and the plain function gets half of its risk
+		assert.deepStrictEqual([s.isSiloed, s.risk, p.isSiloed, p.risk], [false, 10, true, 5]);
+		assert.deepStrictEqual(s.reasons[0], {
+			group: 'reach', points: 0, text: 'Callers that the call graph cannot see: Qt can call it as a slot',
+			id: 'reachUnknown', value: { cause: 'slot', via: 'a slots section', file: FILE, line: 1 },
+		});
+		assert.deepStrictEqual(s.reachUnknown, { cause: 'slot', text: 'Callers that the call graph cannot see: Qt can call it as a slot' });
+		assert.strictEqual(unknownCallersText({ cause: 'address', via: 'install', file: FILE, line: 3 }),
+			'Callers that the call graph cannot see: install uses the address of the function, so a pointer or a std::function can call it');
+		assert.strictEqual(unknownCallersText({ cause: 'libraryOverride', via: 'QObject::event', file: FILE, line: 3 }),
+			'Callers that the call graph cannot see: a library can call this override of QObject::event');
+		assert.strictEqual(unknownCallersText({ cause: 'slot', via: 'the signal QPushButton::clicked', file: FILE, line: 3 }),
+			'Callers that the call graph cannot see: Qt calls it through the signal QPushButton::clicked');
+
+		// the frame path after 9 calls gives no points, also not for the loop. The callers give their points
+		assert.deepStrictEqual(d.reasons.map((r) => [r.id, r.points]), [['callers', 7], ['framePath', 0], ['tests', 0]]);
+		assert.match(d.reasons[1].text, /^On a frame path after 9 calls: c1 \(called in the main loop of main\), then 7 more, then c9, then rate::leaf\. The points stop after 8 calls\./);
+		assert.strictEqual(d.reasons[2].text, '2 test functions reach it: test_rate.cpp, test_more.cpp');
+		assert.deepStrictEqual(d.tests, { functions: 2, files: ['/repo/tests/test_rate.cpp', '/repo/tests/test_more.cpp'] });
+		assert.ok(heat.notices.some((n) => n.startsWith('1 function of the file is on a frame path after more than 8 calls.')), JSON.stringify(heat.notices));
 	});
 
 	test('The bands and the flames come from the score', () => {

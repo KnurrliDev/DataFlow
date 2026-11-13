@@ -229,6 +229,7 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`get_structure`](#get_structure) | read | The statements of a function with their lines, the branches, the data in and out, and the exits, thread starts, events and calls |
 | [`get_flow`](#get_flow) | read | The trace of a variable or a data member, without a change of the view. For a member also the threads, the locks and a verdict about races |
 | [`get_calls`](#get_calls) | read | The data of Call Hierarchy |
+| [`get_callers`](#get_callers) | read | The callers of a function in all files of the project, from the call graph, and its frame paths |
 | [`get_threads`](#get_threads) | read | The data of Threads and races |
 | [`get_hidden`](#get_hidden) | read | The data of Hidden C++ |
 | [`get_includes`](#get_includes) | read | The data of Include Hierarchy, with the translation units of the compile database that include the file |
@@ -320,6 +321,21 @@ Parameters: `file`, `function`, `line`.
 
 Example request: "Which functions call solve_power_plan(), and do they check its result?"
 
+### get_callers
+
+Gives the callers of a function in all files of the project, from the call graph of the engine. The result has the direct callers, their callers and so on, up to the depth. Each caller has its file, its lines, its depth, the function that it calls on the way, and the lines of these calls. A signal of Qt of the project calls its connected slots: such a caller has `signal`, and its call has `connection`, with the line of the call of `connect`.
+
+The result also gives the frame paths of the function: from each frame function that reaches it, the functions on the path to the function, a maximum of 5 paths. `reachUnknown` tells if the function has callers that the call graph cannot see, for example through a pointer, a library or Qt. `more` tells that the result stopped after 200 callers.
+
+The first call starts the scan of the call graph, as for `get_heat`, and does not wait for it. Until the scan is complete, `callers` is empty, `isReachComplete` is false, and `callGraph` tells the progress.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `file`, `function`, `line` | | See the common parameters. |
+| `depth` | integer | The callers up to this number of calls from the function, from 1 to 6. The default is 3. |
+
+Example request: "Which code paths reach clamp_rate(), and does a frame function reach it?"
+
 ### get_threads
 
 Gives the thread starts of a file, the data that two threads share, and the protection of each access: a lock, an order or a check. Each item has a verdict: race, check or safe.
@@ -380,11 +396,15 @@ The callers and the frame path come from the call graph of the project. The firs
 
 `isReachComplete` is false for a function until the call graph gives its reach. Then the score can be too low or too high, because the half points of a siloed function also do not apply. The result also gives `isReachComplete` for the file.
 
+`reachUnknown` tells that the function has callers that the call graph cannot see, with the cause: `address` (the code uses the address of the function), `libraryOverride` (a library can call the override) or `slot` (Qt can call the slot). Such a function is never siloed. `tests` gives the number of the test functions that reach the function, and their first 5 files. A frame path of more than 8 calls gives no points, and a notice tells it.
+
 `signals` gives each reason of a function with its `id`, its `group`, its `points`, its `text` and its measure (`value`):
 
 | `id` | `value` |
 | --- | --- |
-| `framePath` | The reason of the frame function, the functions from the frame function to the caller before this function (`path`), the number of calls (`calls`), and `isInLoop` |
+| `framePath` | The reason of the frame function, the functions from the frame function to the caller before this function (`path`), the number of calls (`calls`), and `isInLoop`. `isPastLimit` is true after more than 8 calls: then the signal has 0 points. |
+| `reachUnknown` | The cause, the function that uses the address or the overridden function or the signal (`via`), and the place (`file`, `line`). 0 points. |
+| `tests` | The number of the test functions that reach the function, their first 5 files, and `isCapped`. 0 points. |
 | `frameLoop` | `true`: a caller on the frame path calls the function in a loop |
 | `callers` | The direct callers, the transitive callers, and `isCapped` |
 | `callerFiles` | The number of the other files of the callers |

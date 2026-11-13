@@ -1644,6 +1644,8 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 
 	// The names of more frame functions for the frame paths of the heat
 	const frameFunctionsOf = (uri: vscode.Uri | undefined): string[] => settingOf<string[]>('dataflow.heat', 'frameFunctions', uri, []);
+	// The folders of the tests, for the test functions that reach a function
+	const testFoldersOf = (uri: vscode.Uri | undefined): string[] => settingOf<string[]>('dataflow.heat', 'testFolders', uri, ['test', 'tests']);
 
 	// Scans the call graph of the project in the engine, or the source files that changed after the last scan. The scan
 	// does not block: the side view shows its progress, and the heat of the file of the lens comes again at its end
@@ -1719,7 +1721,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		const file = doc.uri.fsPath;
 		const roots = projectRoots();
 		const [metrics, threadsModel, blame] = await Promise.all([
-			client.metrics(file, frameFunctionsOf(doc.uri), token),
+			client.metrics(file, frameFunctionsOf(doc.uri), testFoldersOf(doc.uri), token),
 			client.threads(file, { asyncFunctions: asyncFunctionsOf(doc.uri), roots }, token).catch(() => undefined),
 			blameOf(doc).catch(() => undefined),
 		]);
@@ -2810,6 +2812,16 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 				return Promise.reject(new Error('The DataFlow engine is not ready.'));
 			}
 			return computeHeat(client, doc);
+		},
+		callers: async (doc, at, depth) => {
+			const client = engine;
+			if (!client || client.currentState !== 'ready') {
+				throw new Error('The DataFlow engine is not ready.');
+			}
+			flushChange(doc);
+			const res = await client.callers(doc.uri.fsPath, at, depth, frameFunctionsOf(doc.uri));
+			requestCallGraph(client, res.callGraph.state, doc.uri);
+			return res;
 		},
 		logicOptions: (doc) => logicOptions(doc),
 		showLogicPath: (doc, model, chosen, line) => {

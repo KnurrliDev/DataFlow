@@ -1,5 +1,5 @@
 import type * as Api from '../../api/dataflow-api';
-import type { MetricsFunction, MetricsModel, MetricsReach, ThreadsModel } from '../engine/client';
+import type { MetricsFunction, MetricsModel, MetricsReach, ThreadsModel, UnknownCallersCause } from '../engine/client';
 
 // The heat score of the functions of a file: how much a change of a function can break. The score adds points of
 // reach, risk and history, and each point has a reason. docs/heat-score-strategy.md gives the points. This module does
@@ -26,6 +26,8 @@ export interface HeatFunction {
 	history: number;
 	isSiloed: boolean; // the reach is less than 10 with the callers, thus the risk and the history count half
 	isReachComplete: boolean; // the call graph gives the reach of the function: its callers and its frame path
+	reachUnknown?: { cause: UnknownCallersCause; text: string }; // callers that the call graph cannot see
+	tests?: { functions: number; files: string[]; isCapped?: boolean }; // the test functions that reach the function
 	reasons: HeatReason[]; // the reasons with points, the largest first in each group
 }
 
@@ -128,21 +130,52 @@ function framePathText(frame: NonNullable<MetricsReach['frame']>, name: string):
 	return [`${first} (${frame.reason})`, ...tail].join(', then ');
 }
 
+// The frame path gives points only up to this number of calls from the frame function, as the engine tells it
+export const FRAME_LIMIT = 8;
+
+// The text of callers that the call graph cannot see, from the cause of the engine
+export function unknownCallersText(u: NonNullable<MetricsReach['unknownCallers']>): string {
+	const why = u.cause === 'address' ? `${u.via} uses the address of the function, so a pointer or a std::function can call it`
+		: u.cause === 'libraryOverride' ? `a library can call this override of ${u.via}`
+			: u.via.startsWith('the signal ') ? `Qt calls it through ${u.via}` : 'Qt can call it as a slot';
+	return `Callers that the call graph cannot see: ${why}`;
+}
+
 // The reach points: the frame path, the callers and their files from the call graph of the engine, the include reach of
-// the declaration, and an interface
+// the declaration, and an interface. Callers that the graph cannot see, a frame path past the limit and the tests give
+// reasons with no points
 function reachReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 	const out: HeatReason[] = [];
 	const graph = fn.reach;
 	if (graph?.frame) {
 		const frame = graph.frame;
-		out.push({
-			group: 'reach', points: 40,
-			text: frame.path.length === 0 ? `Runs in each frame: ${frame.reason}` : `On the frame path: ${framePathText(frame, fn.qualifiedName)}`,
-			id: 'framePath', value: { reason: frame.reason, path: [...frame.path], calls: frame.path.length, isInLoop: frame.isInLoop },
-		});
-		if (frame.isInLoop) {
-			out.push({ group: 'reach', points: 10, text: 'A caller on the frame path calls it in a loop', id: 'frameLoop', value: true });
+		const calls = frame.calls ?? frame.path.length;
+		const value = { reason: frame.reason, path: [...frame.path], calls, isInLoop: frame.isInLoop, ...(frame.isPastLimit ? { isPastLimit: true } : {}) };
+		if (frame.isPastLimit) {
+			out.push({
+				group: 'reach', points: 0, id: 'framePath', value,
+				text: `On a frame path after ${calls} calls: ${framePathText(frame, fn.qualifiedName)}. The points stop after ${FRAME_LIMIT} calls. `
+					+ 'Add a function of the path to dataflow.heat.frameFunctions',
+			});
+		} else {
+			out.push({
+				group: 'reach', points: 40, id: 'framePath', value,
+				text: frame.path.length === 0 ? `Runs in each frame: ${frame.reason}` : `On the frame path: ${framePathText(frame, fn.qualifiedName)}`,
+			});
+			if (frame.isInLoop) {
+				out.push({ group: 'reach', points: 10, text: 'A caller on the frame path calls it in a loop', id: 'frameLoop', value: true });
+			}
 		}
+	}
+	if (graph?.unknownCallers) {
+		out.push({ group: 'reach', points: 0, text: unknownCallersText(graph.unknownCallers), id: 'reachUnknown', value: { ...graph.unknownCallers } });
+	}
+	if (graph?.tests && graph.tests.functions > 0) {
+		const t = graph.tests;
+		out.push({
+			group: 'reach', points: 0, id: 'tests', value: { functions: t.functions, files: [...t.files], isCapped: !!t.isCapped },
+			text: `${t.functions}${t.isCapped ? ' or more' : ''} ${t.functions === 1 ? 'test function reaches' : 'test functions reach'} it: ${namesText(t.files.map(baseName))}`,
+		});
 	}
 	// the transitive callers show how much code depends on the function
 	if (graph && graph.transitiveCallers > 0) {
@@ -295,8 +328,8 @@ export function buildHeat(inputs: HeatInputs): HeatModel {
 		const risk = riskReasons(fn, inputs).sort(byPoints);
 		const history = historyReasons(fn, inputs).sort(byPoints);
 		const reachPoints = Math.min(MAX_REACH, sum(reach));
-		// only the callers show that a function is siloed
-		const isSiloed = !!fn.reach && reachPoints < SILOED_REACH;
+		// only the callers show that a function is siloed. With callers that the graph cannot see, it is not
+		const isSiloed = !!fn.reach && !fn.reach.unknownCallers && reachPoints < SILOED_REACH;
 		const factor = isSiloed ? 0.5 : 1;
 		const riskPoints = Math.floor(Math.min(MAX_RISK, sum(risk)) * factor);
 		const historyPoints = Math.floor(Math.min(MAX_HISTORY, sum(history)) * factor);
@@ -315,6 +348,8 @@ export function buildHeat(inputs: HeatInputs): HeatModel {
 			history: historyPoints,
 			isSiloed,
 			isReachComplete: !!fn.reach,
+			...(fn.reach?.unknownCallers ? { reachUnknown: { cause: fn.reach.unknownCallers.cause, text: unknownCallersText(fn.reach.unknownCallers) } } : {}),
+			...(fn.reach?.tests ? { tests: { ...fn.reach.tests, files: [...fn.reach.tests.files] } } : {}),
 			reasons: [...reach, ...risk, ...history],
 		};
 	});
@@ -329,6 +364,11 @@ export function buildHeat(inputs: HeatInputs): HeatModel {
 			: 'The call graph is not complete. The reach has no callers and no frame path.');
 	} else if (missing > 0) {
 		notices.push(`The call graph has no data for ${plural(missing, 'function', 'functions')} of the file, for example a function that is newer than the scan. The reach of ${missing === 1 ? 'this function' : 'these functions'} has no callers.`);
+	}
+	const pastLimit = inputs.functions.filter((f) => f.reach?.frame?.isPastLimit).length;
+	if (pastLimit > 0) {
+		notices.push(`${plural(pastLimit, 'function of the file is', 'functions of the file are')} on a frame path after more than ${FRAME_LIMIT} calls. `
+			+ 'Such a path gives no points. To give it points, add a function of the path to dataflow.heat.frameFunctions.');
 	}
 	if (!inputs.blame) {
 		notices.push('No history: the file is not in a git repository, or git cannot blame it.');

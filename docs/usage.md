@@ -128,7 +128,7 @@ DataFlow only reads the project. It does not run CMake or qmake. The C/C++ exten
 
 A review of the project uses its git repository. The git extension of VS Code then shows the repository in the Source Control view.
 
-VS Code does not read the `.vscode/settings.json` file of the project, because its folder is not open. Thus DataFlow reads the settings of Logic Map, Flow Lens, Change Ripple, Hidden C++ and Heat from this file. Examples are `dataflow.logic.eventFunctions`, `dataflow.ripple.baseRef` and `dataflow.heat.frameFunctions`. A setting of this file has priority over your user setting, as a setting of an open folder has. A change of the file applies immediately. The other DataFlow settings of the file do not apply, for example the settings of the engine.
+VS Code does not read the `.vscode/settings.json` file of the project, because its folder is not open. Thus DataFlow reads the settings of Logic Map, Flow Lens, Change Ripple, Hidden C++ and Heat from this file. Examples are `dataflow.logic.eventFunctions`, `dataflow.ripple.baseRef`, `dataflow.heat.frameFunctions` and `dataflow.heat.testFolders`. A setting of this file has priority over your user setting, as a setting of an open folder has. A change of the file applies immediately. The other DataFlow settings of the file do not apply, for example the settings of the engine.
 
 ### `.inc` files
 
@@ -466,7 +466,17 @@ A function on the frame path runs in each frame. It gets 40 points, and 10 more 
 - A function that a main loop calls. A main loop is a loop with no fixed number of iterations in `main`. Examples are `while (!window.should_close())` and `for (;;)`. If `main` has no main loop, DataFlow looks in the functions that `main` calls. A loop with a counter, for example `for (int i = 0; i < 100; ++i)`, is not a main loop. A loop that empties a container, for example `while (!errors.empty())`, is also not a main loop.
 - A function of the setting `dataflow.heat.frameFunctions`, for example `Renderer::frame`. A name is a qualified name, or the end of a qualified name after `::`.
 
-The frame path follows a maximum of 8 calls from a frame function. To see the frame functions of the project, open **Call graph** at the end of the tab **Heat**. To show a frame function in the code, click it.
+Only a frame path of 8 calls or less from a frame function gives points. A longer frame path gives a reason with no points, and a notice tells the number of such functions in the file. To give such a function its points, add a function of its path to `dataflow.heat.frameFunctions`. To see the frame functions of the project, open **Call graph** at the end of the tab **Heat**. To show a frame function in the code, click it.
+
+The call graph cannot see some callers. Such a function gets a reason with no points, and it is never siloed: its risk and its history count in full. The causes are:
+
+- The code uses the address of the function, for example `&Dialog::accept`, a `std::function` with the function, or a table of handlers in a global variable. A call through the pointer is not in the call graph.
+- The function overrides a virtual function of a library, for example `QWidget::mousePressEvent`. The library calls the override. An override of a frame function, for example `QWidget::paintEvent`, gets the frame path in its place.
+- Qt calls the function as a slot. A slot of a signal of a library, for example `QPushButton::clicked`, gets the name of the signal. A function in a `slots` section with no caller in the call graph also gets this reason, because a string connection or QML can call it.
+
+A connection of a signal of the project to a slot, for example `connect(this, &Panel::changed, this, &Panel::onChanged)`, is a call in the call graph: the functions that emit the signal are the callers of the slot. A lambda as the slot is a part of the function with the connection.
+
+The functions in the folders of the tests are test functions. The tab **Heat** tells the test functions that reach a function, with their files. They give no points. The setting `dataflow.heat.testFolders` gives the folders of the tests. The default is the folders with the name `test` or `tests` at any place in the project.
 
 ## Change Ripple
 
@@ -587,6 +597,7 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | `dataflow.cost.categories` | all categories | The categories of Hidden C++ that show: `copy`, `move`, `conversion`, `lifetime`, `destructor`, `allocation`, `lookup` and `state`. The category `lifetime` contains the temporaries and the variables that hide a variable of an outer scope. |
 | `dataflow.cost.minCopyBytes` | `16` | A copy of a trivially copyable type of this size in bytes or less does not show in Hidden C++. |
 | `dataflow.heat.frameFunctions` | `[]` | More frame functions for Heat, for example `Renderer::frame` or `frame`. A frame function runs in each frame, and the functions that it calls are on the frame path. A name is a qualified name, or the end of a qualified name after `::`. See [The call graph](#the-call-graph). |
+| `dataflow.heat.testFolders` | `["test", "tests"]` | The folders of the tests for Heat. A name with no `/` is a folder with this name at any place in the project. A path is absolute, or relative to the project folder. Heat tells the test functions that reach a function. See [The call graph](#the-call-graph). |
 | `dataflow.ripple.asyncFunctions` | `std::async`, `QtConcurrent::run`, `tf::Executor::async`, `Async`, `AsyncTask`, `AsyncThread`, `AsyncPool`, `UE::Tasks::Launch` | Functions that run a callable on a different thread and return its result. Change Ripple continues with the result of a call of one of these functions, and marks the step as async. Flow Lens shows the callable of a data member trace on a different thread. Call Hierarchy shows the calls in the callable as calls on a different thread. Threads and races shows the callable as a worker thread. A name with `::` is a qualified name. |
 | `dataflow.ripple.baseRef` | empty | The target branch of Change Ripple, if you did not select one with **Target** in the Change Ripple bar. Change Ripple compares the files with the merge base of `HEAD` and this ref. If the ref starts with `origin/` and does not exist, Change Ripple uses the local branch. If the ref is empty or does not exist, Change Ripple uses the default branch of the remote, then `origin/main`, `main`, `origin/master` or `master`. |
 | `dataflow.ripple.maxDepth` | `2` | The number of caller levels that Change Ripple analyzes after a return value, from 0 to 5. |

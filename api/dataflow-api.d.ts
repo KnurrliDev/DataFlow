@@ -64,6 +64,7 @@ export interface DataFlowApi {
 	getOutline(args: OutlineArgs): Promise<OutlineFacts>; // get_outline
 	getHeat(args?: HeatArgs): Promise<HeatFacts>; // get_heat
 	getCallGraph(): Promise<CallGraphFacts>; // get_call_graph
+	getCallers(args?: CallersArgs): Promise<CallersFacts>; // get_callers
 	getLogic(args?: LogicArgs): Promise<LogicFacts>; // get_logic
 	getRipple(): Promise<RippleFacts>; // get_ripple
 	getReview(args: ReviewArgs): Promise<ReviewFacts>; // get_review
@@ -147,6 +148,11 @@ export interface OutlineArgs extends FileArgs {
 export interface HeatArgs extends FileArgs {
 	function?: string;
 	lines?: [number, number];
+}
+
+// The callers up to depth calls from the function: 1 to 6, default 3
+export interface CallersArgs extends FunctionArgs {
+	depth?: number;
 }
 
 // The choices of the path: the key of a decision from getLogic, and one of its options, for example
@@ -427,11 +433,21 @@ export interface OutlineFacts extends ParseNote {
 
 export type HeatBand = 'cool' | 'warm' | 'hot' | 'very hot';
 
+// address: the code uses the address of the function, so a pointer or a std::function can call it. libraryOverride: the
+// function overrides a virtual function of a library, and the library can call it. slot: qt can call the slot, for
+// example through a signal of a library
+export type UnknownCallersCause = 'address' | 'libraryOverride' | 'slot';
+
 // A signal of the heat: one reason of the score, with its kind (id) and its measure (value)
 export type HeatSignal = { group: 'reach' | 'risk' | 'history'; points: number; text: string } & (
 	// the function runs in each frame: the frame function, the functions from it to the caller before this function,
-	// and the number of calls from the frame function
-	| { id: 'framePath'; value: { reason: string; path: string[]; calls: number; isInLoop: boolean } }
+	// and the number of calls from the frame function. isPastLimit: more than 8 calls, so the path gives no points
+	| { id: 'framePath'; value: { reason: string; path: string[]; calls: number; isInLoop: boolean; isPastLimit?: boolean } }
+	// callers that the call graph cannot see: a use of the address, a library that calls an override, or qt that calls a
+	// slot. 0 points, and the function is never siloed
+	| { id: 'reachUnknown'; value: { cause: UnknownCallersCause; via: string; file: string; line: number } }
+	// the test functions that reach the function, and their first 5 files. 0 points
+	| { id: 'tests'; value: { functions: number; files: string[]; isCapped: boolean } }
 	| { id: 'frameLoop'; value: true } // a caller on the frame path calls the function in a loop
 	| { id: 'callers'; value: { direct: number; transitive: number; isCapped: boolean } }
 	| { id: 'callerFiles'; value: number }
@@ -460,6 +476,9 @@ export interface HeatFacts {
 		// false until the scan of the call graph is complete: the reach has no callers and no frame path. The score can
 		// then be too low, or too high, because the half points of a siloed function also do not apply
 		isReachComplete: boolean;
+		// callers that the call graph cannot see. The reach can be larger than the score tells
+		reachUnknown?: { cause: UnknownCallersCause; text: string };
+		tests?: { functions: number; files: string[]; isCapped?: boolean }; // the test functions that reach the function
 		reasons: string[];
 		signals: HeatSignal[];
 	}[];
@@ -467,6 +486,26 @@ export interface HeatFacts {
 	note?: string; // for example: no function has a line in the lines
 	callGraph?: string; // the state of the scan of the call graph
 	notices: string[];
+}
+
+export interface CallersFacts extends ParseNote {
+	file: string;
+	function: string;
+	isReachComplete: boolean; // false until the scan of the call graph is complete. Then callers is empty
+	callers: {
+		function: string;
+		file: string;
+		lines: [number, number]; // the lines of the caller
+		depth: number; // 1: a direct caller, 2: a caller of a caller
+		calls: string; // the function that the caller calls on the way
+		callLines: number[]; // the lines of these calls, or of the call of connect for a connection of qt
+		signal?: boolean; // a signal of qt of the project, with no body
+		connection?: boolean; // the signal calls the slot through a connection of qt
+	}[];
+	more?: boolean; // the result stops after 200 callers
+	framePaths: { reason: string; calls: number; path: string[] }[]; // from the frame function to the function
+	reachUnknown?: { cause: UnknownCallersCause; text: string };
+	callGraph?: string; // the state of the scan of the call graph
 }
 
 export interface LogicDecision {

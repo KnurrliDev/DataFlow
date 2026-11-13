@@ -763,20 +763,48 @@ namespace DataFlow {
                                  return out;
                                });
     // the metrics of the functions of the file for the heat score: decisions, depth, loops, writes and costs in loops.
-    // with a complete call graph, also the reach of each function. frameFunctions: the frame functions of the setting
+    // with a complete call graph, also the reach of each function. frameFunctions: the frame functions of the setting.
+    // testFolders: the folders of the tests, for the test functions among the callers
     if (_method == "dataflow/metrics")
       return post_file_request(_srv, *_id, *file,
-                               [&srv = _srv, names = Detail::get_strings(&params, "frameFunctions")](
+                               [&srv = _srv, names = Detail::get_strings(&params, "frameFunctions"),
+                                testFolders = Detail::get_strings(&params, "testFolders")](
                                    clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
                                  const std::vector<const clang::FunctionDecl*> fns = main_file_functions(_ast);
                                  const std::vector<FunctionMetrics> metrics =
                                      build_metrics(fns, main_file_instantiations(_ast), _ast.getASTContext());
                                  JsonObject out               = metrics_to_json(metrics, _ast.getSourceManager());
                                  const Detail::GraphView view = Detail::graph_view(srv, names);
-                                 if (JsonArray* list = out.getArray("functions"); list && view.graph_)
+                                 if (JsonArray* list = out.getArray("functions"); list && view.graph_) {
+                                   const std::vector<char> tests = testFolders.empty()
+                                                                       ? std::vector<char>()
+                                                                       : test_nodes(*view.graph_, testFolders);
                                    for (size_t i = 0; i < metrics.size() && i < list->size(); ++i)
                                      if (JsonObject* o = (*list)[i].getAsObject())
-                                       (*o)["reach"] = reach_to_json(*view.graph_, *view.paths_, *metrics[i].fn_);
+                                       (*o)["reach"] =
+                                           reach_to_json(*view.graph_, *view.paths_, *metrics[i].fn_, tests);
+                                 }
+                                 out["callGraph"] = JsonObject(view.state_);
+                                 return out;
+                               });
+    // the callers of a function in the call graph up to a depth, with the lines of their calls, and its frame paths.
+    // params: function, or line and col; depth (default 3, maximum 6); frameFunctions
+    if (_method == "dataflow/callers")
+      return post_file_request(_srv, *_id, *file,
+                               [&srv = _srv, params, names = Detail::get_strings(&params, "frameFunctions")](
+                                   clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
+                                 const auto fn = resolve_function(_ast, &params);
+                                 if (!fn) return std::unexpected(fn.error());
+                                 const auto depth =
+                                     uint32_t(std::clamp<int64_t>(params.getInteger("depth").value_or(3), 1, 6));
+                                 const Detail::GraphView view = Detail::graph_view(srv, names);
+                                 JsonObject out;
+                                 if (view.graph_) {
+                                   Json callers = callers_to_json(*view.graph_, *view.paths_, **fn, depth, 200);
+                                   if (const JsonObject* o = callers.getAsObject()) out = *o;
+                                 }
+                                 // with no complete graph, or with no node for the function: its name and the state
+                                 if (!out.get("function")) out["function"] = (*fn)->getQualifiedNameAsString();
                                  out["callGraph"] = JsonObject(view.state_);
                                  return out;
                                });
