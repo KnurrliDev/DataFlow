@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { readFileSync, rmSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 import type { SideGuide } from '../../side/protocol';
 import { activateDataFlow, waitFor } from './helpers';
 
@@ -16,7 +16,7 @@ suite('Diff walk', () => {
 	const lineOf = (text: string) => readFileSync(source(), 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
 	const isFile = (a: string | undefined, b: string) => a?.toLowerCase() === b.toLowerCase();
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	suiteSetup(async function () {
 		this.timeout(120000);
 		api = await activateDataFlow(source());

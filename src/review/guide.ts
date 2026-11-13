@@ -1,3 +1,4 @@
+import type * as Api from '../../api/dataflow-api';
 import * as path from 'path';
 import type { TextChange } from '../lenses/blocks';
 import { bandText, changedFunctions, HeatChange, heatFact, HeatModel, hottestChanges, MAX_HOT_CHANGES } from '../lenses/heat';
@@ -72,10 +73,10 @@ export function diffText(line: DiffLine): string {
 // lines, and the diff of each changed file against the target branch. The paths are relative to the root. With the heat
 // of the changed files, a changed file has the heat of its changed functions, and hottestChanges gives the changed
 // functions of all files, the hottest first. The model reads the files with the other tools
-export function reviewFacts(input: ReviewFilesInput, heat?: ReadonlyMap<string, HeatModel>): object {
+export function reviewFacts(input: ReviewFilesInput, heat?: ReadonlyMap<string, HeatModel>): Omit<Api.ReviewFacts, 'callGraph' | 'noHeat'> {
 	const rel = (file: string) => path.relative(input.root, file).replace(/\\/g, '/');
 	const changes: HeatChange[] = [];
-	const files = input.files.slice(0, MAX_REVIEW_FILES).map((f) => {
+	const files = input.files.slice(0, MAX_REVIEW_FILES).map((f): Api.ReviewFacts['files'][number] => {
 		if (f.hunks.length === 0) {
 			return { file: rel(f.file), lines: f.lineCount, isChanged: false };
 		}
@@ -396,7 +397,7 @@ export function guideProgress(guide: SideGuide): string {
 }
 
 // The guide for the model in get_view: the step that the user looks at, and the marks of the user
-export function guideFacts(guide: SideGuide): object {
+export function guideFacts(guide: SideGuide): Api.GuideFacts {
 	return {
 		...(guide.kind === 'diff' ? { kind: 'diff walk', base: guide.base } : {}),
 		title: guide.title,

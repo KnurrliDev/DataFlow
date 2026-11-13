@@ -1,3 +1,4 @@
+import type * as Api from '../../api/dataflow-api';
 import type { StructureAccess, StructureBranch, StructureModel, StructureStatement } from '../engine/client';
 import { CodePlace, findCode, textBetween } from '../side/details';
 import { functionTitle, withBrackets } from '../side/names';
@@ -666,7 +667,7 @@ function short(list: string[], max = 12): string[] {
 
 // The statements of the function for the model, with the data of each statement. Lists with no items are not in the
 // output, to keep it short. Statements deeper than the third level show only their count.
-export function structureSummary(model: StructureModel): object {
+export function structureSummary(model: StructureModel): Omit<Api.StructureFacts, 'file' | 'parseErrors'> {
 	const itemTexts = (s: StructureStatement | { first: number; last: number }) => {
 		const items = itemsOf(model.statements, s.first, s.last);
 		const of = (kind: SideModelExtra['kind']) => items.filter((i) => i.kind === kind).map((i) => `${i.text} on ${i.line}`);
@@ -683,7 +684,7 @@ export function structureSummary(model: StructureModel): object {
 		const d = blockData(model, first, last);
 		return { ...(d.ins.length ? { in: short(d.ins) } : {}), ...(d.outs.length ? { out: short(d.outs) } : {}) };
 	};
-	const statement = (s: StructureStatement, depth: number): object => {
+	const statement = (s: StructureStatement, depth: number): Api.StatementFacts => {
 		const nested = (list: StructureStatement[]) => (depth < 2 ? list.map((x) => statement(x, depth + 1)) : `${list.length} statements`);
 		return {
 			lines: [s.first, s.last],

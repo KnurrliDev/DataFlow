@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { readFileSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 import { LEXICAL_KEYS, semanticStyleIndex, SEMANTIC_TYPES } from '../../side/model';
 import { activateDataFlow, waitFor } from './helpers';
 
@@ -15,7 +15,7 @@ suite('S1: side view', () => {
 	const lineOf = (text: string) => readFileSync(file(), 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
 	const firstLine = (editor: vscode.TextEditor) => editor.visibleRanges[0].start.line + 1;
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	let editor: vscode.TextEditor;
 	suiteSetup(async function () {
 		this.timeout(120000);
@@ -154,7 +154,7 @@ suite('S2: Flow Lens in the side view', () => {
 	const file = () => path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'src', 'battery.cpp');
 	const lineOf = (text: string) => readFileSync(file(), 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	let editor: vscode.TextEditor;
 	suiteSetup(async function () {
 		this.timeout(120000);
@@ -316,7 +316,7 @@ suite('S3: Logic Map in the side view', () => {
 	const file = () => path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'src', 'battery.cpp');
 	const lineOf = (text: string) => readFileSync(file(), 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	// the decision steps of the path. A decision that the path does not get to has no step
 	const decisions = () => api.side.logic!.steps.filter((s) => s.kind === 'decision');
 	const keyOf = (prefix: string) => {
@@ -472,7 +472,7 @@ suite('S4: Hidden C++ in the side view', () => {
 	const lines = () => readFileSync(file(), 'utf8').split(/\r?\n/);
 	const lineOf = (text: string) => lines().findIndex((l) => l.includes(text)) + 1;
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	const markOf = (line: number, category: string, text: RegExp) =>
 		api.side.cost!.marks.find((m) => m.line === line && m.category === category && text.test(m.text));
 	const textOf = (m: { line: number; start: number; end: number }) => lines()[m.line - 1].slice(m.start, m.end);
@@ -571,7 +571,7 @@ suite('Include Hierarchy in the side view', () => {
 	const file = () => path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'src', 'battery.cpp');
 	const lineOf = (text: string) => readFileSync(file(), 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	suiteSetup(async function () {
 		this.timeout(120000);
 		api = await activateDataFlow(file());
@@ -670,7 +670,7 @@ suite('Call Hierarchy in the side view', () => {
 	const file = () => path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'src', 'battery.cpp');
 	const lineOf = (text: string) => readFileSync(file(), 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	let editor: vscode.TextEditor;
 	const focusName = () => api.side.calls?.functions[api.side.calls.focus]?.label;
 	suiteSetup(async function () {
@@ -871,7 +871,7 @@ suite('Flow Lens for a data member in the other source files of its class', () =
 	const state = () => path.join(root(), 'src', 'worker_pool_state.cpp');
 	const lineOf = (file: string, text: string) => readFileSync(file, 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	suiteSetup(async function () {
 		this.timeout(120000);
 		api = await activateDataFlow(source());
@@ -930,7 +930,7 @@ suite('Threads and races in the side view', () => {
 	const file = () => path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'src', 'battery.cpp');
 	const lineOf = (text: string) => readFileSync(file(), 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	suiteSetup(async function () {
 		this.timeout(120000);
 		api = await activateDataFlow(file());
@@ -1003,7 +1003,7 @@ suite('The side view with no text editor', () => {
 	const key = (f: string) => path.normalize(f).toLowerCase();
 	const codeEditors = () => vscode.window.visibleTextEditors.filter((e) => e.document.languageId === 'cpp').map((e) => e.document.uri.fsPath);
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	let cover: vscode.WebviewPanel | undefined;
 	const focusName = () => api.side.calls?.functions[api.side.calls.focus]?.label;
 	suiteSetup(async function () {
@@ -1133,7 +1133,7 @@ suite('Go to definition in the side view', () => {
 	const key = (f: string) => path.normalize(f).toLowerCase();
 	const sideFile = () => key(api.side.file ?? '');
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	let editor: vscode.TextEditor;
 	let start: vscode.Position;
 	suiteSetup(async function () {

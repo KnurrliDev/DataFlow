@@ -400,6 +400,16 @@ export class SideViewController implements vscode.Disposable {
 		return vscode.window.visibleTextEditors.some((e) => isCpp(e.document));
 	}
 
+	// Moves the cursor to a place for a tool of the model or for an extension, and shows the place: in the text editor
+	// beside the side view and in the side view, or with no C++ text editor, in the side view only. The lenses follow the
+	// cursor, and the focus stays. Lines start at 1, the column is a column of VS Code
+	async goTo(file: string, line: number, col = 0): Promise<void> {
+		if (!this.panel) {
+			this.open();
+		}
+		await this.openPlace(file, line, col);
+	}
+
 	// Shows the list of "Show Calls" in the side view, or updates it with the calls in other files. null closes it
 	showCallList(list: SideCallList | null): void {
 		this.lastCallList = list;

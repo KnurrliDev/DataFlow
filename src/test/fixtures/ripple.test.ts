@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { readFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 import type { RippleModel } from '../../review/ripple';
 import { activateDataFlow, waitFor } from './helpers';
 
@@ -18,7 +18,7 @@ suite('P5 acceptance scenario 4: Change Ripple', () => {
 	const reachedLines = (model: RippleModel, file: string) => new Set(model.changes.flatMap((c) =>
 		c.bodies.filter((b) => isFile(b.file, file)).flatMap((b) => b.body.steps.flatMap((s) => s.lines))));
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	suiteSetup(async function () {
 		this.timeout(120000);
 		api = await activateDataFlow(source());

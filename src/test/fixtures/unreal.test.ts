@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { findEngine, findUnrealProject, launcherInstalls, readRegistry, unrealDbPath } from '../../cdb/unreal';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 import { waitFor } from './helpers';
 
 // An Unreal project with no compile database at the start. The command "Make Unreal Compile Database" lets
@@ -11,12 +11,12 @@ import { waitFor } from './helpers';
 // scripts/prepare-fixtures.mjs makes the project from test/fixtures/unreal. With no Unreal Engine 5, the test is skipped.
 suite('Unreal Engine project', () => {
 	const root = () => vscode.workspace.workspaceFolders![0].uri.fsPath;
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	const state = () => JSON.stringify({ engine: api.store.state.engine, databases: api.store.state.databases.map((d) => [d.source, d.path]) });
 
 	suiteSetup(async function () {
 		this.timeout(60000);
-		api = await vscode.extensions.getExtension<DataFlowApi>('KnurrliDev.dataflow')!.activate();
+		api = await vscode.extensions.getExtension<DataFlowInternals>('KnurrliDev.dataflow')!.activate();
 	});
 
 	test('UnrealBuildTool makes the compile database, and the engine parses the Unreal code with no error', async function () {

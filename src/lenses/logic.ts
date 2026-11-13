@@ -1,5 +1,6 @@
+import type * as Api from '../../api/dataflow-api';
 import type { LogicModel } from '../engine/client';
-import { pairWarning, PathResult } from '../logic/paths';
+import { ANY, Choices, Control, evaluatePath, pairWarning, pathChoices, PathResult, pathSteps } from '../logic/paths';
 import { LineText, toUtf16Column } from './flow';
 
 // Logic Map: makes the data for the side view from the model and the path.
@@ -94,4 +95,57 @@ export function logicWarnings(model: LogicModel, path: PathResult): LogicWarning
 			short: `${model.nullable[w.nullable].var} can be null`,
 		})),
 	];
+}
+
+// The choices of a client for the path, checked against the decisions of the function: an object with the key of a
+// decision and one of its options. 'any' removes the choice. A wrong key or option gives an error with the valid ones
+export function checkChoices(controls: readonly Control[], input: unknown): Choices {
+	if (input === undefined || input === null) {
+		return {};
+	}
+	if (typeof input !== 'object' || Array.isArray(input)) {
+		throw new Error('"choices" must be an object with the key of a decision and one of its options, for example {"if:count > 0#0": "no"}. get_logic gives the keys and the options.');
+	}
+	const out: Choices = {};
+	const problems: string[] = [];
+	for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+		const control = controls.find((c) => c.key === key);
+		if (!control) {
+			problems.push(`The function has no decision ${key}. The keys are ${controls.map((c) => c.key).join(', ') || 'none'}.`);
+		} else if (typeof value !== 'string' || !control.options.includes(value)) {
+			problems.push(`The decision ${key} has no option ${JSON.stringify(value)}. The options are ${control.options.join(', ')}.`);
+		} else if (value !== ANY) {
+			out[key] = value;
+		}
+	}
+	if (problems.length > 0) {
+		throw new Error(problems.join('\n'));
+	}
+	return out;
+}
+
+// The logic of a function for a client of DataFlow: its decisions with their options, one path through the function for
+// the choices, and the steps of the path with its events, effects, returns and warnings. A decision with no choice gets
+// the option that runs the most lines, as in the side view. Lines start at 1
+export function logicFacts(model: LogicModel, controls: readonly Control[], chosen: Choices): Omit<Api.LogicFacts, 'file' | 'shown' | 'parseErrors'> {
+	const choices = pathChoices(model, [...controls], chosen);
+	const path = evaluatePath(model, [...controls], choices);
+	const steps = pathSteps(model, [...controls], choices, path);
+	const fn = model.function;
+	return {
+		function: { name: fn.qualifiedName, lines: [fn.range.begin.line, fn.range.end.line] },
+		...(model.enclosing && model.lambda !== undefined ? { lambda: { index: model.lambda, in: model.enclosing.qualifiedName } } : {}),
+		decisions: controls.map((c) => ({
+			key: c.key, kind: c.kind, line: c.line, text: c.text, options: c.options.filter((o) => o !== ANY),
+			path: choices[c.key] ?? ANY, ...(chosen[c.key] ? { isChosen: true } : {}),
+			...(c.parent ? { inside: { key: c.parent.key, option: c.parent.option } } : {}),
+		})),
+		path: steps.map((s) => ({
+			kind: s.kind, line: s.line, text: s.text, ...(s.key ? { key: s.key, option: s.value } : {}), ...(s.problem ? { problem: s.problem } : {}),
+			...(s.changes ? { changes: s.changes.map((c) => ({ line: c.line, target: c.target, action: c.action, kind: c.kind })) } : {}),
+		})),
+		warnings: logicWarnings(model, path).map((w) => ({ line: w.line, text: w.text })),
+		deadLines: path.dead,
+		...(model.entry < 0 ? { note: 'Clang made no control flow graph for the function, thus the path has no decisions.' } : {}),
+	};
 }

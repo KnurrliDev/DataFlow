@@ -5,6 +5,8 @@ import { execFile, spawn } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import type { DataFlowApiOptions, DataFlowExports } from '../api/dataflow-api';
+import { ApiEvents, createApi } from './api/api';
 import { CompileDbInfo, CompileDbManager } from './cdb/manager';
 import { findProjectFiles, isInside, MAX_PROJECT_FILES, SKIP_FOLDERS } from './cdb/project';
 import { ProjectSettings } from './cdb/settings';
@@ -31,7 +33,7 @@ import { buildReviewState } from './lenses/ripple';
 import {
 	ANY, buildControls, Choices, Control, dominators, evaluatePath, moveChoices, pathChoices, PathResult, pathSteps, WhyItem, whyLine,
 } from './logic/paths';
-import { DataFlowMcpHost } from './mcp/host';
+import { DataFlowMcpHost, type HostDeps } from './mcp/host';
 import { LayerKeeper } from './mcp/layers';
 import { McpManager } from './mcp/manager';
 import { createPrompts, createTools } from './mcp/tools';
@@ -47,8 +49,9 @@ import type { SideAction, SideCallListSite, SideGuide, SideStepHeat, SideViewSta
 import { CallGraphView, Lens, LogicPathState, StateStore } from './state/store';
 import { StatusBar } from './statusbar';
 
-// The objects that the integration tests read. Code gets this API from getExtension(...).exports.
-export interface DataFlowApi {
+// The exports of the extension: getApi for other extensions (api/dataflow-api.d.ts), and the objects that the
+// integration tests read. Code gets them from getExtension(...).exports.
+export interface DataFlowInternals extends DataFlowExports {
 	store: StateStore;
 	side: SideViewController;
 	home: HomeView;
@@ -159,7 +162,7 @@ interface LogicState {
 
 // VS Code calls this function one time, when the first activation event occurs.
 // The extension becomes active when a C or C++ file opens, or when one of its commands starts.
-export function activate(context: vscode.ExtensionContext): DataFlowApi {
+export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	// When you debug the extension, you can see this text in the Debug Console of the first VS Code window.
 	console.log('The DataFlow extension is now active.');
 
@@ -2775,7 +2778,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 	// The MCP server: a language model in an MCP client reads the facts of the engine and changes the side view. It
 	// starts with the setting dataflow.mcp.enabled, with the command "Start MCP Server", or when the agent mode of VS Code
 	// needs it.
-	const mcpHost: DataFlowMcpHost = new DataFlowMcpHost({
+	const hostDeps: HostDeps = {
 		engine: () => engine,
 		store,
 		side,
@@ -2808,7 +2811,56 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			}
 			return computeHeat(client, doc);
 		},
-	});
+		logicOptions: (doc) => logicOptions(doc),
+		showLogicPath: (doc, model, chosen, line) => {
+			if (!store.state.lenses.logic) {
+				store.toggleLens('logic');
+			}
+			logicRequest?.cancel();
+			const key = `${doc.uri.fsPath}#${model.function.qualifiedName}`;
+			if (Object.keys(chosen).length > 0) {
+				choicesOf.set(key, chosen);
+			} else {
+				choicesOf.delete(key);
+			}
+			logic = { file: doc.uri.fsPath, uri: doc.uri.toString(), key, model, controls: buildControls(model), dom: dominators(model) };
+			// the cursor goes to this line, and Logic Map keeps the choices of the client for it
+			followedLine = `${key}:${line}`;
+			showLogic();
+		},
+		setLens: (lens, isOn) => {
+			if (store.state.lenses[lens] !== isOn) {
+				toggleLens(lens);
+			}
+		},
+		clearFlow: () => {
+			const hadTrace = !!store.state.trace;
+			clearTrace();
+			return hadTrace;
+		},
+		ripple: () => ({ state: store.state.review, model: review?.model, root: review?.root }),
+		startRipple: () => runReview(),
+		clearRipple: () => {
+			const hadReview = !!store.state.review || store.state.lenses.review;
+			closeReview();
+			return hadReview;
+		},
+		scanCallGraph: () => {
+			const client = engine;
+			if (client?.currentState === 'ready') {
+				scanCallGraph(client, currentPlace()?.doc.uri);
+			}
+		},
+		// with no scan, nothing changes: a stop of the user prevents the automatic scans of the heat
+		stopCallGraph: () => {
+			if (!graphRequest) {
+				return false;
+			}
+			stopCallGraph();
+			return true;
+		},
+	};
+	const mcpHost = new DataFlowMcpHost(hostDeps);
 	const mcp: McpManager = new McpManager(context, store, log, createTools(mcpHost), createPrompts(), () => projectRoots());
 	context.subscriptions.push(mcp);
 
@@ -3136,7 +3188,13 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 	const layers = new LayerKeeper(context.workspaceState, store, log);
 	context.subscriptions.push(layers);
 	layers.restore();
-	return { store, side, home, mcp, mcpHost, layers };
+
+	// The API for other extensions. Each extension gets its own host of the tools, with its name as the client
+	const apiDeps = { store, hostDeps, currentPlace, log: (message: string) => log.info(message) };
+	const apiEvents = new ApiEvents(apiDeps);
+	context.subscriptions.push(apiEvents);
+	const getApi = (version: 1, options?: DataFlowApiOptions) => createApi(apiDeps, apiEvents, version, options);
+	return { getApi, store, side, home, mcp, mcpHost, layers };
 }
 
 // VS Code calls this function when it deactivates the extension.

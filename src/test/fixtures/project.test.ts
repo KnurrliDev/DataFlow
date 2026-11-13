@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { ProjectInfo } from '../../cdb/manager';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 import { waitFor } from './helpers';
 
 // A project that is not open in VS Code. The window has no folder. DataFlow uses the compile database of the project,
@@ -19,7 +19,7 @@ suite('A project that is not open in VS Code', () => {
 		mkdirSync(path.dirname(file), { recursive: true });
 		writeFileSync(file, text);
 	};
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 
 	const state = () => JSON.stringify({ engine: api.store.state.engine, project: api.store.state.project, databases: api.store.state.databases });
 	const useProject = async (folder: string): Promise<ProjectInfo> => {
@@ -32,7 +32,7 @@ suite('A project that is not open in VS Code', () => {
 
 	suiteSetup(async function () {
 		this.timeout(60000);
-		api = await vscode.extensions.getExtension<DataFlowApi>('KnurrliDev.dataflow')!.activate();
+		api = await vscode.extensions.getExtension<DataFlowInternals>('KnurrliDev.dataflow')!.activate();
 		// the state of the window can keep the project of an earlier test run
 		await vscode.commands.executeCommand('dataflow.closeProject');
 	});

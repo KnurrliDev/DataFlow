@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import type { EngineFunction, SliceBody, SliceConfidence, SliceExitKind, SliceModel, SliceSeed, SliceStep, SliceStepKind } from '../../engine/client';
-import { buildReviewState, buildRippleViews, linesText } from '../../lenses/ripple';
+import { buildReviewState, buildRippleViews, linesText, rippleFacts } from '../../lenses/ripple';
 import { parseDiff } from '../../review/git';
 import { CallSite, RippleModel, runRipple } from '../../review/ripple';
 import { targetCandidates, targetItems } from '../../review/targets';
@@ -206,5 +206,18 @@ suite('Change Ripple', () => {
 		const automatic = targetItems({ local: ['feature'], remote: [] }, 'feature', undefined, undefined);
 		assert.deepStrictEqual(text(automatic), [': the branch that this branch comes from, the default branch of the remote, or main or master · selected',
 			'HEAD: only the changes that are not committed']);
+	});
+
+	test('The facts of a review for a client: the bodies of each change with their depth, lines, steps and exits', () => {
+		const model = rippleModel();
+		const state = buildReviewState(model, 'main (merge base 1a2b3c4)', 'main');
+		const facts = rippleFacts(model, state, (file) => `src/${file}`);
+		assert.deepStrictEqual([facts.base, facts.target, facts.counts], ['main (merge base 1a2b3c4)', 'main', { changes: 1, bodies: 2, reachedLines: 4 }]);
+		const [change] = facts.changes!;
+		assert.deepStrictEqual([change.file, change.function, change.lines], ['src/a.cpp', 'ns::f', [5, 6]]);
+		assert.deepStrictEqual(change.bodies.map((b) => [b.function, b.depth, b.lambdaLine ?? 0, b.lines]), [['ns::f', 0, 0, [5, 8, 9]], ['ns::g', 1, 30, [8, 30]]]);
+		assert.deepStrictEqual(change.bodies[0].steps[2], { line: 9, kind: 'member', confidence: 'estimated', distance: 2, text: 'line 9' });
+		assert.deepStrictEqual(change.bodies[0].exits, [{ kind: 'return', line: 8, text: 'return x' }, { kind: 'member', line: 9, text: 'obj.state', followed: true }]);
+		assert.strictEqual(facts.notice, undefined);
 	});
 });

@@ -1,3 +1,4 @@
+import type * as Api from '../../api/dataflow-api';
 import * as path from 'path';
 import { changedPart } from '../side/model';
 import type { SideGuide, SideGuideKind, SideGuideStep, SideStepDiff, SideStepRow } from '../side/protocol';
@@ -453,7 +454,7 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 // default steps. The paths are relative to the root. The diff of a hunk after MAX_FACT_LINES lines is not in the facts.
 // With the heat of the changed files, each hunk has the heat of the functions that it changes, and hottestChanges gives
 // the changed functions, the hottest first
-export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[], heat?: ReadonlyMap<string, HeatModel>): object {
+export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[], heat?: ReadonlyMap<string, HeatModel>): Omit<Api.DiffFacts, 'note' | 'callGraph' | 'noHeat'> {
 	const rel = (file: string) => path.relative(input.root, file).replace(/\\/g, '/');
 
 	// the changed functions of each hunk with their heat, and each changed function with its hunks
@@ -477,7 +478,7 @@ export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[], heat?: R
 	const stepHeat = (group: readonly WalkHunk[]) => Math.max(-1, ...group.flatMap((h) => (heatOf.get(h.id) ?? []).map((fn) => fn.score)));
 
 	let left = MAX_FACT_LINES;
-	const files = input.files.map((f) => ({
+	const files = input.files.map((f): Api.DiffFacts['files'][number] => ({
 		file: rel(f.file),
 		lines: f.lineCount,
 		...(f.isNew ? { isNew: true } : {}),

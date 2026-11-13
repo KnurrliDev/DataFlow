@@ -24,7 +24,7 @@ export default defineConfig([
 	// Hierarchy stops all requests of the window to the call hierarchy of VS Code, and the MCP tests use it.
 	{
 		label: 'cmake',
-		files: ['out/test/fixtures/cmake.test.js', 'out/test/fixtures/flow.test.js', 'out/test/fixtures/mcp.test.js', 'out/test/fixtures/side.test.js'],
+		files: ['out/test/fixtures/cmake.test.js', 'out/test/fixtures/flow.test.js', 'out/test/fixtures/mcp.test.js', 'out/test/fixtures/api.test.js', 'out/test/fixtures/side.test.js'],
 		workspaceFolder: 'test/fixtures/battery',
 		...common,
 	},
@@ -37,7 +37,8 @@ export default defineConfig([
 	// scripts/prepare-fixtures.mjs makes it from the CMake fixture.
 	{
 		label: 'review',
-		files: ['out/test/fixtures/ripple.test.js', 'out/test/fixtures/side-ripple.test.js', 'out/test/fixtures/walk.test.js', 'out/test/fixtures/heat.test.js'],
+		files: ['out/test/fixtures/ripple.test.js', 'out/test/fixtures/side-ripple.test.js', 'out/test/fixtures/walk.test.js', 'out/test/fixtures/heat.test.js',
+			'out/test/fixtures/api-review.test.js'],
 		workspaceFolder: 'build/fixtures/battery-review',
 		...common,
 	},

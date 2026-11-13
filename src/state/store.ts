@@ -12,6 +12,7 @@ import type { SideCalls, SideGuide, SideIncluders, SideIncludes, SideMcp, SideMo
 import type { RippleModel } from '../review/ripple';
 
 export type Lens = 'flow' | 'logic' | 'cost' | 'review' | 'includes' | 'calls' | 'threads' | 'heat';
+export const LENSES: readonly Lens[] = ['flow', 'logic', 'cost', 'review', 'includes', 'calls', 'threads', 'heat'];
 
 // The heat of the functions of the file. While a computation runs, the old model of the same file stays
 export interface HeatLayerState {

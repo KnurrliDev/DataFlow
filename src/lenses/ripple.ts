@@ -1,3 +1,4 @@
+import type * as Api from '../../api/dataflow-api';
 import type { SliceConfidence, SliceStepKind } from '../engine/client';
 import { functionKey, RippleChange, RippleModel } from '../review/ripple';
 
@@ -124,4 +125,45 @@ export function buildReviewState(model: RippleModel, base: string, target?: stri
 		? 'No call hierarchy provider answered. Change Ripple follows only the callers in the same file. Install the C/C++ extension or clangd to follow the callers in other files.'
 		: undefined;
 	return { isRunning: false, base, target, message, notice, other };
+}
+
+// The facts of a review for a client of DataFlow give this number of changed functions, and this number of statements
+// of each body. A change in a long function can reach hundreds of statements
+const MAX_FACT_CHANGES = 100;
+const MAX_FACT_STEPS = 100;
+
+// The facts of a review of Change Ripple for a client of DataFlow: for each changed function, the bodies that the change
+// reaches with their statements and their exits. Depth 0 is the changed function and its lambdas, depth 1 a caller that
+// gets its return value, depth 2 a caller of a caller. Lines start at 1. rel gives the path of a file for the client
+export function rippleFacts(model: RippleModel, state: ReviewState, rel: (file: string) => string): Omit<Api.RippleFacts, 'state' | 'note' | 'message'> {
+	const reached = new Set<string>();
+	const changes = model.changes.map((c) => ({
+		file: rel(c.file),
+		function: c.fn.qualifiedName,
+		lines: c.lines,
+		bodies: c.bodies.map((b) => {
+			const lines = [...new Set(b.body.steps.flatMap((s) => s.lines))].sort((x, y) => x - y);
+			lines.forEach((line) => reached.add(`${b.file}#${line}`));
+			return {
+				file: rel(b.file), function: b.body.function.qualifiedName, ...(b.body.lambda ? { lambdaLine: b.body.lambda.line } : {}), depth: b.depth,
+				...(b.call ? { call: { file: rel(b.call.file), line: b.call.line } } : {}),
+				lines,
+				steps: b.body.steps.slice(0, MAX_FACT_STEPS).map((s) => ({
+					line: s.line, kind: s.kind, confidence: s.confidence, distance: s.distance, text: s.text, ...(s.via ? { via: s.via } : {}),
+				})),
+				...(b.body.steps.length > MAX_FACT_STEPS ? { moreSteps: b.body.steps.length - MAX_FACT_STEPS } : {}),
+				exits: b.body.exits.map((e) => ({ kind: e.kind, line: e.line, text: e.text, ...(e.followed ? { followed: true } : {}) })),
+			};
+		}),
+	}));
+	return {
+		...(state.base ? { base: state.base } : {}),
+		...(state.target ? { target: state.target } : {}),
+		counts: { changes: model.changes.length, bodies: model.changes.reduce((n, c) => n + c.bodies.length, 0), reachedLines: reached.size },
+		changes: changes.slice(0, MAX_FACT_CHANGES),
+		...(changes.length > MAX_FACT_CHANGES ? { moreChanges: changes.length - MAX_FACT_CHANGES } : {}),
+		...(state.other.length > 0 ? { otherLines: state.other.map((o) => ({ file: rel(o.path), text: o.text })) } : {}),
+		...(state.notice ? { notice: state.notice } : {}),
+		...(model.errors.length > 0 ? { errors: model.errors } : {}),
+	};
 }

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import { createInterface } from 'readline';
 import * as vscode from 'vscode';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 import type { SideModel } from '../../side/protocol';
 import { activateDataFlow, waitFor } from './helpers';
 
@@ -16,7 +16,7 @@ suite('MCP server on the fixture', () => {
 	const file = () => path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'src', 'battery.cpp');
 	const lineOf = (text: string) => readFileSync(file(), 'utf8').split(/\r?\n/).findIndex((l) => l.includes(text)) + 1;
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	let url: string;
 	let token: string;
 	let id = 0;
@@ -128,8 +128,9 @@ suite('MCP server on the fixture', () => {
 	test('The server lists its tools, and get_view gives the file of the editor', async () => {
 		const list = await rpc('tools/list');
 		assert.deepStrictEqual(list.result.tools.map((t: { name: string }) => t.name), [
-			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'get_heat', 'show_blocks', 'show_flow',
-			'highlight', 'comment_lines', 'add_detail', 'clear', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step', 'close_guide',
+			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'get_heat', 'get_logic', 'get_ripple',
+			'show_blocks', 'show_flow', 'show_logic_path', 'show_line', 'highlight', 'comment_lines', 'add_detail', 'clear', 'set_lens', 'clear_flow', 'start_ripple', 'clear_ripple',
+			'scan_call_graph', 'stop_call_graph', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step', 'close_guide',
 		]);
 		// only close_guide removes data of the user: the marks and the notes of the steps
 		const destructive = list.result.tools.filter((t: { annotations?: { destructiveHint?: boolean } }) => t.annotations?.destructiveHint).map((t: { name: string }) => t.name);

@@ -1,3 +1,4 @@
+import type * as Api from '../../api/dataflow-api';
 import type { MetricsFunction, MetricsModel, MetricsReach, ThreadsModel } from '../engine/client';
 
 // The heat score of the functions of a file: how much a change of a function can break. The score adds points of
@@ -342,11 +343,11 @@ export function changedFunctions(model: HeatModel, lines: readonly number[]): He
 }
 
 // The band as a text, for example "very hot"
-export const bandText = (band: HeatBand): string => (band === 'veryHot' ? 'very hot' : band);
+export const bandText = (band: HeatBand): Api.HeatBand => (band === 'veryHot' ? 'very hot' : band);
 
 // The heat of a function for a language model: the name, the lines, the score, the band and the reasons with the most
 // points
-export function heatFact(fn: HeatFunction, reasons = 3): { function: string; lines: [number, number]; score: number; band: string; reasons: string[] } {
+export function heatFact(fn: HeatFunction, reasons = 3): Omit<Api.HotChange, 'file'> {
 	const top = [...fn.reasons].sort(byPoints).slice(0, reasons);
 	return {
 		function: fn.qualifiedName || fn.name, lines: [fn.first, fn.last], score: fn.score, band: bandText(fn.band),

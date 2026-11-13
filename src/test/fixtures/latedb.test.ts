@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 import { waitFor } from './helpers';
 
 // A workspace folder with no compile database at the start, as before the first build of a project. A database that a
@@ -19,12 +19,12 @@ suite('A compile database that comes after the start', () => {
 			return { directory: build, file: source, arguments: ['clang++', '-std=c++20', `-I${path.join(root(), 'include')}`, '-c', source] };
 		}), null, 2));
 	};
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	const state = () => JSON.stringify({ engine: api.store.state.engine, databases: api.store.state.databases.map((d) => d.path) });
 
 	suiteSetup(async function () {
 		this.timeout(60000);
-		api = await vscode.extensions.getExtension<DataFlowApi>('KnurrliDev.dataflow')!.activate();
+		api = await vscode.extensions.getExtension<DataFlowInternals>('KnurrliDev.dataflow')!.activate();
 	});
 
 	test('A new database starts the engine, and a change of the database starts it again', async function () {

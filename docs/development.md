@@ -21,6 +21,8 @@ This document tells how to change, run, test and release the code of DataFlow. [
 | `src/cdb/` | The compile databases. `manager.ts`: the search in the build folders, the selection and the watchers. `qmake.ts`: the database from the Makefiles of qmake. `project.ts` and `settings.ts`: a project that is not open in VS Code. `unreal.ts`: the engine, the targets and the database of UnrealBuildTool for an Unreal Engine project. |
 | `src/mcp/` | The MCP server. `server.ts`: the protocol over HTTP. `tools.ts`: the tools and the prompts. `host.ts`: the data and the changes of the view. `manager.ts`: the start, the token and the setup. `bridge.ts`: the bridge for clients that start programs. `claude.ts`: the plugin and the settings of the connection to Claude Code. The logical blocks of a model have their data in `src/lenses/blocks.ts`. `layers.ts` keeps the layers of the model and the guided review for the next session. |
 | `src/review/` | Change Ripple: the diff against the target branch (`git.ts`), the target branches (`targets.ts`) and the ripple (`ripple.ts`). The guided review has its data in `guide.ts`. |
+| `src/api/` | The API for other extensions. `api.ts` makes an API object with its own host of the MCP tools for each extension, and it sends the events. |
+| `api/dataflow-api.d.ts` | The types of the API for other extensions. The tools of the MCP server give their data in these types, so the compiler finds a difference between the data and the file. The VSIX package contains the file. |
 | `scripts/` | `build-engine.mjs` builds the engine. `build-webviews.mjs` bundles the script of the side view with esbuild. `prepare-fixtures.mjs` prepares the fixture projects for the tests. `docs-screenshots.mjs` makes the screenshots of the documents. `package-vsix.mjs` makes the VSIX package. |
 | `engine/` | The analysis engine in C++ |
 | `media/` | The icon of DataFlow |
@@ -123,3 +125,7 @@ The tests use the extension ID in these files:
 - `src/test/fixtures/latedb.test.ts`
 - `src/test/fixtures/project.test.ts`
 - `src/test/fixtures/unreal.test.ts`
+- `src/test/fixtures/api.test.ts`
+- `src/test/fixtures/api-review.test.ts`
+
+Other extensions get the API with the extension ID. `api/dataflow-api.d.ts` and `docs/api.md` give it in their examples.

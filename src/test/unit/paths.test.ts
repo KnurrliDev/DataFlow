@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import type { LogicModel } from '../../engine/client';
+import { checkChoices, logicFacts } from '../../lenses/logic';
 import { buildControls, Choices, dominators, evaluatePath, moveChoices, pathChoices, pathSteps, whyLine } from '../../logic/paths';
 
 // A small CFG for this function. Block ids are in the comments.
@@ -226,5 +227,31 @@ suite('Logic Map paths', () => {
 
 		// a control came or went: the places do not agree, so only the keys count
 		assert.deepStrictEqual(moveChoices(before, after.slice(0, 2), choices), { 'chain:s#0': '3' });
+	});
+
+	test('The logic facts of a client: the decisions with the option of the path, the steps, the dead lines and the checked choices', () => {
+		const m = model();
+		const controls = buildControls(m);
+		const chosen = checkChoices(controls, { 'chain:s#0': '1', 'if:!p#0': 'any' });
+		assert.deepStrictEqual(chosen, { 'chain:s#0': '1' });
+		const facts = logicFacts(m, controls, chosen);
+		assert.deepStrictEqual(facts.function, { name: 'f', lines: [1, 13] });
+		assert.deepStrictEqual(facts.decisions.map((d) => [d.key, d.options.join('|'), d.path, d.isChosen ?? false, d.inside ? `${d.inside.key}=${d.inside.option}` : '']), [
+			['chain:s#0', '1|2|other', '1', true, ''],
+			['if:a && b#0', 'yes|no', 'yes', false, 'chain:s#0=2'],
+			['if:!p#0', 'yes|no', 'no', false, ''],
+		]);
+		assert.deepStrictEqual(facts.path.map((s) => [s.kind, s.line, s.option ?? s.text]), [['decision', 3, '1'], ['event', 4, 'one'], ['decision', 11, 'no'], ['end', 13, '']]);
+		assert.deepStrictEqual(facts.deadLines, [5, 6, 7, 8, 9, 10]);
+		assert.deepStrictEqual(facts.warnings, []);
+
+		// the default path with no null check: two events on one path, and the dereference
+		const unchecked = model([]);
+		assert.deepStrictEqual(logicFacts(unchecked, buildControls(unchecked), {}).warnings.map((w) => w.line), [9, 12]);
+
+		// a wrong key or option names the valid ones
+		assert.throws(() => checkChoices(controls, { 'if:x#0': 'yes' }), /The function has no decision if:x#0\. The keys are chain:s#0, if:a && b#0, if:!p#0\./);
+		assert.throws(() => checkChoices(controls, { 'chain:s#0': '3' }), /The decision chain:s#0 has no option "3"\. The options are any, 1, 2, other\./);
+		assert.throws(() => checkChoices(controls, ['chain:s#0']), /"choices" must be an object/);
 	});
 });

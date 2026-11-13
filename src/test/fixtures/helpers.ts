@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 
 // Waits until the condition is true. If the time ends first, the error contains the text of _describe.
 export async function waitFor(condition: () => boolean, timeoutMs: number, describe: () => string): Promise<void> {
@@ -13,9 +13,9 @@ export async function waitFor(condition: () => boolean, timeoutMs: number, descr
 }
 
 // Opens a file, activates DataFlow, and waits for the engine.
-export async function activateDataFlow(file: string): Promise<DataFlowApi> {
+export async function activateDataFlow(file: string): Promise<DataFlowInternals> {
 	await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
-	const ext = vscode.extensions.getExtension<DataFlowApi>('KnurrliDev.dataflow');
+	const ext = vscode.extensions.getExtension<DataFlowInternals>('KnurrliDev.dataflow');
 	if (!ext) {
 		throw new Error('VS Code did not find the DataFlow extension.');
 	}

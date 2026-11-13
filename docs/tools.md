@@ -4,6 +4,8 @@ DataFlow has an MCP server (Model Context Protocol). A language model in an MCP 
 
 The model can show the logical blocks of a function with names and summaries, and start Flow Lens on a variable. It can also color lines with notes, add comments to single lines, and add details to code. The engine gives the facts, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other. In a diff walk, the model or DataFlow goes through the changes of a diff with you. The side view shows the diff of each step.
 
+The model can also read and show the paths of Logic Map, run Change Ripple, turn the lenses on and off, and move the cursor to a line. Other VS Code extensions can use the same tools through the [API for extensions](api.md).
+
 - [Connect Claude Code](#connect-claude-code)
 - [Connect a different client](#connect-a-different-client)
 - [Ask the model](#ask-the-model)
@@ -232,14 +234,24 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`get_includes`](#get_includes) | read | The data of Include Hierarchy, with the translation units of the compile database that include the file |
 | [`get_outline`](#get_outline) | read | The outline of a type: the members, the annotations and the memory layout |
 | [`get_heat`](#get_heat) | read | The heat score of each function of a file: how much a change of the function can break, with the reason of each point |
+| [`get_logic`](#get_logic) | read | The data of Logic Map: the decisions of a function with their options, and one path through the function for the choices |
+| [`get_ripple`](#get_ripple) | read | The data of the last review of Change Ripple: the code that each change reaches, also in the callers |
 | [`get_review`](#get_review) | read | The C and C++ files under the paths of a guided review, with the diff of each changed file against the target branch |
 | [`get_diff`](#get_diff) | read | The hunks of the changed C and C++ files against a base, with their functions and their diff, for a diff walk |
 | [`show_blocks`](#show_blocks) | view | Shows the logical blocks of a function, with a maximum of five levels. A new call replaces the blocks of its function. The blocks of the other functions of the file stay. |
 | [`show_flow`](#show_flow) | view | Starts Flow Lens on a variable or a data member, as a click does |
+| [`show_logic_path`](#show_logic_path) | view | Shows Logic Map for a function with a path for the choices |
+| [`show_line`](#show_line) | view | Moves the cursor to a line, and shows the line |
 | [`highlight`](#highlight) | view | Colors ranges of lines or blocks, with a note for each range |
 | [`comment_lines`](#comment_lines) | view | Adds a short comment to single lines, in the color of the comments or in a color of the model |
 | [`add_detail`](#add_detail) | view | Adds a detail to an expression, a line or the selection of the user: an explanation or examples in a card on the code |
 | [`clear`](#clear) | view | Removes the blocks, the notes, the comments and the details |
+| [`set_lens`](#set_lens) | view | Turns a lens on or off, as its switch does |
+| [`clear_flow`](#clear_flow) | view | Removes the trace of Flow Lens |
+| [`start_ripple`](#start_ripple) | view | Runs a review of Change Ripple, and gives its data |
+| [`clear_ripple`](#clear_ripple) | view | Closes Change Ripple |
+| [`scan_call_graph`](#scan_call_graph) | view | Starts the scan of the call graph for the heat score |
+| [`stop_call_graph`](#stop_call_graph) | view | Stops the scan of the call graph |
 | [`show_review_plan`](#show_review_plan) | view | Shows the plan of a guided review, at its first step |
 | [`show_diff_walk`](#show_diff_walk) | view | Shows the plan of a diff walk, at its first step |
 | [`review_step`](#review_step) | view | Goes to a step of the guided review or of the diff walk, and adds a note or a mark of the model |
@@ -372,6 +384,41 @@ The callers and the frame path come from the call graph of the project. The firs
 
 Example request: "Which functions of this file are the most dangerous to change, and why?"
 
+### get_logic
+
+Gives the logic of a function, as Logic Map shows it, but does not change the view:
+
+- the decisions of the function: `if`, the loops, `do`, `switch`, the conditional operator, and the else-if chains that compare one value with constants
+- the options of each decision, and the option of the path
+- the steps of the path: the decisions, the events, the effects, the returns and the warnings
+- the lines that the path does not run (`deadLines`)
+
+The path is one path through the function. A decision with no choice gets the option that runs the most lines, as in the side view. An effect is a change of data that lives after the call, for example a write to a data member. A warning is two events on one path, an event in a loop, or a dereference of a pointer that can be null. The settings of Logic Map give the event functions and the functions that can give null.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `file`, `function`, `line` | | See the common parameters. A line in a lambda gives the logic of the lambda. |
+| `choices` | object | The options of the path: the key of a decision and one of its options, for example `{"chain:home_battery_ctl.state#0": "HOMEPOWER_CHARGE_ACTIVE"}`. `any` removes a choice. The result gives the keys and the options. |
+
+If a key or an option is not correct, the tool gives an error with the correct keys or options.
+
+Example request: "Which path through process() sends two events, and which choices give it?"
+
+### get_ripple
+
+Gives the last review of Change Ripple. `state` is `ready`, `running`, `failed` or `none`. A review that is ready gives each changed function with:
+
+- its changed lines
+- the bodies that the change reaches: the function and its lambdas (`depth` 0), the callers that get a changed return value (`depth` 1), and their callers (`depth` 2). A caller has the line of its call.
+- the statements of each body that the change reaches, with their kind, their confidence and their distance from the change
+- the exits: the places where the effect leaves a body, for example a return, a write to a data member or an async call
+
+`counts` gives the number of changed functions, of bodies and of the lines that the changes reach. `notice` tells if Change Ripple found only the callers in the same file.
+
+Parameters: none.
+
+Example request: "Which code does my change of solve_power_plan() reach?"
+
 ### show_blocks
 
 Shows the logical blocks of one function in the side view. Each block gets a bar beside its lines, and its title at the end of its first line. The tab Model lists the summaries and the data of the blocks.
@@ -405,6 +452,25 @@ Starts Flow Lens on a variable or a data member, as a click on it does, and give
 | `name` | text | Necessary. The name of the variable or the member. |
 
 Example request: "Show me what happens to charge.is_dirty."
+
+### show_logic_path
+
+Shows Logic Map in the side view for a function, with a path for the choices, as the options of the decisions in the side view do. The lines that the path does not run are dim. The cursor goes to the function, so the other lenses also show this function. If Logic Map is off, the tool turns it on. The result gives the same data as `get_logic`.
+
+Parameters: `file`, `function`, `line` and `choices`, as for `get_logic`.
+
+Example request: "Show me the path through process() when the state is HOMEPOWER_CHARGE_ACTIVE."
+
+### show_line
+
+Moves the cursor to a line of a C or C++ file, and shows the line in the side view and in the text editor beside it. The lenses follow the cursor, so they show the function of the line. With no C++ text editor on the screen, only the side view moves.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `file` | text | See the common parameters. |
+| `line` | integer | Necessary. The line. |
+
+Example request: "Go to the line that starts the solver."
 
 ### highlight
 
@@ -475,6 +541,59 @@ Removes the blocks, the notes, the comments and the details of the model from th
 Example request: "Remove your blocks and notes from the side view."
 
 The guide of a guided review or of a diff walk stays. A new plan replaces it. **Close review**, **Close walk** and `close_guide` remove it.
+
+### set_lens
+
+Turns a lens of the side view on or off, as its switch in the toolbar does. A lens that turns on opens the side view.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `lens` | text | Necessary. `flow` (Flow Lens), `logic` (Logic Map), `cost` (Hidden C++), `includes` (Include Hierarchy), `calls` (Call Hierarchy), `threads` (Threads and races), `heat` (Heat) or `review` (Change Ripple). |
+| `on` | true or false | Necessary. `true` turns the lens on, and `false` turns it off. |
+
+`review` on runs a review of Change Ripple, and `review` off closes it. The result gives the lenses that are on, as `get_view` does.
+
+Example request: "Turn on Heat."
+
+### clear_flow
+
+Removes the trace of Flow Lens from the side view, as **DataFlow: Clear Trace** does. Flow Lens traces again when the cursor goes to a variable. `cleared` is false if no trace showed.
+
+Parameters: none.
+
+Example request: "Remove the trace."
+
+### start_ripple
+
+Runs a review of Change Ripple, as **DataFlow: Review Changes** does, and gives the same data as `get_ripple`. Change Ripple compares the working tree with the merge base of the target branch. The side view shows the story of the review. The tool waits for the end of the review. If the repository has no target branch, VS Code asks you for it.
+
+Parameters: none.
+
+Example request: "Run Change Ripple, and tell me which callers my change reaches."
+
+### clear_ripple
+
+Closes Change Ripple in the side view, as **DataFlow: Clear Review** does. `cleared` is false if no review showed.
+
+Parameters: none.
+
+### scan_call_graph
+
+Starts the scan of the call graph of the project for the heat score, as the buttons **Continue** and **Scan again** of the tab Heat do. After a complete scan, a new scan parses only the source files that changed. The scan does not block. The result gives:
+
+- `state`: `scanning`, `ready`, `stopped`, `failed` or `none`
+- the progress of the scan in source files
+- the counts of the last complete scan, and the frame functions of the project
+
+`get_heat` also starts the scan, but not after a stop of the user.
+
+Parameters: none.
+
+### stop_call_graph
+
+Stops the scan of the call graph, as the button **Stop** of the tab Heat does. A first scan keeps the part that it scanned, and an update keeps the last complete graph. If no scan runs, nothing changes, and `stopped` is false.
+
+Parameters: none.
 
 ### get_review
 

@@ -18,6 +18,8 @@ tsconfig.webview.json
 **/tsconfig.json
 **/*.map
 **/*.ts
+# the types of the API for other extensions
+!api/dataflow-api.d.ts
 **/.vscode-test.*
 .clang-format
 TODO.md

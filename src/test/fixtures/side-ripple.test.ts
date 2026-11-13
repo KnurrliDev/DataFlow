@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { readFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 import type { SideCard, SideStory } from '../../side/protocol';
 import { activateDataFlow, waitFor } from './helpers';
 
@@ -16,7 +16,7 @@ suite('S5: Change Ripple in the side view', () => {
 	const isFile = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 	const stepLines = (card: SideCard | undefined) => card?.rows.filter((r) => r.wave >= 0).map((r) => r.line) ?? [];
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	suiteSetup(async function () {
 		this.timeout(120000);
 		api = await activateDataFlow(source());

@@ -2,29 +2,34 @@ import { existsSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { isInside } from '../cdb/project';
-import type { EngineClient, EngineFunction, FileResult, StructureModel } from '../engine/client';
+import type { EngineClient, EngineFunction, FileResult, LogicModel, LogicOptions, StructureModel } from '../engine/client';
 import {
 	addDetail, functionLines, MAX_DETAILS, mergeComments, ModelBlockInput, ModelCommentInput, ModelDetailInput, ModelNoteInput, moveModelLayer, resolveComments,
 	resolveDetail, resolveNotes, snapBlocks, structureSummary, TextChange,
 } from '../lenses/blocks';
 import { callFunctionAt, ExternalCaller } from '../lenses/calls';
-import { findingText, LineText, toUtf8Column, variableAt } from '../lenses/flow';
+import { findingText, LineText, toUtf16Column, toUtf8Column, variableAt } from '../lenses/flow';
 import { bandText, HeatModel } from '../lenses/heat';
 import { buildSideIncludes } from '../lenses/includes';
+import { checkChoices, logicFacts } from '../lenses/logic';
 import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../lenses/member';
+import { ReviewState, rippleFacts } from '../lenses/ripple';
 import { buildSideThreads } from '../lenses/threads';
+import { buildControls, Choices, Control } from '../logic/paths';
 import { INCLUDE_FILE, isCppFile } from '../review/git';
 import {
 	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, GUIDE_TYPES, guideType, MAX_REVIEW_FILES, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex,
 	withNote, withStatus,
 } from '../review/guide';
+import type { RippleModel } from '../review/ripple';
 import { groupTitle, resolveWalkPlan, walkFacts, walkHunks, type WalkHunk, type WalkInput, type WalkPlanInput } from '../review/walk';
 import type { SideViewController } from '../side/controller';
 import type { CodePlace } from '../side/details';
 import { functionTitle } from '../side/names';
 import { typeNameColumns } from '../side/outline';
 import type { SideGuideStatus, SideModel, SideOutlineData, SideOutlineMember, SideOutlinePlace } from '../side/protocol';
-import type { StateStore } from '../state/store';
+import { LENSES, type CallGraphView, type Lens, type StateStore } from '../state/store';
+import type * as Api from '../../api/dataflow-api';
 import type { FunctionArg, McpHost } from './tools';
 
 // The host of the MCP tools: it gets the data from the engine, and it changes the side view. Each tool works on a file
@@ -62,6 +67,26 @@ export interface HostDeps {
 	definitionHeader(name: string, place?: { doc: vscode.TextDocument; pos: vscode.Position }): Promise<string | undefined>;
 	// the heat of the functions of a document. The side view does not change
 	heat(doc: vscode.TextDocument): Promise<HeatModel>;
+	// the options of Logic Map for a document: the settings of the event functions, of the functions that can give null,
+	// and of the null checks
+	logicOptions(doc: vscode.TextDocument): LogicOptions;
+	// shows the path of Logic Map in a function with the choices of a client, and turns Logic Map on. line is the line of
+	// the cursor in the function: Logic Map does not change the choices for this line
+	showLogicPath(doc: vscode.TextDocument, model: LogicModel, choices: Choices, line: number): void;
+	// turns a lens of the side view on or off, as its switch does
+	setLens(lens: Lens, isOn: boolean): void;
+	// removes the trace of Flow Lens, as the command Clear Trace does. false if no trace showed
+	clearFlow(): boolean;
+	// the last review of Change Ripple: its state in the side view, its result, and the root of its repository
+	ripple(): { state?: ReviewState; model?: RippleModel; root?: string };
+	// runs a review of Change Ripple, as the command Review Changes does, and gives its result. undefined if it failed
+	startRipple(): Promise<RippleModel | undefined>;
+	// closes Change Ripple, as the button Clear of its bar does. false if no review showed
+	clearRipple(): boolean;
+	// starts the scan of the call graph, or the scan of the changed files, as the button Scan of the tab Heat does
+	scanCallGraph(): void;
+	// stops the scan of the call graph, as the button Stop does. false if no scan ran
+	stopCallGraph(): boolean;
 }
 
 const CPP_LANGUAGES = new Set(['c', 'cpp', 'cuda-cpp']);
@@ -71,7 +96,7 @@ const MAX_ITEMS = 200;
 const HEAT_FILES_MS = 30000;
 
 // The parse errors of a result, so that the model knows that the facts can be incomplete
-function parseNote(res: FileResult): object {
+function parseNote(res: FileResult): Api.ParseNote {
 	return res.errorCount > 0 ? { parseErrors: res.errors.slice(0, 5) } : {};
 }
 
@@ -79,7 +104,7 @@ function parseNote(res: FileResult): object {
 // members of the bases give only their names, because a base like AActor has more than a thousand members
 const MAX_INHERITED_NAMES = 40;
 
-function outlineFacts(o: SideOutlineData): object {
+function outlineFacts(o: SideOutlineData): Omit<Api.OutlineFacts, 'parseErrors'> {
 	const place = (p: SideOutlinePlace) => ({ file: p.file, line: p.line });
 	const member = (m: SideOutlineMember) => ({
 		line: m.line, kind: m.kind, name: m.name,
@@ -108,6 +133,25 @@ function outlineFacts(o: SideOutlineData): object {
 			base: g.base, count: g.members.length, names: g.members.slice(0, MAX_INHERITED_NAMES).map((m) => m.name),
 		})),
 		...(o.isTruncated ? { truncated: true } : {}),
+	};
+}
+
+// The state of the scan of the call graph, and the counts of the last complete scan
+export function callGraphFacts(graph: CallGraphView | undefined): Api.CallGraphFacts {
+	if (!graph) {
+		return { state: 'none' };
+	}
+	const result = graph.result;
+	return {
+		state: graph.state, done: graph.done, total: graph.total, ...(graph.error ? { error: graph.error } : {}),
+		...(result ? {
+			lastScan: {
+				functions: result.functions, calls: result.calls, sourceFiles: result.units, isComplete: result.isComplete,
+				frames: result.frames.slice(0, MAX_ITEMS).map((f) => ({ function: f.name, file: f.file, line: f.line, reason: f.reason })),
+				...(result.failed.length > 0 ? { failed: result.failed.slice(0, MAX_ITEMS) } : {}),
+			},
+		} : {}),
+		...(graph.state === 'scanning' ? { note: 'The scan runs. get_heat gives the callers and the frame paths after its end.' } : {}),
 	};
 }
 
@@ -145,7 +189,7 @@ export class DataFlowMcpHost implements McpHost {
 	//-------------------
 	// Read tools
 
-	async view(): Promise<object> {
+	async view(): Promise<Api.ViewFacts> {
 		const { store, side } = this.deps;
 		const state = store.state;
 		const editor = this.deps.currentEditor();
@@ -185,7 +229,7 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	async functions(file?: string): Promise<object> {
+	async functions(file?: string): Promise<Api.FunctionListFacts> {
 		const { client, file: f } = await this.prepare(file);
 		const res = await client.functions(f);
 		return {
@@ -198,12 +242,12 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	async structure(file: string | undefined, fn: FunctionArg): Promise<object> {
+	async structure(file: string | undefined, fn: FunctionArg): Promise<Api.StructureFacts> {
 		const { doc, model } = await this.structureModel(file, fn);
 		return { file: doc.uri.fsPath, ...structureSummary(model), ...parseNote(model) };
 	}
 
-	async flow(file: string | undefined, line: number, name: string, show: boolean): Promise<object> {
+	async flow(file: string | undefined, line: number, name: string, show: boolean): Promise<Api.FlowFacts> {
 		const { client, doc, file: f } = await this.prepare(file);
 		if (line > doc.lineCount) {
 			throw new Error(`${path.basename(f)} has ${doc.lineCount} lines.`);
@@ -261,7 +305,7 @@ export class DataFlowMcpHost implements McpHost {
 		throw new Error(`No variable or data member "${name}" on line ${line}.`);
 	}
 
-	async calls(file: string | undefined, fn: FunctionArg): Promise<object> {
+	async calls(file: string | undefined, fn: FunctionArg): Promise<Api.CallFacts> {
 		const { client, doc, file: f } = await this.prepare(file);
 		const at = await this.selector(client, doc, fn);
 		const model = await client.calls(f, {
@@ -298,7 +342,7 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	async threads(file?: string): Promise<object> {
+	async threads(file?: string): Promise<Api.ThreadFacts> {
 		const { client, doc, file: f } = await this.prepare(file);
 		const model = await client.threads(f, { asyncFunctions: this.deps.asyncFunctions(doc.uri), roots: this.roots() });
 		const side = buildSideThreads(model, f, (l) => (l >= 0 && l < doc.lineCount ? doc.lineAt(l).text : undefined));
@@ -318,7 +362,7 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	async hidden(file: string | undefined, fn: FunctionArg): Promise<object> {
+	async hidden(file: string | undefined, fn: FunctionArg): Promise<Api.HiddenFacts> {
 		const { client, doc, file: f } = await this.prepare(file);
 		const at = await this.selector(client, doc, fn);
 		// a header with a template: the items of its instantiations come from a source file that includes it
@@ -352,7 +396,7 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	async includes(file?: string): Promise<object> {
+	async includes(file?: string): Promise<Api.IncludeFacts> {
 		const { client, file: f } = await this.prepare(file);
 		const model = await client.includes(f, this.roots());
 		const side = buildSideIncludes(model, f);
@@ -385,7 +429,7 @@ export class DataFlowMcpHost implements McpHost {
 	// The outline of a type by its name, or at a line with its name. A type that the translation unit only declares gets
 	// the outline of the header with its definition, as the menu "Outline" does
 	// The heat of the functions of a file, the hottest first. With a function, only that function
-	async heat(file: string | undefined, fn: string | undefined): Promise<object> {
+	async heat(file: string | undefined, fn: string | undefined): Promise<Api.HeatFacts> {
 		const { doc, file: f } = await this.prepare(file);
 		const model = await this.deps.heat(doc);
 		let functions = [...model.functions].sort((a, b) => b.score - a.score || a.first - b.first);
@@ -452,7 +496,7 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	async outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<object> {
+	async outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<Api.OutlineFacts> {
 		if (!name && line === undefined) {
 			throw new Error('Give the name of the type, or a line with its name.');
 		}
@@ -495,7 +539,7 @@ export class DataFlowMcpHost implements McpHost {
 	//-------------------
 	// View tools
 
-	async showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<object> {
+	async showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<Api.ShowBlocksResult> {
 		const { doc, model } = await this.structureModel(file, fn);
 		const title = functionTitle(model.function, true);
 		const { blocks: placed, problems } = snapBlocks(model, blocks, title);
@@ -534,7 +578,7 @@ export class DataFlowMcpHost implements McpHost {
 	}
 
 	// Notes on ranges or on blocks. append keeps the old notes of the file
-	async highlight(file: string | undefined, ranges: ModelNoteInput[], append = false): Promise<object> {
+	async highlight(file: string | undefined, ranges: ModelNoteInput[], append = false): Promise<Api.HighlightResult> {
 		const doc = await this.document(file);
 		const f = doc.uri.fsPath;
 		const old = this.layerOf(f);
@@ -556,7 +600,7 @@ export class DataFlowMcpHost implements McpHost {
 
 	// Comments on single lines. append keeps the old comments of the file: a new comment on a line replaces only the old
 	// comment of that line
-	async comment(file: string | undefined, input: ModelCommentInput[], append: boolean): Promise<object> {
+	async comment(file: string | undefined, input: ModelCommentInput[], append: boolean): Promise<Api.CommentLinesResult> {
 		const doc = await this.document(file);
 		const f = doc.uri.fsPath;
 		const old = this.layerOf(f);
@@ -575,7 +619,7 @@ export class DataFlowMcpHost implements McpHost {
 
 	// A detail on code: an expression on a line, a line, or the selection of the user. The side view shows a symbol at the
 	// end of the line, and the symbol shows the text in a card. A detail on the same code replaces the old detail
-	async detail(file: string | undefined, input: ModelDetailInput): Promise<object> {
+	async detail(file: string | undefined, input: ModelDetailInput): Promise<Api.AddDetailResult> {
 		const doc = await this.document(file);
 		const f = doc.uri.fsPath;
 		const old = this.layerOf(f);
@@ -597,7 +641,7 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	async clear(file?: string): Promise<object> {
+	async clear(file?: string): Promise<Api.ClearResult> {
 		const { store } = this.deps;
 		if (!file) {
 			const removed = store.state.modelLayers.length;
@@ -614,7 +658,7 @@ export class DataFlowMcpHost implements McpHost {
 	// Guided review
 
 	// The files that the user wants to review: the C and C++ files under the paths, with the diff of each changed file
-	async review(paths: unknown): Promise<object> {
+	async review(paths: unknown): Promise<Api.ReviewFacts> {
 		if (!Array.isArray(paths) || paths.length === 0 || !paths.every((p) => typeof p === 'string' && p.trim().length > 0)) {
 			throw new Error('Give "paths": the files and the folders that the user wants to review.');
 		}
@@ -636,7 +680,7 @@ export class DataFlowMcpHost implements McpHost {
 	}
 
 	// Shows the plan of a guided review in the side view, at its first step
-	async showReviewPlan(plan: GuidePlanInput): Promise<object> {
+	async showReviewPlan(plan: GuidePlanInput): Promise<Api.ReviewPlanResult> {
 		const { store, side } = this.deps;
 		// the files of the steps: a path relative to the repository or to a folder of the project, or an absolute path
 		const files = new Map<string, { file: string; lineCount: number; problem?: string }>();
@@ -680,7 +724,7 @@ export class DataFlowMcpHost implements McpHost {
 	// Diff walk
 
 	// The changes of a diff walk: the hunks of the changed C and C++ files against the base, with an id for each hunk
-	async diff(base: string | undefined, paths: unknown): Promise<object> {
+	async diff(base: string | undefined, paths: unknown): Promise<Api.DiffFacts> {
 		if (paths !== undefined && (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.trim().length > 0))) {
 			throw new Error('"paths" must be a list of files and folders.');
 		}
@@ -700,7 +744,7 @@ export class DataFlowMcpHost implements McpHost {
 	}
 
 	// Shows the plan of a diff walk in the side view, at its first step
-	async showDiffWalk(plan: WalkPlanInput): Promise<object> {
+	async showDiffWalk(plan: WalkPlanInput): Promise<Api.DiffWalkResult> {
 		const { store, side } = this.deps;
 		const walk = this.lastWalk;
 		if (!walk) {
@@ -734,7 +778,7 @@ export class DataFlowMcpHost implements McpHost {
 	}
 
 	// Goes to a step of the guided review or of the diff walk, and adds a note or a mark to it
-	async reviewStep(step: number, note: unknown, status: string | undefined): Promise<object> {
+	async reviewStep(step: number, note: unknown, status: string | undefined): Promise<Api.ReviewStepResult> {
 		const { store, side } = this.deps;
 		const guide = store.state.guide;
 		if (!guide) {
@@ -768,7 +812,7 @@ export class DataFlowMcpHost implements McpHost {
 
 	// Closes the guided review or the diff walk, as the button Close review or Close walk of the user does. The state of
 	// the workspace then also has no guide. With a kind, only a guide of this kind closes
-	async closeGuide(kind: string | undefined): Promise<object> {
+	async closeGuide(kind: string | undefined): Promise<Api.CloseGuideResult> {
 		if (kind !== undefined && !(GUIDE_TYPES as readonly string[]).includes(kind)) {
 			throw new Error(`"kind" must be one of ${GUIDE_TYPES.map((t) => `"${t}"`).join(', ')}.`);
 		}
@@ -784,6 +828,108 @@ export class DataFlowMcpHost implements McpHost {
 		}
 		store.update({ guide: undefined });
 		return { closed: true, kind: shown, title: guide.title, steps: guide.steps.length, progress: guideProgress(guide) };
+	}
+
+	//-------------------
+	// Lenses
+
+	// The logic of a function: its decisions, and one path through the function for the choices
+	async logic(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts> {
+		const { doc, model, controls } = await this.logicModel(file, fn);
+		const chosen = checkChoices(controls, choices);
+		return { file: doc.uri.fsPath, ...logicFacts(model, controls, chosen), ...parseNote(model) };
+	}
+
+	// Shows the path of Logic Map for the choices in the side view. The cursor goes to the function, so the other lenses
+	// show the same function
+	async showLogicPath(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts> {
+		const { doc, at, model, controls } = await this.logicModel(file, fn);
+		const chosen = checkChoices(controls, choices);
+		this.deps.showLogicPath(doc, model, chosen, at.line);
+		await this.deps.side.goTo(doc.uri.fsPath, at.line, toUtf16Column(doc.lineAt(at.line - 1).text, at.col));
+		this.deps.side.showDetails('logic');
+		return { file: doc.uri.fsPath, ...logicFacts(model, controls, chosen), shown: true, ...parseNote(model) };
+	}
+
+	// Turns a lens of the side view on or off. A lens that turns on opens the side view
+	async setLens(lens: string, isOn: boolean): Promise<Api.SetLensResult> {
+		if (!(LENSES as readonly string[]).includes(lens)) {
+			throw new Error(`"lens" must be one of ${LENSES.join(', ')}.`);
+		}
+		const { store } = this.deps;
+		const wasOn = store.state.lenses[lens as Lens];
+		this.deps.setLens(lens as Lens, isOn);
+		return {
+			lens, on: isOn, changed: wasOn !== isOn,
+			lenses: Object.entries(store.state.lenses).filter(([, on]) => on).map(([l]) => l),
+		};
+	}
+
+	// Moves the cursor to a line, and shows it in the side view. The lenses follow the cursor
+	async showLine(file: string | undefined, line: number): Promise<Api.ShowLineResult> {
+		const doc = await this.document(file);
+		if (!isCpp(doc) && !INCLUDE_FILE.test(doc.uri.fsPath)) {
+			throw new Error(`${doc.uri.fsPath} is not a C or C++ file. The side view shows only C and C++ files.`);
+		}
+		if (line > doc.lineCount) {
+			throw new Error(`${path.basename(doc.uri.fsPath)} has ${doc.lineCount} lines.`);
+		}
+		const text = doc.lineAt(line - 1).text;
+		await this.deps.side.goTo(doc.uri.fsPath, line, Math.max(0, text.search(/\S/)));
+		return { file: doc.uri.fsPath, line, text: text.trim().slice(0, 300), shown: true };
+	}
+
+	// Removes the trace of Flow Lens. Flow Lens traces again at the next move of the cursor
+	async clearFlow(): Promise<Api.ClearedResult> {
+		return { cleared: this.deps.clearFlow() };
+	}
+
+	// The last review of Change Ripple: the changed functions, the statements that each change reaches, and the callers
+	// that get a changed return value
+	async ripple(): Promise<Api.RippleFacts> {
+		const { state, model, root } = this.deps.ripple();
+		if (state?.isRunning) {
+			return { state: 'running', note: 'The review of Change Ripple runs. Call get_ripple again later.' };
+		}
+		if (!model || !state) {
+			return state?.message
+				? { state: 'failed', message: state.message }
+				: { state: 'none', note: 'No review of Change Ripple shows. Call start_ripple, or ask the user to run "DataFlow: Review Changes".' };
+		}
+		const rel = (f: string) => (root && isInside(f, root) ? path.relative(root, f).replace(/\\/g, '/') : f);
+		return { state: 'ready', ...rippleFacts(model, state, rel), ...(state.message ? { message: state.message } : {}) };
+	}
+
+	// Runs a review of Change Ripple against the target branch, and gives its facts
+	async startRipple(): Promise<Api.RippleFacts> {
+		this.ready();
+		await this.deps.startRipple();
+		return this.ripple();
+	}
+
+	// Closes Change Ripple
+	async clearRipple(): Promise<Api.ClearedResult> {
+		return { cleared: this.deps.clearRipple() };
+	}
+
+	// Starts the scan of the call graph of the project for the heat. The scan does not block
+	async scanCallGraph(): Promise<Api.CallGraphFacts> {
+		this.ready();
+		this.deps.scanCallGraph();
+		return callGraphFacts(this.deps.store.state.callGraph);
+	}
+
+	async stopCallGraph(): Promise<Api.StopCallGraphResult> {
+		const isStopped = this.deps.stopCallGraph();
+		return { stopped: isStopped, ...callGraphFacts(this.deps.store.state.callGraph) };
+	}
+
+	private async logicModel(file: string | undefined, fn: FunctionArg):
+		Promise<{ doc: vscode.TextDocument; at: { line: number; col: number }; model: LogicModel & FileResult; controls: Control[] }> {
+		const { client, doc, file: f } = await this.prepare(file);
+		const at = await this.selector(client, doc, fn);
+		const model = await client.logic(f, at, this.deps.logicOptions(doc));
+		return { doc, at, model, controls: buildControls(model) };
 	}
 
 	// The full path of a file of a step: an absolute path, or a path relative to the root of the last get_review or to a

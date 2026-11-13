@@ -3,6 +3,8 @@ import {
 } from '../lenses/blocks';
 import { GUIDE_KINDS, GUIDE_STATUSES, GUIDE_TYPES, MAX_GUIDE_STEPS, MAX_STEP_CHECKS, type GuidePlanInput } from '../review/guide';
 import { MAX_WALK_STEPS, type WalkPlanInput } from '../review/walk';
+import { LENSES } from '../state/store';
+import type * as Api from '../../api/dataflow-api';
 import type { McpPrompt, McpTool } from './server';
 
 // The tools and the prompt of the MCP server of DataFlow. The read tools give the facts of the engine. The view tools
@@ -16,34 +18,47 @@ export interface FunctionArg {
 }
 
 export interface McpHost {
-	view(): Promise<object>;
-	functions(file?: string): Promise<object>;
-	structure(file: string | undefined, fn: FunctionArg): Promise<object>;
-	flow(file: string | undefined, line: number, name: string, show: boolean): Promise<object>;
-	calls(file: string | undefined, fn: FunctionArg): Promise<object>;
-	threads(file?: string): Promise<object>;
-	hidden(file: string | undefined, fn: FunctionArg): Promise<object>;
-	includes(file?: string): Promise<object>;
-	outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<object>;
-	heat(file: string | undefined, fn: string | undefined): Promise<object>;
-	showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<object>;
-	highlight(file: string | undefined, ranges: ModelNoteInput[], append: boolean): Promise<object>;
-	comment(file: string | undefined, comments: ModelCommentInput[], append: boolean): Promise<object>;
-	detail(file: string | undefined, detail: ModelDetailInput): Promise<object>;
-	clear(file?: string): Promise<object>;
-	review(paths: unknown): Promise<object>;
-	showReviewPlan(plan: GuidePlanInput): Promise<object>;
-	reviewStep(step: number, note: unknown, status: string | undefined): Promise<object>;
-	diff(base: string | undefined, paths: unknown): Promise<object>;
-	showDiffWalk(plan: WalkPlanInput): Promise<object>;
-	closeGuide(kind: string | undefined): Promise<object>;
+	view(): Promise<Api.ViewFacts>;
+	functions(file?: string): Promise<Api.FunctionListFacts>;
+	structure(file: string | undefined, fn: FunctionArg): Promise<Api.StructureFacts>;
+	flow(file: string | undefined, line: number, name: string, show: boolean): Promise<Api.FlowFacts>;
+	calls(file: string | undefined, fn: FunctionArg): Promise<Api.CallFacts>;
+	threads(file?: string): Promise<Api.ThreadFacts>;
+	hidden(file: string | undefined, fn: FunctionArg): Promise<Api.HiddenFacts>;
+	includes(file?: string): Promise<Api.IncludeFacts>;
+	outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<Api.OutlineFacts>;
+	heat(file: string | undefined, fn: string | undefined): Promise<Api.HeatFacts>;
+	showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<Api.ShowBlocksResult>;
+	highlight(file: string | undefined, ranges: ModelNoteInput[], append: boolean): Promise<Api.HighlightResult>;
+	comment(file: string | undefined, comments: ModelCommentInput[], append: boolean): Promise<Api.CommentLinesResult>;
+	detail(file: string | undefined, detail: ModelDetailInput): Promise<Api.AddDetailResult>;
+	clear(file?: string): Promise<Api.ClearResult>;
+	review(paths: unknown): Promise<Api.ReviewFacts>;
+	showReviewPlan(plan: GuidePlanInput): Promise<Api.ReviewPlanResult>;
+	reviewStep(step: number, note: unknown, status: string | undefined): Promise<Api.ReviewStepResult>;
+	diff(base: string | undefined, paths: unknown): Promise<Api.DiffFacts>;
+	showDiffWalk(plan: WalkPlanInput): Promise<Api.DiffWalkResult>;
+	closeGuide(kind: string | undefined): Promise<Api.CloseGuideResult>;
+	logic(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts>;
+	showLogicPath(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts>;
+	ripple(): Promise<Api.RippleFacts>;
+	startRipple(): Promise<Api.RippleFacts>;
+	clearRipple(): Promise<Api.ClearedResult>;
+	setLens(lens: string, isOn: boolean): Promise<Api.SetLensResult>;
+	showLine(file: string | undefined, line: number): Promise<Api.ShowLineResult>;
+	clearFlow(): Promise<Api.ClearedResult>;
+	scanCallGraph(): Promise<Api.CallGraphFacts>;
+	stopCallGraph(): Promise<Api.StopCallGraphResult>;
 }
 
 export const INSTRUCTIONS = [
 	'DataFlow analyzes the C++ code that is open in VS Code with the Clang compiler, and it shows the results in its side view beside the editor.',
-	'The read tools (get_*, list_functions) give facts of the engine: statements, data flow, calls, threads and races, hidden operations, includes, the outline of a type '
-	+ 'and the heat of the functions: how much a change of each function can break.',
-	'The view tools (show_blocks, show_flow, highlight, comment_lines, add_detail, clear) change the side view that the user looks at.',
+	'The read tools (get_*, list_functions) give facts of the engine: statements, data flow, calls, threads and races, hidden operations, includes, the outline of a type, '
+	+ 'the heat of the functions: how much a change of each function can break, the decisions and the paths of a function (get_logic), '
+	+ 'and the last review of Change Ripple (get_ripple).',
+	'The view tools (show_blocks, show_flow, show_logic_path, show_line, highlight, comment_lines, add_detail, clear) change the side view that the user looks at. '
+	+ 'set_lens turns a lens on or off, clear_flow removes the trace of Flow Lens, start_ripple and clear_ripple run and close Change Ripple, '
+	+ 'and scan_call_graph and stop_call_graph control the scan of the call graph for the heat.',
 	'Lines start at 1. If you omit "file", a tool uses the file of the active editor, or else the file of the side view. Call get_view first to see what the user looks at.',
 	'If no C++ editor shows, the cursor of get_view is the cursor of the side view, where the user clicked, and the view tools move only the side view.',
 	'If the user selected code and asks for details, an explanation or examples of it, call get_view for the selection, then add_detail with no line.',
@@ -60,6 +75,11 @@ const FILE = { type: 'string', description: 'The C++ file: an absolute path, or 
 const FUNCTION = { type: 'string', description: 'The function: its qualified name, for example electricity::power_ctrl::process, its name, or the text of its macro call (macroCall). Default: the function at the cursor.' };
 const LINE_IN_FUNCTION = { type: 'integer', minimum: 1, description: 'A line in the function. Use it for an overloaded name, or instead of "function".' };
 const LINES = { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 2, maxItems: 2, description: 'The first and the last line, from 1.' };
+const CHOICES = {
+	type: 'object', additionalProperties: { type: 'string' },
+	description: 'The options that you select for the path: the key of a decision from get_logic, and one of its options, for example {"if:count > 0#0": "no"}. '
+		+ '"any" removes a choice. A decision with no choice takes the option that runs the most lines.',
+};
 
 const BLOCK_PROPERTIES = {
 	lines: LINES,
@@ -148,6 +168,13 @@ class Args {
 		}
 		return v;
 	}
+
+	requiredFlag(key: string): boolean {
+		if (this.args[key] === undefined || this.args[key] === null) {
+			throw new Error(`Give "${key}".`);
+		}
+		return this.flag(key);
+	}
 }
 
 const json = (value: object) => ({ text: JSON.stringify(value) });
@@ -215,6 +242,17 @@ export function createTools(host: McpHost): McpTool[] {
 			+ 'For a review, start with the hottest changed functions.',
 			{ file: FILE, function: { ...FUNCTION, description: 'One function: its qualified name or its name. Default: all functions of the file.' } },
 			[], true, (a) => host.heat(a.text('file'), a.text('function'))),
+		tool('get_logic', 'Get the logic of a function',
+			'The logic of a function, as Logic Map of DataFlow finds it, but does not change the view: the decisions of the function (if, loop, do, switch, conditional operator, '
+			+ 'and else-if chains on one value) with their options, one path through the function, and the steps of the path: the decisions, the events, the effects '
+			+ '(changes of data that live after the call), the returns and the warnings. A warning is two events on one path, an event in a loop, or a dereference of a pointer '
+			+ 'that can be null. Give "choices" to select options for the path. deadLines are the lines that the path does not run.',
+			{ file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION, choices: CHOICES }, [], true, (a) => host.logic(a.text('file'), a.fn(), a.raw('choices'))),
+		tool('get_ripple', 'Get the Change Ripple review',
+			'The last review of Change Ripple: for each changed function of the branch against its target branch, the statements that the change reaches, the exits where '
+			+ 'the effect leaves a body, and the callers that get a changed return value (depth 1, and depth 2 for their callers), with their statements. '
+			+ 'state is ready, running, failed or none. start_ripple runs a new review.',
+			{}, [], true, () => host.ripple()),
 		tool('show_blocks', 'Show logical blocks',
 			'Shows logical blocks of one function in the DataFlow side view: a bar beside the lines of each block, its title at the end of its first line, and a list with the summaries and the data of the blocks. '
 			+ `Give the blocks in the sequence of the lines, with no overlap. A block can have children, for example one child for each branch of an if chain, and a child can have children too: ${MAX_BLOCK_LEVELS} levels at most. `
@@ -232,6 +270,16 @@ export function createTools(host: McpHost): McpTool[] {
 			'Starts Flow Lens of DataFlow on a variable or a data member, as a click on it does, and returns the trace. The side view colors each reference and connects the definitions to the uses.',
 			{ file: FILE, line: { type: 'integer', minimum: 1, description: 'A line with a reference of the name.' }, name: { type: 'string', description: 'The name of the variable or the member.' } },
 			['line', 'name'], false, (a) => host.flow(a.text('file'), a.requiredLine('line'), a.requiredText('name'), true)),
+		tool('show_logic_path', 'Show a logic path',
+			'Shows Logic Map of DataFlow in the side view for a function with a path for the choices, as the user does with the options of the decisions. '
+			+ 'The cursor goes to the function, so the other lenses show the same function. Lines that the path does not run are dim. '
+			+ 'The result gives the same facts as get_logic.',
+			{ file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION, choices: CHOICES }, [], false, (a) => host.showLogicPath(a.text('file'), a.fn(), a.raw('choices'))),
+		tool('show_line', 'Show a line',
+			'Moves the cursor to a line of a C++ file, and shows the line in the DataFlow side view and in the text editor beside it. '
+			+ 'The lenses follow the cursor: they show the function of the line.',
+			{ file: FILE, line: { type: 'integer', minimum: 1, description: 'The line.' } },
+			['line'], false, (a) => host.showLine(a.text('file'), a.requiredLine('line'))),
 		tool('highlight', 'Highlight code',
 			'Colors lines or blocks in the DataFlow side view and shows a note at the first line of each range. Give "lines" or the id of a block from show_blocks. '
 			+ 'If more functions have a block with the id, also give "function". A new call replaces the notes of the file, except with "append".',
@@ -288,6 +336,33 @@ export function createTools(host: McpHost): McpTool[] {
 			'Removes the blocks, the notes, the comments and the details of the model from the DataFlow side view. '
 			+ 'The guided review and the diff walk stay: close_guide closes them.',
 			{ file: { ...FILE, description: 'The file. Default: all files.' } }, [], false, (a) => host.clear(a.text('file'))),
+		tool('set_lens', 'Turn a lens on or off',
+			'Turns a lens of the DataFlow side view on or off, as its switch in the toolbar does. The lenses are flow (Flow Lens), logic (Logic Map), cost (Hidden C++), '
+			+ 'includes (Include Hierarchy), calls (Call Hierarchy), threads (Threads and races), heat (Heat) and review (Change Ripple). '
+			+ 'A lens that turns on opens the side view. review on runs a review of Change Ripple. get_view gives the lenses that are on.',
+			{
+				lens: { type: 'string', enum: [...LENSES], description: 'The lens.' },
+				on: { type: 'boolean', description: 'true: turn the lens on. false: turn it off.' },
+			},
+			['lens', 'on'], false, (a) => host.setLens(a.requiredText('lens'), a.requiredFlag('on'))),
+		tool('clear_flow', 'Remove the trace of Flow Lens',
+			'Removes the trace of Flow Lens from the DataFlow side view, as the command Clear Trace does. Flow Lens traces again when the cursor moves to a variable.',
+			{}, [], false, () => host.clearFlow()),
+		tool('start_ripple', 'Run Change Ripple',
+			'Runs a review of Change Ripple, as the command Review Changes does, waits for its end, and gives the same facts as get_ripple. '
+			+ 'The side view shows the story of the review. Change Ripple compares the working tree with the merge base of the target branch. '
+			+ 'If the repository has no target branch, VS Code asks the user for it.',
+			{}, [], false, () => host.startRipple()),
+		tool('clear_ripple', 'Close Change Ripple',
+			'Closes the review of Change Ripple in the DataFlow side view, as the button Clear of its bar does.',
+			{}, [], false, () => host.clearRipple()),
+		tool('scan_call_graph', 'Scan the call graph',
+			'Starts the scan of the call graph of the project for the heat, or the scan of the source files that changed after the last scan, as the button Scan of the tab Heat does. '
+			+ 'The scan does not block: the result gives the state and the progress. get_heat starts the scan too, but not after a stop of the user.',
+			{}, [], false, () => host.scanCallGraph()),
+		tool('stop_call_graph', 'Stop the scan of the call graph',
+			'Stops the scan of the call graph, as the button Stop of the tab Heat does. A first scan keeps the part that it scanned, and an update keeps the last complete graph.',
+			{}, [], false, () => host.stopCallGraph()),
 		tool('get_review', 'Get the files to review',
 			'The C and C++ files under the paths that the user wants to review, with their number of lines, the changed files first. If the git repository of the project has a target branch, '
 			+ 'a changed file also has its diff against the merge base, with the line numbers of the working tree, and the heat of its changed functions. '

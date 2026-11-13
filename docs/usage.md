@@ -276,6 +276,8 @@ Logic Map shows events and pointer warnings only if you configure them for your 
 
 Two events on one path get a warning. An event that the path can send again, for example in a loop, also gets a warning.
 
+The MCP tool `get_logic` gives the decisions of a function and a path for the options that a language model selects. `show_logic_path` shows this path in the side view. See [Use the MCP tools](tools.md#get_logic).
+
 ## Hidden C++
 
 Hidden C++ shows the operations that the compiler adds, for example copies and destructors.
@@ -495,6 +497,8 @@ A restart of the engine runs the review again, for example after a change of the
 The review works on more than one changed file at the same time. The number of files is one less than the setting `dataflow.engine.cacheSize`, because each file keeps its parse until its ripple is complete.
 
 Change Ripple goes from a return value to the callers of the function. The engine finds the callers in the same file. For the callers in other files, Change Ripple uses the call hierarchy of the C/C++ extension or of clangd. If neither is active, the story tells you.
+
+The MCP tools `start_ripple` and `get_ripple` give the review to a language model: the code that each change reaches, also in the callers. See [Use the MCP tools](tools.md#get_ripple).
 
 ### Select the target branch
 

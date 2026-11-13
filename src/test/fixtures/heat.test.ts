@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { DataFlowApi } from '../../extension';
+import type { DataFlowInternals } from '../../extension';
 import type { SideGuide } from '../../side/protocol';
 import { activateDataFlow, waitFor } from './helpers';
 
@@ -18,7 +18,7 @@ suite('Heat', () => {
 		callGraph?: string;
 	}
 
-	let api: DataFlowApi;
+	let api: DataFlowInternals;
 	suiteSetup(async function () {
 		this.timeout(120000);
 		api = await activateDataFlow(source());
