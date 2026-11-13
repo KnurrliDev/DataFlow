@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { TextChange } from '../../lenses/blocks';
+import type { HeatBand, HeatFunction, HeatModel, HeatReason } from '../../lenses/heat';
 import { diffHunks, type DiffLine } from '../../review/git';
 import { guideFacts, guideSummary, moveGuide, restoreGuide, storeGuide, type GuideFileLines } from '../../review/guide';
 import { walkBranchItems, type TargetItem } from '../../review/targets';
@@ -252,6 +253,37 @@ suite('Diff walk', () => {
 		assert.deepStrictEqual(facts.suggestedSteps.map((s) => s.hunks), [['h1'], ['h2'], ['h3'], ['h4'], ['h5'], ['h6']]);
 		assert.deepStrictEqual(facts.deletedFiles, ['old.hpp']);
 		assert.deepStrictEqual(facts.otherChangedFiles, ['README.md']);
+	});
+
+	test('With the heat of the files, each hunk has the heat of its changed functions, and hottestChanges gives them, the hottest first', () => {
+		const fn = (name: string, first: number, last: number, score: number, band: HeatBand, reasons: HeatReason[] = []): HeatFunction => ({
+			name, qualifiedName: `rate::${name}`, first, last, nameLine: first, score, band, flames: 1, reach: 0, risk: 0, history: 0, isSiloed: false, reasons,
+		});
+		const frame: HeatReason = { group: 'reach', points: 40, text: 'Runs in each frame: called in the main loop of main' };
+		const model: HeatModel = {
+			file: CPP, notices: [], isReachComplete: true,
+			functions: [fn('clamp_rate', 5, 7, 72, 'hot', [{ group: 'risk', points: 3, text: '1 decision' }, frame]), fn('process', 9, 12, 30, 'warm'), fn('helper', 14, 16, 10, 'cool')],
+		};
+		const files = [rateFile()];
+		const facts = walkFacts(input(files), walkHunks(files), new Map([[CPP, model]])) as {
+			files: { hunks: { id: string; heat?: { function: string; score: number; band: string }[] }[] }[];
+			hottestChanges: { function: string; file: string; lines: number[]; score: number; band: string; reasons: string[]; hunks: string[] }[];
+			suggestedSteps: { hunks: string[]; heat?: number }[];
+		};
+		// the include on line 2 is in no function
+		assert.deepStrictEqual(facts.files[0].hunks.map((h) => [h.id, h.heat?.map((x) => `${x.function} ${x.score} ${x.band}`)]), [
+			['h1', undefined], ['h2', ['rate::clamp_rate 72 hot']], ['h3', ['rate::process 30 warm']], ['h4', ['rate::helper 10 cool']],
+		]);
+		// the reasons with the most points come first
+		assert.deepStrictEqual(facts.hottestChanges[0], {
+			function: 'rate::clamp_rate', lines: [5, 7], score: 72, band: 'hot', file: 'src/rate.cpp', hunks: ['h2'],
+			reasons: ['Runs in each frame: called in the main loop of main (+40 reach)', '1 decision (+3 risk)'],
+		});
+		assert.deepStrictEqual(facts.hottestChanges.map((c) => c.function), ['rate::clamp_rate', 'rate::process', 'rate::helper']);
+		assert.deepStrictEqual(facts.suggestedSteps.map((s) => [s.hunks.join(), s.heat]), [['h1', undefined], ['h2', 72], ['h3', 30], ['h4', 10]]);
+		// with no heat, the facts have no heat
+		const plain = walkFacts(input(files), walkHunks(files)) as { hottestChanges?: unknown; suggestedSteps: { heat?: number }[] };
+		assert.ok(plain.hottestChanges === undefined && plain.suggestedSteps.every((s) => s.heat === undefined));
 	});
 
 	test('The diff of a step moves with an edit, and a changed line in the edit loses its changed characters', () => {

@@ -191,7 +191,7 @@ The instructions of the server get one sentence: for a review, start with the ho
 | --- | --- |
 | A | The engine request `dataflow/metrics` with no reach data, the history from `git blame`, the include reach, the heat model, the lens Heat, the tab Heat and `get_heat`. |
 | B | The call graph of the engine with the progress, the button Stop and the update after changes. The frame functions of section 4.3 and the setting `dataflow.heat.frameFunctions`. The busy widget. Calibration of the points on a header-only library and a game engine (section 12). |
-| C | Heat in the guided review and in the diff walk: `get_review` and `get_diff` give the heat of each changed function, and the plan of the model can start with the hottest changes. |
+| C | Heat in the guided review and in the diff walk: `get_review` and `get_diff` give the heat of each changed function, and the plan of the model can start with the hottest changes. While the lens Heat shows, each step in the tab Guide shows the flames of its hottest function. |
 
 Each phase is one commit with its tests and its documents.
 
@@ -230,6 +230,8 @@ The user decided on 2026-11-13:
 7. The calibration uses a header-only library and a game engine with a main loop (section 12).
 8. The caller points count the transitive callers, not only the direct callers, because the calibration showed that a core function behind one entry point stays low.
 9. Vendored code in the project folders stays a part of the project, for example a copy of Dear ImGui. Its heat is correct, and it does not change the scores of the other functions.
+10. In phase C, each step in the tab Guide shows the flames of its hottest function only while the lens Heat shows. Thus a guided review or a diff walk alone does not start a scan of the call graph. `get_review` and `get_diff` start the scan, because the model asks for the heat.
+11. The walk of the command keeps the sequence of the files and the lines. The flames show which steps are hot.
 
 ## 12. Calibration
 

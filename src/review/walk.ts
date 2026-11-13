@@ -1,8 +1,11 @@
 import * as path from 'path';
 import { changedPart } from '../side/model';
 import type { SideGuide, SideGuideKind, SideGuideStep, SideStepDiff, SideStepRow } from '../side/protocol';
+import { bandText, changedFunctions, HeatChange, HeatFunction, heatFact, HeatModel, hottestChanges, MAX_HOT_CHANGES } from '../lenses/heat';
 import type { DiffLine } from './git';
-import { diffText, GUIDE_KINDS, MAX_CHECK, MAX_GUIDE_SUMMARY, MAX_STEP_CHECKS, MAX_STEP_TEXT, MAX_STEP_TITLE } from './guide';
+import {
+	diffText, GUIDE_KINDS, markedLines, MAX_CHECK, MAX_GUIDE_SUMMARY, MAX_STEP_CHECKS, MAX_STEP_TEXT, MAX_STEP_TITLE,
+} from './guide';
 
 // A diff walk: DataFlow or a language model goes through the changes of a diff, one step after the other. Each step has
 // the hunks of one file. The side view marks the added and the removed lines of the current step in the code, and the
@@ -66,20 +69,6 @@ export interface WalkHunk {
 	functions: WalkFunction[]; // the functions with a changed line
 	newFunctions: WalkFunction[]; // the functions that the hunk adds with all their lines
 	isNewFile: boolean;
-}
-
-// The lines that a hunk changes in the working tree: the added lines, and the line after each removed block. A removed
-// block at the end of the file marks the last line
-function markedLines(lines: readonly DiffLine[], lineCount: number): number[] {
-	const out: number[] = [];
-	lines.forEach((l, i) => {
-		if (l.kind === 'added') {
-			out.push(l.newLine);
-		} else if (l.kind === 'removed' && lines[i - 1]?.kind !== 'removed') {
-			out.push(Math.max(1, Math.min(l.newLine, lineCount)));
-		}
-	});
-	return out;
 }
 
 // The hunks of the files, with an id for each hunk
@@ -461,9 +450,32 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 // The facts for the model
 
 // The facts of a diff for the model in get_diff: the hunks of each changed file with their ids and their diff, and the
-// default steps. The paths are relative to the root. The diff of a hunk after MAX_FACT_LINES lines is not in the facts
-export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[]): object {
+// default steps. The paths are relative to the root. The diff of a hunk after MAX_FACT_LINES lines is not in the facts.
+// With the heat of the changed files, each hunk has the heat of the functions that it changes, and hottestChanges gives
+// the changed functions, the hottest first
+export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[], heat?: ReadonlyMap<string, HeatModel>): object {
 	const rel = (file: string) => path.relative(input.root, file).replace(/\\/g, '/');
+
+	// the changed functions of each hunk with their heat, and each changed function with its hunks
+	const heatOf = new Map<string, HeatFunction[]>();
+	const changes = new Map<string, HeatChange>();
+	for (const h of hunks) {
+		const model = heat?.get(h.file);
+		if (!model) {
+			continue;
+		}
+		const lineCount = input.files.find((f) => f.file === h.file)?.lineCount ?? h.last;
+		const fns = changedFunctions(model, markedLines(h.lines, lineCount));
+		heatOf.set(h.id, fns);
+		for (const fn of fns) {
+			const key = `${h.file}\n${fn.first}`;
+			const change = changes.get(key) ?? { file: h.file, fn, hunks: [] };
+			change.hunks.push(h.id);
+			changes.set(key, change);
+		}
+	}
+	const stepHeat = (group: readonly WalkHunk[]) => Math.max(-1, ...group.flatMap((h) => (heatOf.get(h.id) ?? []).map((fn) => fn.score)));
+
 	let left = MAX_FACT_LINES;
 	const files = input.files.map((f) => ({
 		file: rel(f.file),
@@ -475,6 +487,7 @@ export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[]): object 
 			if (isShown) {
 				left -= text.length;
 			}
+			const fns = heatOf.get(h.id) ?? [];
 			return {
 				id: h.id,
 				lines: [h.first, h.last],
@@ -482,6 +495,7 @@ export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[]): object 
 				removed: h.minus,
 				...(h.functions.length > 0 ? { functions: h.functions.map((fn) => fn.qualified) } : {}),
 				...(h.newFunctions.length > 0 ? { newFunctions: h.newFunctions.map((fn) => fn.qualified) } : {}),
+				...(fns.length > 0 ? { heat: fns.map((fn) => ({ function: fn.qualifiedName || fn.name, score: fn.score, band: bandText(fn.band) })) } : {}),
 				...(isShown ? { diff: text.join('\n') } : { isDiffTruncated: true }),
 			};
 		}),
@@ -490,8 +504,14 @@ export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[]): object 
 	return {
 		root: input.root,
 		base: input.base,
+		...(changes.size > 0 ? {
+			hottestChanges: hottestChanges([...changes.values()], MAX_HOT_CHANGES).map((c) => ({ ...heatFact(c.fn), file: rel(c.file), hunks: c.hunks })),
+		} : {}),
 		files,
-		suggestedSteps: groups.map((g) => ({ title: groupTitle(g), hunks: g.map((h) => h.id) })),
+		suggestedSteps: groups.map((g) => {
+			const score = stepHeat(g);
+			return { title: groupTitle(g), hunks: g.map((h) => h.id), ...(score >= 0 ? { heat: score } : {}) };
+		}),
 		...(skipped.length > 0 ? { notInSuggestedSteps: skipped.map((h) => h.id) } : {}),
 		...(input.deleted.length > 0 ? { deletedFiles: input.deleted.map(rel) } : {}),
 		...(input.other.length > 0 ? { otherChangedFiles: input.other.map(rel) } : {}),

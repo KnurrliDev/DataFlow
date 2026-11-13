@@ -173,6 +173,14 @@ test('Guided review: the files of a folder, a plan of the model, the marks, the 
 
 test('Diff walk: the command with the list of branches, the marks of the diff in the code, the card of the removed line, the diff in the tab Guide, the diff editor and a plan of the model', { timeout: 600000 }, async () => {
 	const r = await run('side-walk-snapshot.mjs');
+	// Heat on: each step of the plan of the model gets the flames and the score of its hottest function. get_diff gives the
+	// heat of the changed functions
+	assert.equal(r.stepHeat?.length, 2, JSON.stringify(r.stepHeat));
+	for (const h of r.stepHeat) {
+		assert.ok(h && h.flames >= 1 && h.flames <= 5 && /^b-(cool|warm|hot|veryHot)$/.test(h.band) && /^\d+$/.test(h.text.trim()), JSON.stringify(h));
+	}
+	assert.match(r.stepHeat[0].title, /^electricity::power_ctrl::process\nHeat \d+ of 100: (cool|warm|hot|very hot)$/);
+	assert.ok(r.hottest.includes('electricity::power_ctrl::solve_power_plan') && r.hottest.includes('electricity::power_ctrl::process'), JSON.stringify(r.hottest));
 	// the list of the changes: the label and the detail of each item
 	for (const label of ['Changes that are not committed', 'Changes of the branch', 'Changes against a branch…', 'Changes since a commit…']) {
 		assert.ok(r.items.includes(label), JSON.stringify(r.items));

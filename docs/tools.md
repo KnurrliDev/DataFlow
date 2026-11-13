@@ -148,9 +148,9 @@ Ask the model for a review of files or folders, for example "Do a guided review 
 
 The model does these steps:
 
-1. It calls `get_review` with the paths. DataFlow gives the C and C++ files under the paths. If the git repository has a target branch, a changed file also has its diff against the merge base. Change Ripple does not run, and the side view does not change.
+1. It calls `get_review` with the paths. DataFlow gives the C and C++ files under the paths. If the git repository has a target branch, a changed file also has its diff against the merge base, and the heat of its changed functions. Change Ripple does not run, and the side view does not change.
 2. It reads the code with the read tools, for example `get_structure` and `get_flow`.
-3. It calls `show_review_plan` with the steps. The side view goes to the lines of step 1.
+3. It calls `show_review_plan` with the steps. The plan starts with the hottest changes, unless a different order explains the change better. The side view goes to the lines of step 1.
 4. It explains step 1, and waits for you.
 
 ### Go through the steps
@@ -158,6 +158,7 @@ The model does these steps:
 - The bar **REVIEW** under the toolbar shows the number and the title of the current step. To go to a different step, click **Next ›** or **‹ Back**. The side view goes to the lines of the step. If a C++ text editor shows, it also goes to the lines. To open the tab **Guide**, click the title.
 - The lines of the current step have a blue background, and a tag with the number and the title of the step.
 - The tab **Guide** of the details column shows the plan: the title, the summary of the model, your progress, and each step with its kind and its place. The current step also shows its text, its questions and the note of the model. To go to a step, click it.
+- While the lens **Heat** shows, each step in the tab Guide also shows the flames and the score of its hottest function. To see the name of the function, move the mouse on the flames.
 - To mark a step, click **OK**, **Issue** or **Question** in the bar or in the tab Guide. To remove the mark, click it again.
 - Ask the model about the current step, or ask for the next step. The model reads the current step and your marks with `get_view`. With `review_step`, it goes to a step and adds its answer or a finding as a note.
 - To put the summary of the review on the clipboard, click **Copy summary**. The summary is Markdown, for example for a comment on a pull request. It has each step with its place, its mark and the note of the model.
@@ -179,7 +180,7 @@ A diff walk goes through the changes of a diff with you, one step after the othe
 
 You can start a diff walk in two ways:
 
-- Run **DataFlow: Walk Through the Changes**, and select the changes. DataFlow makes one step for each changed function. The text of a step gives the number of added and removed lines.
+- Run **DataFlow: Walk Through the Changes**, and select the changes. DataFlow makes one step for each changed function, in the sequence of the files and the lines. The text of a step gives the number of added and removed lines.
 - Ask the model to walk you through the changes. Examples are "Walk me through the changes that you made" and "Walk me through the changes of this branch". For the changes against a different branch, name the branch, for example "Walk me through the changes against develop". You can also use the prompt **diff-walk** of DataFlow. The model puts the changes in the sequence that explains them best, and each step tells what changed and why.
 
 The changes come from one of these diffs. Each diff goes to the working tree, with the text of the editors that is not saved. The C and C++ files that git does not track yet are new files.
@@ -193,7 +194,7 @@ The changes come from one of these diffs. Each diff goes to the working tree, wi
 
 The model does these steps:
 
-1. It calls `get_diff`. DataFlow gives the hunks of the changed C and C++ files. Each hunk has an id, for example h3, and the functions that it changes.
+1. It calls `get_diff`. DataFlow gives the hunks of the changed C and C++ files. Each hunk has an id, for example h3, the functions that it changes, and their heat. The model gives the hottest changes an early step.
 2. It reads the changed code with the read tools, for example `get_structure` and `get_flow`.
 3. It calls `show_diff_walk` with the steps. Each step names its hunks. DataFlow adds a step at the end for each hunk that no step names. The side view goes to step 1.
 4. It explains step 1, and waits for you.
@@ -207,6 +208,7 @@ A diff walk has the bar, the tab Guide, the marks and the commands of the guided
 - The changes of the other steps in the file have a mark next to the line numbers.
 - The current step in the tab **Guide** shows its diff, with the lines around the changes. To show a line in the code, click it. To open the diff editor of VS Code at the lines of the step, click **Diff editor**.
 - Each step gives its number of added and removed lines, for example +3 −1.
+- While the lens **Heat** shows, each step also shows the flames and the score of its hottest function, as in the guided review.
 
 During an edit, the steps and their marks move with their code, but the diff of a step does not change. To see the new changes, start the walk again.
 
@@ -478,13 +480,15 @@ The guide of a guided review or of a diff walk stays. A new plan replaces it. **
 
 Gives the files that the user wants to review: the C and C++ files under the paths, with their number of lines. The changed files come first. If the git repository of the project has a target branch, a changed file also has its diff against the merge base, with the line numbers of the working tree. The target branch is the branch that you selected for Change Ripple, else the automatic target branch. A folder gives its C and C++ files, also in its subfolders, but not in build folders. The result has a maximum of 50 files.
 
-The engine does not analyze the files for this tool, and Change Ripple does not run. The model reads the files with the other read tools.
+A changed file also has `changedFunctions`: the functions with a changed line, with their heat score and their band. `hottestChanges` gives the changed functions of all files, the hottest first, with the three reasons that give the most points. Thus the model can start its plan with the hottest changes. The heat of the changed files takes some seconds, and a maximum of 30 seconds.
+
+Change Ripple does not run for this tool. The model reads the files with the other read tools.
 
 | Parameter | Type | Function |
 | --- | --- | --- |
 | `paths` | list of texts | Necessary. The files and the folders: paths relative to the folder of the project or of the repository, or absolute paths. |
 
-The result also gives the paths that do not exist (`notFound`) and the files that are not C or C++ files (`notCpp`). With no git repository or no target branch, the files have no diff, and `notice` tells why.
+The result also gives the paths that do not exist (`notFound`) and the files that are not C or C++ files (`notCpp`). With no git repository or no target branch, the files have no diff, and `notice` tells why. `callGraph` tells the state of the scan of the call graph, as for `get_heat`. `noHeat` names the changed files with no heat, for example the files after the time limit.
 
 Example request: "Do a guided review of src/power."
 
@@ -515,14 +519,14 @@ Example request: "Make a review plan for these files."
 
 ### get_diff
 
-Gives the changes for a diff walk: the hunks of the changed C and C++ files against a base. Each hunk has an id, its first and its last changed line in the working tree, and its number of added and removed lines. It also has its diff with the line numbers of the working tree. A removed line in a diff has no line number. The engine gives the functions with a changed line, and the functions that a hunk adds. With many files, this can take some seconds.
+Gives the changes for a diff walk: the hunks of the changed C and C++ files against a base. Each hunk has an id, its first and its last changed line in the working tree, and its number of added and removed lines. It also has its diff with the line numbers of the working tree. A removed line in a diff has no line number. The engine gives the functions with a changed line, and the functions that a hunk adds. Each hunk also has `heat`: the heat score and the band of each function with a changed line. `hottestChanges` gives the changed functions, the hottest first, with their hunks and the three reasons that give the most points. With many files, this can take some seconds.
 
 | Parameter | Type | Function |
 | --- | --- | --- |
 | `base` | text | `uncommitted` (the default): the changes against HEAD. `target`: the changes of the branch against the target branch of Change Ripple. A different text is a commit, a tag or a branch, for example `HEAD~1`: the changes since its merge base with HEAD. Each diff goes to the working tree, with the text of the editors and the C and C++ files that git does not track yet. |
 | `paths` | list of texts | Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. The default is all changed files. |
 
-The result also gives `suggestedSteps`: the hunks of one function in one step, as the command of DataFlow makes them. It also gives the deleted files (`deletedFiles`) and the changed files that are not C or C++ files (`otherChangedFiles`). After 1500 lines of diff, a hunk has no diff, and `isDiffTruncated` is true. The model reads such a hunk with the other read tools.
+The result also gives `suggestedSteps`: the hunks of one function in one step, as the command of DataFlow makes them. The heat of a suggested step is the highest score of its changed functions. `callGraph` and `noHeat` are as for `get_review`. It also gives the deleted files (`deletedFiles`) and the changed files that are not C or C++ files (`otherChangedFiles`). After 1500 lines of diff, a hunk has no diff, and `isDiffTruncated` is true. The model reads such a hunk with the other read tools.
 
 Example request: "Walk me through the changes that you made."
 

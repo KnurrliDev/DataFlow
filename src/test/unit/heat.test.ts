@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import type { MetricsFunction, ThreadsModel } from '../../engine/client';
-import { bandOf, buildHeat, flamesOf, HeatInputs, parseBlame } from '../../lenses/heat';
+import { bandOf, bandText, buildHeat, changedFunctions, flamesOf, heatFact, HeatInputs, hottestIn, parseBlame } from '../../lenses/heat';
 
 // The heat score: the parse of the blame of git, the points of each signal, the maximum of each group, the bands and
 // the flames
@@ -176,6 +176,21 @@ suite('Heat', () => {
 		assert.deepStrictEqual(changed.reasons.map((r) => r.text), ['Changed in 1 commit', 'Changes that are not committed']);
 		// with no blame, the notice tells it
 		assert.ok(buildHeat(inputs([fn('x', 1, 2)])).notices.some((n) => n.startsWith('No history')));
+	});
+
+	test('The hottest function of a range of lines, and the changed functions of changed lines, the hottest first', () => {
+		const heat = buildHeat(inputs([
+			fn('setup', 1, 10, { decisions: 24 }), fn('solve', 12, 30, { decisions: 3, reach: { callers: 1, transitiveCallers: 40, callerFiles: 2 } }), fn('log', 32, 33),
+		]));
+		const [setup, solve, log] = heat.functions;
+		assert.ok(setup.score > log.score && solve.score > setup.score, JSON.stringify(heat.functions.map((f) => f.score)));
+		assert.strictEqual(hottestIn(heat, 5, 20)?.name, 'solve');
+		assert.strictEqual(hottestIn(heat, 31, 31), undefined);
+		assert.deepStrictEqual(changedFunctions(heat, [2, 33, 40]).map((f) => f.name), ['setup', 'log']);
+		// the facts for a model: the reasons with the most points first, at most three
+		const fact = heatFact(solve);
+		assert.deepStrictEqual([fact.function, fact.lines, fact.score, fact.band], ['rate::solve', [12, 30], solve.score, bandText(solve.band)]);
+		assert.deepStrictEqual(fact.reasons, solve.reasons.slice().sort((a, b) => b.points - a.points).slice(0, 3).map((r) => `${r.text} (+${r.points} ${r.group})`));
 	});
 
 	test('The bands and the flames come from the score', () => {

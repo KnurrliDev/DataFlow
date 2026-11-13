@@ -8,9 +8,14 @@ const GROUP_NAMES = { reach: 'Reach', risk: 'Risk', history: 'History' } as cons
 const GROUP_MAX = { reach: 60, risk: 25, history: 15 } as const;
 const BAND_NAMES = { cool: 'cool', warm: 'warm', hot: 'hot', veryHot: 'very hot' } as const;
 
-// The score of a function as text, for example "Heat 52 of 100: hot"
+// A score as text, for example "Heat 52 of 100: hot"
+export function scoreTitle(score: number, band: SideHeatFunction['band']): string {
+	return `Heat ${score} of 100: ${BAND_NAMES[band]}`;
+}
+
+// The score of a function as text
 export function heatTitle(fn: SideHeatFunction): string {
-	return `Heat ${fn.score} of 100: ${BAND_NAMES[fn.band]}`;
+	return scoreTitle(fn.score, fn.band);
 }
 
 function FlameIcon() {

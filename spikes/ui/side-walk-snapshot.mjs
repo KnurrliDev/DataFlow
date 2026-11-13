@@ -256,6 +256,7 @@ try {
 	result.prompts = (await rpc('prompts/list')).result.prompts.map((p) => p.name);
 	const facts = await tool('get_diff', { base: 'target' });
 	result.hunks = facts.files.flatMap((f) => f.hunks.map((h) => `${f.file} ${h.id} ${h.lines.join('-')} ${(h.functions ?? []).join(',')}`));
+	result.hottest = (facts.hottestChanges ?? []).map((c) => c.function);
 	result.plan = await tool('show_diff_walk', {
 		title: 'A cycle counter and a larger limit',
 		summary: 'process() gets a counter for the cycles, and the solver accepts a cost under 1e-4.',
@@ -274,6 +275,21 @@ try {
 	await shot('model', await sideBox());
 	await shot('window');
 	result.view = (await tool('get_view')).review;
+
+	// Heat on: each step of the tab Guide gets the flames of its hottest function. The lens shows its own tab, thus the
+	// script selects the tab Guide again
+	await command('DataFlow: Toggle Heat');
+	await until(() => inSide(`return !!doc.querySelector('.details .tabs');`), 'tabs of the details column');
+	await inSide(`[...doc.querySelectorAll('.details .tabs .tab')].find((t) => t.textContent.trim() === 'Guide')?.click(); return true;`);
+	await until(() => inSide(`return doc.querySelectorAll('.rg-step .rg-heat').length === 2;`), 'heat of the steps', 200);
+	await sleep(800);
+	result.stepHeat = await inSide(`return [...doc.querySelectorAll('.rg-step')].map((s) => {
+		const h = s.querySelector('.rg-heat');
+		return h && { text: h.textContent, flames: h.querySelectorAll('.flame').length, band: [...h.classList].find((c) => c.startsWith('b-')), title: h.title };
+	});`);
+	await shot('heat-steps', await sideBox());
+	await command('DataFlow: Toggle Heat');
+	await until(() => inSide(`return !doc.querySelector('.rg-heat');`), 'heat off');
 
 	// Close walk removes the bar and the marks of the diff
 	await inSide(`[...doc.querySelectorAll('.rg-details button')].find((b) => b.textContent.includes('Close walk'))?.click(); return true;`);

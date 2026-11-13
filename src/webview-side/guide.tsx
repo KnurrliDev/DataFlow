@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { lexSpans, pairedSpans } from '../side/model';
 import type { FromSide, SideDiffRow, SideGuide, SideGuideStatus, SideGuideStep, SideRow, SideSettings, SideStepDiff, SideStepRow } from '../side/protocol';
+import { Flames, scoreTitle } from './heat';
 import { Markdown } from './model';
 import { commonIndent, digits, onRowClick, rowCode } from './ripple';
 import { vscode } from './vscode';
@@ -207,6 +208,11 @@ export function GuideDetails({ guide, file, rows, settings }: {
 									<span class="rg-step-title">{s.title}</span>
 									<span class="rg-meta">
 										{s.kind && <span class={`rg-kind k-${s.kind}`}>{s.kind}</span>}
+										{s.heat && (
+											<span class={`rg-heat b-${s.heat.band}`} title={`${s.heat.name}\n${scoreTitle(s.heat.score, s.heat.band)}`}>
+												<Flames count={s.heat.flames} />{s.heat.score}
+											</span>
+										)}
 										<span class="rg-place">{s.name}:{lineText(s)}</span>
 										{s.diff && <DiffStats diff={s.diff} />}
 									</span>

@@ -790,6 +790,9 @@ button.mnote { cursor: pointer; }
 .rg-kind.k-risk { color: var(--vscode-dataflow-problem); }
 .rg-kind.k-change { color: var(--vscode-dataflow-reviewGuide); }
 .rg-place { flex: none; font-family: var(--vscode-editor-font-family); font-size: 0.85em; color: var(--vscode-descriptionForeground); }
+/* the heat of the hottest function of a step, while the lens Heat shows */
+.rg-heat { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 0.85em; font-variant-numeric: tabular-nums; color: var(--hc); }
+.rg-heat .flame { width: 0.62em; height: 0.82em; }
 .rg-body { display: grid; gap: 6px; padding: 0 8px 8px 32px; }
 .rg-checks { margin: 0; padding-left: 18px; }
 .rg-checks li::marker { content: "☐  "; color: var(--vscode-dataflow-reviewGuide); }

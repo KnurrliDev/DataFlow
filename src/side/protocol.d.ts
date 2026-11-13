@@ -734,6 +734,15 @@ export interface SideGuideStep {
 	status: SideGuideStatus;
 	note?: string; // a note of the model on the step, for example the answer to a question of the user
 	diff?: SideStepDiff; // a diff walk: the diff of the step
+	heat?: SideStepHeat; // the hottest function in the lines of the step, while the lens Heat shows
+}
+
+// The heat of the hottest function in the lines of a step of the guide
+export interface SideStepHeat {
+	name: string; // the qualified name of the function
+	score: number;
+	band: 'cool' | 'warm' | 'hot' | 'veryHot';
+	flames: number;
 }
 
 // A tab of the details column: the tab of a lens, the tab of the layers of a model, or the tab of a guided review

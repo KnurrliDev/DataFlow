@@ -9,6 +9,8 @@
 - The callers come from a scan of the call graph of the project in the engine. The scan starts with Heat and does not block DataFlow. The tab Heat shows its progress with **Stop** and **Continue**. After a save, an update parses only the source files that include a changed file.
 - The scan and the include reach skip the build folders in the project folders, for example the libraries that CMake fetches into `_deps`.
 - The tab Heat shows each point of the function at the cursor with its reason, the functions of the file, the hottest first, and the frame functions of the project.
+- In a guided review and in a diff walk, each step in the tab Guide shows the flames and the score of its hottest function while Heat is on. The walk of the command keeps the sequence of the files and the lines.
+- `get_review` and `get_diff` give the heat of the changed functions, and `hottestChanges` lists them, the hottest first. The model starts its plan with the hottest changes.
 - The command **DataFlow: Toggle Heat**, and the theme colors `dataflow.heatCool`, `dataflow.heatWarm`, `dataflow.heatHot` and `dataflow.heatVeryHot`.
 - The engine has the new requests `dataflow/metrics` and `dataflow/callGraph`, and the MCP server has the new tool `get_heat`.
 

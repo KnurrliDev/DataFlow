@@ -9,13 +9,14 @@ import {
 } from '../lenses/blocks';
 import { callFunctionAt, ExternalCaller } from '../lenses/calls';
 import { findingText, LineText, toUtf8Column, variableAt } from '../lenses/flow';
-import type { HeatModel } from '../lenses/heat';
+import { bandText, HeatModel } from '../lenses/heat';
 import { buildSideIncludes } from '../lenses/includes';
 import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../lenses/member';
 import { buildSideThreads } from '../lenses/threads';
 import { INCLUDE_FILE, isCppFile } from '../review/git';
 import {
-	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, GUIDE_TYPES, guideType, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex, withNote, withStatus,
+	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, GUIDE_TYPES, guideType, MAX_REVIEW_FILES, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex,
+	withNote, withStatus,
 } from '../review/guide';
 import { groupTitle, resolveWalkPlan, walkFacts, walkHunks, type WalkHunk, type WalkInput, type WalkPlanInput } from '../review/walk';
 import type { SideViewController } from '../side/controller';
@@ -66,6 +67,8 @@ export interface HostDeps {
 const CPP_LANGUAGES = new Set(['c', 'cpp', 'cuda-cpp']);
 const isCpp = (doc: vscode.TextDocument) => doc.uri.scheme === 'file' && CPP_LANGUAGES.has(doc.languageId);
 const MAX_ITEMS = 200;
+// get_review and get_diff compute the heat of the changed files in this time. A file after the time has no heat
+const HEAT_FILES_MS = 30000;
 
 // The parse errors of a result, so that the model knows that the facts can be incomplete
 function parseNote(res: FileResult): object {
@@ -392,23 +395,60 @@ export class DataFlowMcpHost implements McpHost {
 				throw new Error(`No function ${fn} in ${path.basename(f)}. Call list_functions.`);
 			}
 		}
-		// the scan of the call graph does not block the tool. Its state tells the model when to call again
-		const graph = this.deps.store.state.callGraph;
-		const progress = graph && graph.total > 0 ? `runs: ${graph.done} of ${graph.total} source files` : 'starts';
-		const scan = graph?.state === 'scanning'
-			? `The scan of the call graph ${progress}. Call get_heat again later for the callers and the frame paths.`
-			: graph?.state === 'stopped' ? 'The user stopped the scan of the call graph. The reach has no callers and no frame paths.'
-				: graph?.state === 'failed' ? `The scan of the call graph failed: ${graph.error ?? 'no reason'}` : undefined;
+		const scan = this.scanNote();
 		return {
 			file: f,
 			functions: functions.slice(0, MAX_ITEMS).map((h) => ({
-				name: h.qualifiedName || h.name, lines: [h.first, h.last], score: h.score, band: h.band === 'veryHot' ? 'very hot' : h.band, flames: h.flames,
+				name: h.qualifiedName || h.name, lines: [h.first, h.last], score: h.score, band: bandText(h.band), flames: h.flames,
 				reach: h.reach, risk: h.risk, history: h.history, ...(h.isSiloed ? { siloed: true } : {}),
 				reasons: h.reasons.map((r) => `${r.text} (+${r.points} ${r.group})`),
 			})),
 			...(functions.length > MAX_ITEMS ? { more: functions.length - MAX_ITEMS } : {}),
 			...(scan ? { callGraph: scan } : {}),
 			notices: model.notices,
+		};
+	}
+
+	// The state of the scan of the call graph for the model. The scan does not block the tools, so the state tells the
+	// model when to call get_heat again. Undefined if the call graph is complete or if no scan started
+	private scanNote(): string | undefined {
+		const graph = this.deps.store.state.callGraph;
+		const progress = graph && graph.total > 0 ? `runs: ${graph.done} of ${graph.total} source files` : 'starts';
+		return graph?.state === 'scanning'
+			? `The scan of the call graph ${progress}. Call get_heat again later for the callers and the frame paths.`
+			: graph?.state === 'stopped' ? 'The user stopped the scan of the call graph. The reach has no callers and no frame paths.'
+				: graph?.state === 'failed' ? `The scan of the call graph failed: ${graph.error ?? 'no reason'}` : undefined;
+	}
+
+	// The heat of the functions of the changed files of get_review and get_diff, one file after the other, in the time
+	// HEAT_FILES_MS. The notes tell the state of the scan of the call graph, and the files with no heat: the files after
+	// the time, and the files that the engine could not analyze
+	private async heatOfFiles(files: readonly string[], rel: (file: string) => string):
+		Promise<{ models: Map<string, HeatModel>; notes: { callGraph?: string; noHeat?: string } }> {
+		const models = new Map<string, HeatModel>();
+		const missing: string[] = [];
+		const start = Date.now();
+		for (const file of files) {
+			if (Date.now() - start >= HEAT_FILES_MS) {
+				missing.push(file);
+				continue;
+			}
+			try {
+				const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+				models.set(file, await this.deps.heat(doc));
+			} catch {
+				missing.push(file);
+			}
+		}
+		const scan = this.scanNote();
+		return {
+			models,
+			notes: {
+				...(scan ? { callGraph: scan } : {}),
+				...(missing.length > 0 ? {
+					noHeat: `${missing.length === 1 ? '1 changed file has' : `${missing.length} changed files have`} no heat, because of the time limit or an error of the engine: ${missing.slice(0, 10).map(rel).join(', ')}. get_heat gives the heat of a file.`,
+				} : {}),
+			},
 		};
 	}
 
@@ -586,7 +626,13 @@ export class DataFlowMcpHost implements McpHost {
 		if (files.files.length === 0) {
 			throw new Error(`The paths have no C or C++ file.${files.missing.length > 0 ? ` These paths do not exist: ${files.missing.join(', ')}.` : ''}`);
 		}
-		return reviewFacts(files);
+		// the heat of the changed functions, so the plan can start with the hottest changes
+		const changed = files.files.slice(0, MAX_REVIEW_FILES).filter((f) => f.hunks.length > 0).map((f) => f.file);
+		if (changed.length === 0) {
+			return reviewFacts(files);
+		}
+		const { models, notes } = await this.heatOfFiles(changed, (f) => path.relative(files.root, f).replace(/\\/g, '/'));
+		return { ...reviewFacts(files, models), ...notes };
 	}
 
 	// Shows the plan of a guided review in the side view, at its first step
@@ -644,8 +690,13 @@ export class DataFlowMcpHost implements McpHost {
 		}
 		const hunks = walkHunks(input.files);
 		this.lastWalk = { input, hunks };
-		const facts = walkFacts(input, hunks);
-		return hunks.length > 0 ? facts : { ...facts, note: `No C or C++ file changed against ${input.base}, so a diff walk has no steps.` };
+		if (hunks.length === 0) {
+			return { ...walkFacts(input, hunks), note: `No C or C++ file changed against ${input.base}, so a diff walk has no steps.` };
+		}
+		// the heat of the changed functions, so the plan can start with the hottest changes
+		const files = [...new Set(hunks.map((h) => h.file))];
+		const { models, notes } = await this.heatOfFiles(files, (f) => path.relative(input.root, f).replace(/\\/g, '/'));
+		return { ...walkFacts(input, hunks, models), ...notes };
 	}
 
 	// Shows the plan of a diff walk in the side view, at its first step

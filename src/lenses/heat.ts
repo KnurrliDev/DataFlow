@@ -317,3 +317,52 @@ export function buildHeat(inputs: HeatInputs): HeatModel {
 	}
 	return { file: inputs.file, functions, notices, isReachComplete: inputs.functions.every((f) => !!f.reach) };
 }
+
+//-------------------
+// The heat of the changes, for the guided review and the diff walk
+
+// The list of the hottest changed functions for a language model has a maximum of this number of functions
+export const MAX_HOT_CHANGES = 10;
+
+// The hottest function with a line in the lines first to last. Undefined if no function has a line there
+export function hottestIn(model: HeatModel, first: number, last: number): HeatFunction | undefined {
+	let out: HeatFunction | undefined;
+	for (const fn of model.functions) {
+		if (fn.first <= last && fn.last >= first && (!out || fn.score > out.score)) {
+			out = fn;
+		}
+	}
+	return out;
+}
+
+// The functions with one or more of the changed lines, the hottest first
+export function changedFunctions(model: HeatModel, lines: readonly number[]): HeatFunction[] {
+	return model.functions.filter((fn) => lines.some((l) => l >= fn.first && l <= fn.last))
+		.sort((a, b) => b.score - a.score || a.first - b.first);
+}
+
+// The band as a text, for example "very hot"
+export const bandText = (band: HeatBand): string => (band === 'veryHot' ? 'very hot' : band);
+
+// The heat of a function for a language model: the name, the lines, the score, the band and the reasons with the most
+// points
+export function heatFact(fn: HeatFunction, reasons = 3): { function: string; lines: [number, number]; score: number; band: string; reasons: string[] } {
+	const top = [...fn.reasons].sort(byPoints).slice(0, reasons);
+	return {
+		function: fn.qualifiedName || fn.name, lines: [fn.first, fn.last], score: fn.score, band: bandText(fn.band),
+		reasons: top.map((r) => `${r.text} (+${r.points} ${r.group})`),
+	};
+}
+
+// A changed function with its heat, and the ids of the hunks of a diff walk that change it
+export interface HeatChange {
+	file: string;
+	fn: HeatFunction;
+	hunks: string[];
+}
+
+// The changed functions, the hottest first, at most max
+export function hottestChanges(changes: readonly HeatChange[], max: number): HeatChange[] {
+	return [...changes].sort((a, b) => b.fn.score - a.fn.score || (a.file < b.file ? -1 : a.file > b.file ? 1 : a.fn.first - b.fn.first))
+		.slice(0, max);
+}

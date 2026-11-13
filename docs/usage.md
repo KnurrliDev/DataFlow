@@ -445,6 +445,8 @@ The history needs a git repository. For a file with changes that are not saved, 
 
 The theme colors `dataflow.heatCool`, `dataflow.heatWarm`, `dataflow.heatHot` and `dataflow.heatVeryHot` give the colors of the bands. The MCP tool `get_heat` gives the scores and their reasons to a language model.
 
+In a guided review and in a diff walk, each step in the tab **Guide** shows the flames and the score of its hottest function while Heat is on. The tools `get_review` and `get_diff` give the heat of the changed functions to the model, and the model starts its plan with the hottest changes. See [Guided review](tools.md#guided-review) and [Diff walk](tools.md#diff-walk).
+
 ### The call graph
 
 The callers and the frame path come from the call graph of the project. When you turn on Heat, the engine starts to scan the call graph. The scan does not block DataFlow:

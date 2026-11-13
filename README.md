@@ -94,7 +94,7 @@ Threads and races shows the code that runs on a worker thread, the data that two
 
 ### Heat
 
-Heat shows how much a change of each function can break. The flames before the line numbers show the score, and the tab Heat gives the reason of each point. A function that runs in each frame is hot. The engine finds the frame functions in the call graph of the project: the main loop, and the overrides of the frame functions of Unreal Engine and Qt. [Use Heat](docs/usage.md#heat)
+Heat shows how much a change of each function can break. The flames before the line numbers show the score, and the tab Heat gives the reason of each point. A function that runs in each frame is hot. The engine finds the frame functions in the call graph of the project: the main loop, and the overrides of the frame functions of Unreal Engine and Qt. In a guided review and in a diff walk, the steps show the flames too, and the model starts its plan with the hottest changes. [Use Heat](docs/usage.md#heat)
 
 ![Heat with main() as a frame function of the setting: process() runs in each frame and is very hot. The tab Heat shows the points of reach, risk and history, and the functions of the file, the hottest first.](docs/images/heat.png)
 

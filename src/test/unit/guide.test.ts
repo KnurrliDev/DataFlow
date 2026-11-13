@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import type { TextChange } from '../../lenses/blocks';
+import type { HeatBand, HeatFunction, HeatModel } from '../../lenses/heat';
 import {
 	GuideFileLines, GuideFileLookup, guideFacts, guideProgress, guideSummary, MAX_GUIDE_STEPS, MAX_REVIEW_FILES, MAX_STEP_CHECKS, moveGuide, resolveGuidePlan,
 	restoreGuide, reviewFacts, stepIndex, storeGuide, withCurrent, withNote, withStatus,
@@ -226,5 +227,32 @@ suite('Guided review', () => {
 		assert.strictEqual(facts.moreFiles, 3);
 		assert.strictEqual(facts.target, undefined);
 		assert.match(facts.notice, /no git repository/);
+	});
+
+	test('With the heat of the changed files, a changed file has the heat of its changed functions, and hottestChanges gives them', () => {
+		const fn = (name: string, first: number, last: number, score: number, band: HeatBand): HeatFunction => ({
+			name, qualifiedName: `power::${name}`, first, last, nameLine: first, score, band, flames: 1, reach: 0, risk: 0, history: 0, isSiloed: false,
+			reasons: [{ group: 'risk', points: 10, text: '24 decisions' }],
+		});
+		const model: HeatModel = { file: CPP, notices: [], isReachComplete: true, functions: [fn('setup', 10, 20, 80, 'veryHot'), fn('solve', 60, 80, 55, 'hot')] };
+		// a removed block marks the line after it: the changed lines 69 and 75 are in solve(), not in setup()
+		const facts = reviewFacts({
+			root: ROOT, missing: [], skipped: [],
+			files: [{
+				file: CPP, lineCount: 209, hunks: [
+					[{ kind: 'removed', text: '      if (cost < 1e-5) {', oldLine: 69, newLine: 69 }, { kind: 'added', text: '      if (cost < 1e-4) {', newLine: 69 }],
+					[{ kind: 'removed', text: '      return;', oldLine: 76, newLine: 75 }],
+				],
+			}, { file: HPP, lineCount: 194, hunks: [] }],
+		}, new Map([[CPP, model], [HPP, { ...model, file: HPP }]])) as {
+			files: { changedFunctions?: { function: string; lines: number[]; score: number; band: string }[] }[];
+			hottestChanges: { function: string; file: string; score: number; band: string; reasons: string[] }[];
+		};
+		assert.deepStrictEqual(facts.files[0].changedFunctions, [{ function: 'power::solve', lines: [60, 80], score: 55, band: 'hot' }]);
+		// a file with no changes has no changed functions
+		assert.strictEqual(facts.files[1].changedFunctions, undefined);
+		assert.deepStrictEqual(facts.hottestChanges, [
+			{ function: 'power::solve', lines: [60, 80], score: 55, band: 'hot', file: 'src/battery.cpp', reasons: ['24 decisions (+10 risk)'] },
+		]);
 	});
 });

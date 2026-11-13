@@ -1,5 +1,6 @@
 import * as path from 'path';
 import type { TextChange } from '../lenses/blocks';
+import { bandText, changedFunctions, HeatChange, heatFact, HeatModel, hottestChanges, MAX_HOT_CHANGES } from '../lenses/heat';
 import type { SideGuide, SideGuideKind, SideGuideStatus, SideGuideStep, SideStepDiff } from '../side/protocol';
 import type { DiffLine } from './git';
 
@@ -46,6 +47,20 @@ export interface ReviewFilesInput {
 	notice?: string; // for example: the repository has no target branch, so the files have no changes
 }
 
+// The lines that a hunk changes in the working tree: the added lines, and the line after each removed block. A removed
+// block at the end of the file marks the last line
+export function markedLines(lines: readonly DiffLine[], lineCount: number): number[] {
+	const out: number[] = [];
+	lines.forEach((l, i) => {
+		if (l.kind === 'added') {
+			out.push(l.newLine);
+		} else if (l.kind === 'removed' && lines[i - 1]?.kind !== 'removed') {
+			out.push(Math.max(1, Math.min(l.newLine, lineCount)));
+		}
+	});
+	return out;
+}
+
 // A line of the diff for the model: + for an added line, - for a removed line, with the line in the working tree
 export function diffText(line: DiffLine): string {
 	const mark = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
@@ -54,20 +69,28 @@ export function diffText(line: DiffLine): string {
 }
 
 // The facts that the model needs for a plan: the C and C++ files under the paths of the user, with their number of
-// lines, and the diff of each changed file against the target branch. The paths are relative to the root. The engine
-// does not analyze the files for these facts. The model reads them with the other tools
-export function reviewFacts(input: ReviewFilesInput): object {
+// lines, and the diff of each changed file against the target branch. The paths are relative to the root. With the heat
+// of the changed files, a changed file has the heat of its changed functions, and hottestChanges gives the changed
+// functions of all files, the hottest first. The model reads the files with the other tools
+export function reviewFacts(input: ReviewFilesInput, heat?: ReadonlyMap<string, HeatModel>): object {
 	const rel = (file: string) => path.relative(input.root, file).replace(/\\/g, '/');
+	const changes: HeatChange[] = [];
 	const files = input.files.slice(0, MAX_REVIEW_FILES).map((f) => {
 		if (f.hunks.length === 0) {
 			return { file: rel(f.file), lines: f.lineCount, isChanged: false };
 		}
 		const lines = f.hunks.flatMap((h, i) => [...(i > 0 ? ['  ... |'] : []), ...h.map(diffText)]);
+		const model = heat?.get(f.file);
+		const fns = model ? changedFunctions(model, f.hunks.flatMap((h) => markedLines(h, f.lineCount))) : [];
+		changes.push(...fns.map((fn) => ({ file: f.file, fn, hunks: [] })));
 		return {
 			file: rel(f.file),
 			lines: f.lineCount,
 			isChanged: true,
 			changedLines: f.hunks.flat().filter((l) => l.kind === 'added').map((l) => l.newLine),
+			...(fns.length > 0 ? {
+				changedFunctions: fns.map((fn) => ({ function: fn.qualifiedName || fn.name, lines: [fn.first, fn.last], score: fn.score, band: bandText(fn.band) })),
+			} : {}),
 			diff: lines.slice(0, MAX_DIFF_LINES).join('\n'),
 			...(lines.length > MAX_DIFF_LINES ? { isDiffTruncated: true } : {}),
 		};
@@ -75,6 +98,7 @@ export function reviewFacts(input: ReviewFilesInput): object {
 	return {
 		root: input.root,
 		...(input.target ? { target: input.target, base: input.base } : {}),
+		...(changes.length > 0 ? { hottestChanges: hottestChanges(changes, MAX_HOT_CHANGES).map((c) => ({ ...heatFact(c.fn), file: rel(c.file) })) } : {}),
 		files,
 		...(input.files.length > MAX_REVIEW_FILES ? { moreFiles: input.files.length - MAX_REVIEW_FILES } : {}),
 		...(input.missing.length > 0 ? { notFound: input.missing } : {}),

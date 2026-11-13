@@ -20,7 +20,7 @@ import {
 } from './engine/client';
 import { ALL_COST_CATEGORIES, buildCostMarks, CostCategory, costCounts, CostFilter, functionItems } from './lenses/cost';
 import { buildFlowView, findVariable, LineText, ordinalOf, toUtf16Column, toUtf8Column, variableAt } from './lenses/flow';
-import { Blame, buildHeat, HeatModel, parseBlame } from './lenses/heat';
+import { Blame, buildHeat, HeatModel, hottestIn, parseBlame } from './lenses/heat';
 import { buildLogicView, logicWarnings } from './lenses/logic';
 import { addExternalCallers, buildSideCalls, callFunctionAt, callsOf, callTargetAt, ExternalCaller, graphLabels, wordAt } from './lenses/calls';
 import { buildSideIncluders, buildSideIncludes } from './lenses/includes';
@@ -43,7 +43,7 @@ import { commandWalk, walkTitle, type WalkFile, type WalkFunction, type WalkInpu
 import { SideViewController } from './side/controller';
 import { functionTitle, withBrackets } from './side/names';
 import { typeDefinitionLine } from './side/outline';
-import type { SideAction, SideCallListSite, SideGuide, SideViewState } from './side/protocol';
+import type { SideAction, SideCallListSite, SideGuide, SideStepHeat, SideViewState } from './side/protocol';
 import { CallGraphView, Lens, LogicPathState, StateStore } from './state/store';
 import { StatusBar } from './statusbar';
 
@@ -371,6 +371,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			const info = await client.start();
 			store.update({ clangVersion: info.clang });
 			scheduleCursorUpdate(0);
+			void loadGuideHeat();
 		} catch (error) {
 			store.update({ message: `The engine did not start: ${error}` });
 		}
@@ -1740,6 +1741,46 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		if (doc && store.state.lenses.heat) {
 			void loadHeat(doc);
 		}
+		void loadGuideHeat();
+	};
+
+	// The heat of the steps of the guide: the hottest function in the lines of each step, while the lens Heat shows. The
+	// files of the steps get their heat one after the other, and the tab Guide shows each result at once. A new guide, or
+	// the lens off, stops the computation
+	let guideHeatRequest: vscode.CancellationTokenSource | undefined;
+	let guideHeatSeq: number | undefined;
+	const loadGuideHeat = async (): Promise<void> => {
+		guideHeatRequest?.cancel();
+		guideHeatRequest = undefined;
+		const guide = store.state.guide;
+		const client = engine;
+		guideHeatSeq = guide?.seq;
+		if (!guide || !store.state.lenses.heat || !client || client.currentState !== 'ready') {
+			if (store.state.guideHeat) {
+				store.update({ guideHeat: undefined });
+			}
+			return;
+		}
+		const request = new vscode.CancellationTokenSource();
+		guideHeatRequest = request;
+		const steps: (SideStepHeat | undefined)[] = guide.steps.map(() => undefined);
+		for (const file of [...new Set(guide.steps.map((s) => s.file))]) {
+			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file)).then((d) => d, () => undefined);
+			const model = doc && await computeHeat(client, doc, request.token).catch(() => undefined);
+			if (request.token.isCancellationRequested) {
+				return;
+			}
+			if (!model) {
+				continue;
+			}
+			guide.steps.forEach((s, i) => {
+				const fn = s.file === file ? hottestIn(model, s.first, s.last) : undefined;
+				if (fn) {
+					steps[i] = { name: fn.qualifiedName || fn.name, score: fn.score, band: fn.band, flames: fn.flames };
+				}
+			});
+			store.update({ guideHeat: { seq: guide.seq, steps: [...steps] } });
+		}
 	};
 
 	// Computes the heat of the file for the lens Heat. A newer computation cancels the older one. While a computation
@@ -2532,6 +2573,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			} else {
 				clearHeat();
 			}
+			void loadGuideHeat();
 		}
 		if (lens === 'review') {
 			if (store.state.lenses.review) {
@@ -3083,6 +3125,10 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		if (!!state.guide !== isGuideShown) {
 			isGuideShown = !!state.guide;
 			void vscode.commands.executeCommand('setContext', 'dataflow.guideActive', isGuideShown);
+		}
+		// a new guide, or no guide: the heat of the steps comes again. A mark or a note of a step keeps the number
+		if (state.guide?.seq !== guideHeatSeq) {
+			void loadGuideHeat();
 		}
 	}));
 

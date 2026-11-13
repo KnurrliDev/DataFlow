@@ -4,7 +4,7 @@ import { EngineClient, FileResult } from '../engine/client';
 import { toUtf16Column, toUtf8Column } from '../lenses/flow';
 import type { ReviewState } from '../lenses/ripple';
 import { guideSummary, withCurrent, withStatus } from '../review/guide';
-import { CallGraphView, CostLayerState, HeatLayerState, LogicPathState, RippleLayerState, StateStore, TraceState } from '../state/store';
+import { CallGraphView, CostLayerState, GuideHeatState, HeatLayerState, LogicPathState, RippleLayerState, StateStore, TraceState } from '../state/store';
 import { buildSideCost } from './costLayer';
 import { DefinitionPlace, otherPlaces, PlaceHistory, SidePlace } from './definition';
 import { buildSideFlow, buildSideMemberFlow } from './flowLayer';
@@ -137,6 +137,8 @@ export class SideViewController implements vscode.Disposable {
 	private lastModel: SideModel | null = null;
 	private lastModelLayers?: SideModel[];
 	private lastGuide?: SideGuide;
+	private lastGuideHeat?: GuideHeatState;
+	private lastGuideView: SideGuide | null = null;
 	private pendingModel?: SideModel; // a layer that an edit moved. It waits for the rows of the new text
 	private lastReview?: ReviewState;
 	private lastRippleLayer?: RippleLayerState;
@@ -256,7 +258,7 @@ export class SideViewController implements vscode.Disposable {
 				if (state.modelLayers !== this.lastModelLayers) {
 					this.postModel();
 				}
-				if (state.guide !== this.lastGuide) {
+				if (state.guide !== this.lastGuide || state.guideHeat !== this.lastGuideHeat) {
 					this.postGuide();
 				}
 				if (state.review !== this.lastReview || state.rippleLayer !== this.lastRippleLayer) {
@@ -1095,10 +1097,20 @@ export class SideViewController implements vscode.Disposable {
 		this.post({ type: 'model', model: this.lastModel });
 	}
 
-	// The guided review. It is the same in each file, so the side view keeps it when the file changes
+	// The guided review. It is the same in each file, so the side view keeps it when the file changes. While the lens Heat
+	// shows, each step gets the heat of its hottest function
 	private postGuide(): void {
-		this.lastGuide = this.store.state.guide;
-		this.post({ type: 'guide', guide: this.lastGuide ?? null });
+		const { guide, guideHeat } = this.store.state;
+		this.lastGuide = guide;
+		this.lastGuideHeat = guideHeat;
+		const heat = guide && guideHeat?.seq === guide.seq ? guideHeat.steps : undefined;
+		this.lastGuideView = guide && heat ? { ...guide, steps: guide.steps.map((s, i) => (heat[i] ? { ...s, heat: heat[i] } : s)) } : guide ?? null;
+		this.post({ type: 'guide', guide: this.lastGuideView });
+	}
+
+	// The guide that the side view got last, with the heat of the steps, for the tests
+	get guideView(): SideGuide | null {
+		return this.lastGuideView;
 	}
 
 	// Shows a step of the guided review: the guide goes to the step, and the text editor and the side view go to its lines

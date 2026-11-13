@@ -52,6 +52,7 @@ export const INSTRUCTIONS = [
 	+ 'then call show_review_plan with a plan of steps, and walk the user through the plan with review_step. The prompt guided-review gives the steps.',
 	'To walk the user through the changes of the working tree, of the branch or since a commit, for example the changes that you made, call get_diff, '
 	+ 'read the changed code, then call show_diff_walk with steps of hunks, and go on with review_step. The prompt diff-walk gives the steps.',
+	'get_review and get_diff give the heat of the changed functions. Start a plan with the hottest changes, unless a different order explains the change better.',
 	'When the user asks you to close or delete the guided review or the diff walk, call close_guide.',
 ].join(' ');
 
@@ -289,8 +290,9 @@ export function createTools(host: McpHost): McpTool[] {
 			{ file: { ...FILE, description: 'The file. Default: all files.' } }, [], false, (a) => host.clear(a.text('file'))),
 		tool('get_review', 'Get the files to review',
 			'The C and C++ files under the paths that the user wants to review, with their number of lines, the changed files first. If the git repository of the project has a target branch, '
-			+ 'a changed file also has its diff against the merge base, with the line numbers of the working tree. The engine does not analyze the files for this tool: '
-			+ 'read them with list_functions, get_structure, get_flow, get_calls and get_threads. Then make the plan of a guided review for show_review_plan.',
+			+ 'a changed file also has its diff against the merge base, with the line numbers of the working tree, and the heat of its changed functions. '
+			+ 'hottestChanges gives the changed functions of all files with the reasons of their heat, the hottest first. The heat of the changed files can take some seconds. '
+			+ 'Read the files with list_functions, get_structure, get_flow, get_calls and get_threads. Then make the plan of a guided review for show_review_plan.',
 			{
 				paths: {
 					type: 'array', minItems: 1, items: { type: 'string' },
@@ -328,8 +330,9 @@ export function createTools(host: McpHost): McpTool[] {
 			},
 			['steps'], false, (a) => host.showReviewPlan({ title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps') })),
 		tool('get_diff', 'Get the changes for a diff walk',
-			'The hunks of the changed C and C++ files against a base, for a diff walk. Each hunk has an id, its first and last changed line in the working tree, the functions that it changes, '
-			+ 'and its diff with the line numbers of the working tree. suggestedSteps puts the hunks of one function in one step. The engine finds the functions, so a large diff can take some seconds. '
+			'The hunks of the changed C and C++ files against a base, for a diff walk. Each hunk has an id, its first and last changed line in the working tree, the functions that it changes '
+			+ 'with their heat, and its diff with the line numbers of the working tree. hottestChanges gives the changed functions with the reasons of their heat, the hottest first. '
+			+ 'suggestedSteps puts the hunks of one function in one step, in the sequence of the files. The engine finds the functions and their heat, so a large diff can take some seconds. '
 			+ 'Read the changed code with get_structure, get_flow and get_calls. Then make the plan of a diff walk for show_diff_walk.',
 			{
 				base: {
@@ -427,11 +430,13 @@ export function createPrompts(): McpPrompt[] {
 		],
 		text: (args) => [
 			`Review ${args.paths ? `these files and folders: ${args.paths}.` : 'the files and the folders that I name.'} Go through the review with me, one step after the other. Use the DataFlow tools:`,
-			'1. Call get_review with the paths. It gives the C and C++ files, and the diff of each changed file against the target branch of the repository.',
+			'1. Call get_review with the paths. It gives the C and C++ files, the diff of each changed file against the target branch of the repository, '
+			+ 'and the heat of the changed functions: how much a change of each function can break.',
 			'2. Read the code: call list_functions for the files, and get_structure for the functions with changes, or for the main functions of a file with no changes. '
 			+ 'Where the data, the callers or the threads matter, call get_flow, get_calls or get_threads.',
-			'3. Make a plan of 3 to 10 steps, in the order that a reviewer reads the code: first the changed lines or the entry points, then the code that they use or that uses them, '
-			+ 'then the risks, for example threads, error paths and missing checks, then the tests.',
+			'3. Make a plan of 3 to 10 steps, in the order that a reviewer reads the code: first the changed lines or the entry points, the hottest changes of hottestChanges first, '
+			+ 'then the code that they use or that uses them, then the risks, for example threads, error paths and missing checks, then the tests. '
+			+ 'In the text of a hot step, tell why the change is hot, with the reasons of its heat.',
 			...(args.focus ? [`   Look first at: ${args.focus}.`] : []),
 			'   Give each step a short title in the imperative, the file and the lines, a text with what to look at and why, and one to three questions in "checks".',
 			'4. Call show_review_plan. The side view shows step 1.',
@@ -450,10 +455,12 @@ export function createPrompts(): McpPrompt[] {
 		],
 		text: (args) => [
 			`Walk me through the changes${args.base ? ` against ${args.base}` : ' that are not committed'}, one step after the other. Use the DataFlow tools:`,
-			`1. Call get_diff${args.base ? ` with the base "${args.base}"` : ''}. It gives the hunks of the changed C and C++ files with their ids, and suggested steps.`,
+			`1. Call get_diff${args.base ? ` with the base "${args.base}"` : ''}. It gives the hunks of the changed C and C++ files with their ids, the heat of the changed functions, `
+			+ 'and suggested steps.',
 			'2. Read the changed code: call get_structure for the changed functions. Where the data or the callers matter, call get_flow or get_calls.',
 			'3. Make a plan of 2 to 12 steps, in the order that explains the change best: first the main change, for example a new type or the new logic, '
-			+ 'then the code that uses it, then the tests. Put each hunk in a step. All hunks of a step must be in one file. The suggested steps are a good start.',
+			+ 'then the code that uses it, then the tests. Give the hottest changes of hottestChanges an early step, and tell in its text why the change is hot. '
+			+ 'Put each hunk in a step. All hunks of a step must be in one file. The suggested steps are a good start.',
 			...(args.focus ? [`   Explain first: ${args.focus}.`] : []),
 			'   Give each step a short title, its hunks, and a text that says what changed and why, in 2 to 5 sentences.',
 			'4. Call show_diff_walk. The side view shows step 1 with its diff.',

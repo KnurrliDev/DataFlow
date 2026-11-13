@@ -8,7 +8,7 @@ import type { LogicView, LogicWarning } from '../lenses/logic';
 import type { ReviewState } from '../lenses/ripple';
 import type { PathStep } from '../logic/paths';
 import type { DiffLine } from '../review/git';
-import type { SideCalls, SideGuide, SideIncluders, SideIncludes, SideMcp, SideModel, SideThreads } from '../side/protocol';
+import type { SideCalls, SideGuide, SideIncluders, SideIncludes, SideMcp, SideModel, SideStepHeat, SideThreads } from '../side/protocol';
 import type { RippleModel } from '../review/ripple';
 
 export type Lens = 'flow' | 'logic' | 'cost' | 'review' | 'includes' | 'calls' | 'threads' | 'heat';
@@ -19,6 +19,13 @@ export interface HeatLayerState {
 	isLoading: boolean;
 	model?: HeatModel;
 	error?: string;
+}
+
+// The heat of the steps of the guide with the number seq: the hottest function in the lines of each step. The guide
+// itself does not keep the heat, because the workspace stores the guide
+export interface GuideHeatState {
+	seq: number;
+	steps: (SideStepHeat | undefined)[];
 }
 
 // The scan of the call graph of the engine, for the reach of the heat score. stopped: the user stopped the scan
@@ -115,6 +122,7 @@ export interface DataFlowState {
 	threadsLayer?: SideThreads; // the threads and the shared data of the file
 	heatLayer?: HeatLayerState; // the heat of the functions of the file
 	callGraph?: CallGraphView; // the scan of the call graph. Undefined: no scan
+	guideHeat?: GuideHeatState; // the heat of the steps of the guide, while the lens Heat shows
 	review?: ReviewState; // the state of the last review
 	rippleLayer?: RippleLayerState; // the ripple of the last review
 	modelLayers: SideModel[]; // the blocks and the notes of a language model, one layer for each file
