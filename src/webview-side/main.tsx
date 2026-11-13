@@ -1,7 +1,7 @@
 import { render } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type {
-	FromSide, SideCallList, SideCalls, SideCommand, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideHeat, SideIncluders, SideIncludes,
+	FromSide, SideCallList, SideCalls, SideCommand, SideCost, SideDetailsTab, SideExtensionTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideHeat, SideIncluders, SideIncludes,
 	SideLens, SideLogic, SideModel, SideOutline, SideRipple, SideRow, SideSettings, SideStory, SideThreads, SideWhy, ToSide,
 } from '../side/protocol';
 import { CallListPanel } from './calllist';
@@ -17,6 +17,7 @@ import { BAR_WARNINGS, LogicDetails, LogicGroup, PLAY_STEP_MS, PlayProps } from 
 import { ModelBar, ModelDetails } from './model';
 import { RippleBar, StoryView } from './ripple';
 import { setBracketColors, setTokenStyles } from './styles';
+import { ExtensionTabDetails } from './tab';
 import { selectedItem, ThreadDetails } from './threads';
 import { vscode } from './vscode';
 
@@ -54,6 +55,7 @@ interface ViewState {
 	model: SideModel | null; // the blocks and the notes of a language model in the file
 	modelSel?: string; // the selected block of the model
 	guide: SideGuide | null; // the guide: a guided review of a model, or a diff walk
+	tabs: SideExtensionTab[]; // the tabs of the extensions in the details column
 	why?: SideWhy;
 	traceable: Set<number>;
 	callable: Set<number>; // the style indices of functions and methods: their menu has "Show Calls"
@@ -68,7 +70,7 @@ interface ViewState {
 
 // The lenses with a details column, in the sequence of the tabs
 const DETAIL_LENSES: SideLens[] = ['flow', 'logic', 'cost', 'includes', 'calls', 'threads', 'heat'];
-const LENS_NAMES: Record<SideDetailsTab, string> = {
+const LENS_NAMES: Record<Exclude<SideDetailsTab, `ext:${string}`>, string> = {
 	flow: 'Flow Lens', logic: 'Logic Map', cost: 'Hidden C++', review: 'Change Ripple', includes: 'Includes', calls: 'Calls', threads: 'Threads',
 	heat: 'Heat', model: 'Model', guide: 'Guide',
 };
@@ -251,7 +253,7 @@ function App() {
 	const saved = vscode.getState();
 	const [state, setState] = useState<ViewState>({
 		lineCount: 0, rows: [], maxColumns: 0, settings: DEFAULT_SETTINGS, flow: null, logic: null, cost: null, includes: null, ripple: null,
-		story: null, calls: null, threads: null, heat: null, model: null, guide: null, callView: { focus: -1, depth: 1, showLibrary: false }, isCallGraphOpen: false,
+		story: null, calls: null, threads: null, heat: null, model: null, guide: null, tabs: [], callView: { focus: -1, depth: 1, showLibrary: false }, isCallGraphOpen: false,
 		traceable: new Set(), callable: new Set(), navigable: new Set(), includeFile: -1, callList: null, outline: null, typeNames: new Set(),
 		isDetailsOpen: saved?.isDetailsOpen ?? true, detailsLens: saved?.detailsLens ?? 'flow',
 	});
@@ -400,6 +402,9 @@ function App() {
 				case 'guide':
 					setState((s) => ({ ...s, guide: message.guide }));
 					break;
+				case 'tabs':
+					setState((s) => ({ ...s, tabs: message.tabs }));
+					break;
 				case 'details':
 					// for example the command "Why Does This Line Run"
 					openDetails(message.lens);
@@ -506,11 +511,15 @@ function App() {
 			showDetails(turnedOn);
 		}
 	}, [hasFrame, isFlowOn, isLogicOn, isCostOn, isIncludesOn, isCallsOn, isThreadsOn, isHeatOn]);
+	// the tabs of the extensions come after the tabs of DataFlow
 	const detailLenses: SideDetailsTab[] = [
 		...DETAIL_LENSES.filter((lens) => state.frame?.lenses[lens]),
 		...(hasModelLayers(state.model) ? ['model' as const] : []),
 		...(state.guide ? ['guide' as const] : []),
+		...state.tabs.map((t) => `ext:${t.client}` as const),
 	];
+	const tabOf = (lens: SideDetailsTab) => state.tabs.find((t) => `ext:${t.client}` === lens);
+	const tabName = (lens: SideDetailsTab) => (lens.startsWith('ext:') ? tabOf(lens)?.title ?? lens : LENS_NAMES[lens as keyof typeof LENS_NAMES]);
 	// the lines of the current step of the guide, if the step is in the file of the side view
 	const guideStep = state.guide?.steps[state.guide.current];
 	const guideLines = guideStep && sameFileName(guideStep.file, state.file)
@@ -647,12 +656,13 @@ function App() {
 						onClose={() => setState((s) => ({ ...s, outline: null }))} />
 				)}
 				{detailsLens && isDetailsShown && (
-					<aside class={isCompact ? 'details overlay' : 'details'} aria-label={`Details of ${LENS_NAMES[detailsLens]}`}>
+					<aside class={isCompact ? 'details overlay' : 'details'} aria-label={`Details of ${tabName(detailsLens)}`}>
 						{detailLenses.length > 1 && (
 							<div class="tabs" role="tablist" aria-label="Lenses">
 								{detailLenses.map((lens) => (
-									<button type="button" class="tab" role="tab" aria-selected={lens === detailsLens} onClick={() => showDetails(lens)}>
-										{LENS_NAMES[lens]}
+									<button type="button" class={lens.startsWith('ext:') ? 'tab ext' : 'tab'} role="tab" aria-selected={lens === detailsLens}
+										title={lens.startsWith('ext:') ? `The tab of the extension ${tabOf(lens)?.client ?? ''}` : undefined} onClick={() => showDetails(lens)}>
+										{tabName(lens)}
 									</button>
 								))}
 							</div>
@@ -673,6 +683,7 @@ function App() {
 						)}
 						{detailsLens === 'guide' && <GuideDetails guide={state.guide} file={state.file} rows={state.rows} settings={state.settings} />}
 						{detailsLens === 'heat' && <HeatDetails heat={heat} cursor={state.cursor} />}
+						{detailsLens.startsWith('ext:') && tabOf(detailsLens) && <ExtensionTabDetails tab={tabOf(detailsLens)!} />}
 						{detailsLens === 'model' && (
 							<ModelDetails model={state.model} isShown={!!shownModel} fn={state.frame?.fn} fnRange={state.frame?.fnRange} mcp={state.frame?.mcp}
 								selected={state.modelSel}

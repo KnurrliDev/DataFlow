@@ -138,7 +138,7 @@ test('Model layers: five levels of blocks, comments in colors, the bar MODEL, a 
 	assert.deepEqual([r.tabInProcess?.fn, r.tabInProcess?.blocks], ['process()', 7], JSON.stringify(r.tabInProcess));
 });
 
-test('Layers of two clients: the bars in the colors of the clients, the groups of the tab Model, and the buttons and the clicks of an extension', { timeout: 600000 }, async () => {
+test('Layers of two clients: the bars in the colors of the clients, the groups of the tab Model, the buttons and the clicks of an extension, and its tab', { timeout: 600000 }, async () => {
 	const r = await run('side-clients-snapshot.mjs');
 	assert.deepEqual(r.ids, { notes: ['n1'], detail: 'd1' });
 	// the bars of the MCP client have the color of the model. The bars of the extension come after them in a chart color.
@@ -155,11 +155,29 @@ test('Layers of two clients: the bars in the colors of the clients, the groups o
 	]);
 	assert.deepEqual(r.card, { client: 'ui-client', buttons: ['Open the plan'] });
 	assert.deepEqual(r.step, ['Run the check']);
+	// the tab of the extension comes after the tabs of DataFlow, with its sections, its rows and its buttons. A click on a
+	// row with a place shows its line
+	assert.deepEqual(r.tabNames.slice(-2), ['Guide', 'Plan']);
+	assert.deepEqual(r.tab, {
+		client: 'ui-client',
+		sections: [
+			{
+				title: 'Steps',
+				rows: [
+					{ text: 'Check the wait for the solver', isLink: true, badge: 'risk 3', detail: 'The solver runs on a worker thread.', bold: 'solver', buttons: ['Accept'] },
+					{ text: 'Write the tests', isLink: false, buttons: [] },
+				],
+			},
+			{ title: 'Notes', rows: [], empty: 'No items.' },
+		],
+	});
+	assert.equal(r.tabPlace, r.lines.detail);
 	// each click goes to the extension with the id of the button, the id of the item, the file and the line
 	assert.deepEqual(r.clicks, [
 		{ kind: 'note', action: 'fix', item: 'n1', file: 'battery.cpp', line: r.lines.note },
 		{ kind: 'detail', action: 'open', item: 'd1', file: 'battery.cpp', line: r.lines.detail },
 		{ kind: 'step', action: 'run', file: 'battery.cpp', line: r.lines.note, step: 1 },
+		{ kind: 'tab', action: 'accept', item: 'r1', file: 'battery.cpp', line: r.lines.detail },
 	]);
 	// clear of the MCP client removes only its layer, and the bars of the extension go to the first columns
 	assert.equal(r.cleared, 1);

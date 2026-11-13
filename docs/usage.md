@@ -56,6 +56,8 @@ To use the side view, do these steps:
    To close the card, move the cursor or push Ctrl+Alt+K again.
 9. To show or hide the details column of the lenses, click **Details**. In a side view that is narrower than 640 pixels, the details column shows over the code. To close it, push Escape.
 
+   An extension with the API of DataFlow can add its own tab after the tabs of DataFlow. To see the name of the extension, move the mouse on the tab. A click on the text of a row with a link shows its line.
+
 The status line of the side view shows the state of the engine and the compile databases. It also has buttons to select a project, select the compile database, show the log and restart the engine.
 
 ### Go to a definition

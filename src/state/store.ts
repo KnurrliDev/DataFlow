@@ -9,7 +9,7 @@ import type { LogicView, LogicWarning } from '../lenses/logic';
 import type { ReviewState } from '../lenses/ripple';
 import type { PathStep } from '../logic/paths';
 import type { DiffLine } from '../review/git';
-import type { SideCalls, SideGuide, SideIncluders, SideIncludes, SideMcp, SideModel, SideStepHeat, SideThreads } from '../side/protocol';
+import type { SideCalls, SideExtensionTab, SideGuide, SideIncluders, SideIncludes, SideMcp, SideModel, SideStepHeat, SideThreads } from '../side/protocol';
 import type { RippleModel } from '../review/ripple';
 
 export type Lens = 'flow' | 'logic' | 'cost' | 'review' | 'includes' | 'calls' | 'threads' | 'heat';
@@ -152,6 +152,7 @@ export interface DataFlowState {
 	guidesBelow: SideGuide[]; // the guides under the top guide, from the bottom of the stack to the guide under the top
 	guideSeq: number; // the last number of a guide. The ids of the guides do not repeat
 	guideCause?: GuideCause; // the cause of the last change of the guides
+	extensionTabs: SideExtensionTab[]; // the tabs of the extensions in the details column, one tab for each client
 	mcp: SideMcp; // the MCP server of DataFlow
 	sideMode: SideMode;
 	message?: string;
@@ -168,6 +169,7 @@ export class StateStore implements vscode.Disposable {
 		isModelShown: true,
 		guidesBelow: [],
 		guideSeq: 0,
+		extensionTabs: [],
 		mcp: { state: 'off' },
 		sideMode: 'file',
 	};

@@ -240,6 +240,45 @@ suite('API for other extensions on the fixture', () => {
 		}
 	});
 
+	test('An extension adds a tab to the details column: its content, the checks, a click on a button of a row, and dispose', () => {
+		const tab = api.registerTab({ id: 'plan', title: 'Plan' });
+		const line = lineOf('return requests;');
+		try {
+			assert.deepStrictEqual(internals.side.extensionTabs.map((t) => [t.client, t.id, t.title, t.sections]), [['api-test', 'plan', 'Plan', []]]);
+			assert.throws(() => api.registerTab({ id: 'other', title: 'Other' }), /The extension "api-test" has a tab already\./);
+
+			// the file of a place can be relative to the folder of the project
+			tab.update({
+				sections: [{
+					title: 'Steps',
+					rows: [{ id: 'r1', text: 'Check the requests', badge: 'risk 2', place: { file: 'src/battery.cpp', line }, actions: [{ id: 'done', title: 'Done' }] }],
+				}],
+			});
+			assert.deepStrictEqual(internals.side.extensionTabs[0].sections[0].rows[0].place, { file: file(), line });
+			// a wrong content throws an error, and the tab keeps its content
+			assert.throws(() => tab.update({ sections: [{ title: 'Steps', rows: [{ text: 'x', actions: [{ id: 'a', title: 'A' }] }] }] }),
+				/Section 1, row 1: a row with "actions" needs an "id"\./);
+			assert.strictEqual(internals.side.extensionTabs[0].sections[0].rows[0].id, 'r1');
+
+			// a click on a button of a row goes to the extension with the id of the row and its place
+			const clicks: Api.ActionEvent[] = [];
+			const subscription = api.onDidInvokeAction((e) => clicks.push(e));
+			try {
+				internals.side.receive({ type: 'clientAction', owner: 'api-test', kind: 'tab', action: 'done', item: 'r1', file: file(), line });
+			} finally {
+				subscription.dispose();
+			}
+			assert.deepStrictEqual(clicks, [{ kind: 'tab', action: 'done', item: 'r1', file: file(), line }]);
+		} finally {
+			tab.dispose();
+		}
+		assert.deepStrictEqual(internals.side.extensionTabs, []);
+		assert.throws(() => tab.update({ sections: [] }), /The tab plan is disposed\. Register a new tab\./);
+		// after dispose, the client can have a new tab
+		api.registerTab({ id: 'plan', title: 'Plan' }).dispose();
+		assert.deepStrictEqual(internals.side.extensionTabs, []);
+	});
+
 	test('onDidParse tells the end of a parse of the active file, with the number of the errors and the first errors', async function () {
 		this.timeout(60000);
 		const editor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file()), vscode.ViewColumn.One);

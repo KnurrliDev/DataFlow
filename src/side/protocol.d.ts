@@ -631,6 +631,24 @@ export interface SideItemAction {
 	title: string;
 }
 
+// A tab of an extension in the details column, after the tabs of DataFlow. A client has a maximum of 1 tab
+export interface SideExtensionTab {
+	client: string; // the name of the client of the extension
+	id: string;
+	title: string;
+	sections: { title: string; rows: SideTabRow[] }[];
+}
+
+// A row of the tab of an extension. A click on a row with a place shows the line of the file. Lines start at 1
+export interface SideTabRow {
+	id?: string; // a row with buttons has an id
+	text: string;
+	detail?: string; // a small part of Markdown under the text
+	badge?: string; // a short text at the end of the row
+	place?: { file: string; line: number };
+	actions?: SideItemAction[];
+}
+
 // The layer of one client in one file. The side view gets the layers of all clients of its file as one layer: then each
 // item has its client, and with two clients or more, the ids have the name of their client
 export interface SideModel {
@@ -780,7 +798,8 @@ export interface SideStepHeat {
 }
 
 // A tab of the details column: the tab of a lens, the tab of the layers of a model, or the tab of a guided review
-export type SideDetailsTab = SideLens | 'model' | 'guide';
+// ext:<client> is the tab of the extension of a client
+export type SideDetailsTab = SideLens | 'model' | 'guide' | `ext:${string}`;
 
 // The card of the command "Show Card at Cursor": a reference of Flow Lens, an item of Hidden C++, or the hints at the
 // end of a long line
@@ -828,6 +847,7 @@ export type ToSide =
 	| { type: 'why'; why: SideWhy } // the answer to the action 'why'
 	| { type: 'model'; model: SideModel | null }
 	| { type: 'guide'; guide: SideGuide | null }
+	| { type: 'tabs'; tabs: SideExtensionTab[] } // the tabs of the extensions
 	| { type: 'details'; lens: SideDetailsTab }; // opens the details column at the tab
 
 // The actions of the lenses. The extension does them, as for the commands of the lenses.
@@ -866,8 +886,11 @@ export type SideAction =
 	| { type: 'guideClose' } // removes the guide
 	| { type: 'heatScan' } // starts the scan of the call graph, or continues a scan that stopped
 	// a click on a button of a client: owner, the client of the item; action, the id of the button; item, the id of the
-	// note or the detail; step, the index of the step of the guide
-	| { type: 'clientAction'; owner: string; kind: 'note' | 'detail' | 'step'; action: string; item?: string; line?: number; step?: number }
+	// note, the detail or the row of a tab; step, the index of the step of the guide; file and line, the place of a row
+	| {
+		type: 'clientAction'; owner: string; kind: 'note' | 'detail' | 'step' | 'tab'; action: string; item?: string; file?: string; line?: number;
+		step?: number;
+	}
 	| { type: 'heatStop' }; // stops the scan of the call graph
 
 export type FromSide =

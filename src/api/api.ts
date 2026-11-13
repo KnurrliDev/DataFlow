@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import type * as Api from '../../api/dataflow-api';
 import type { EngineFunction } from '../engine/client';
@@ -9,6 +10,7 @@ import { guideFacts } from '../review/guide';
 import { guideChangeOf } from '../review/stack';
 import type { SideGuide } from '../side/protocol';
 import type { CallGraphView, DataFlowState, ParseState, StateStore } from '../state/store';
+import { resolveTabContent, resolveTabOptions } from './tabs';
 
 // The API of DataFlow for other extensions. The exports of the extension give getApi. Each API object has its own host
 // of the MCP tools with the name of its client, so the blocks, the notes and the guides of an extension show its name.
@@ -159,6 +161,38 @@ export class ApiEvents implements vscode.Disposable {
 	}
 }
 
+// A file of a place: absolute, or relative to the first folder of the project
+function projectFile(file: string): string {
+	const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+	return path.isAbsolute(file) || !root ? path.normalize(file) : path.join(root, file);
+}
+
+// The tab of a client in the details column, with its content. A client has a maximum of 1 tab. The tab keeps its
+// place in the list of the tabs until dispose
+function registerTab(store: StateStore, client: string, options: Api.ExtensionTabOptions): Api.ExtensionTab {
+	const { id, title } = resolveTabOptions(options);
+	if (store.state.extensionTabs.some((t) => t.client === client)) {
+		throw new Error(`The extension "${client}" has a tab already. Dispose it before you register a new tab.`);
+	}
+	store.update({ extensionTabs: [...store.state.extensionTabs, { client, id, title, sections: [] }] });
+	let isDisposed = false;
+	return {
+		update: (content) => {
+			if (isDisposed) {
+				throw new Error(`The tab ${id} is disposed. Register a new tab.`);
+			}
+			const sections = resolveTabContent(content, projectFile);
+			store.update({ extensionTabs: store.state.extensionTabs.map((t) => (t.client === client ? { ...t, sections } : t)) });
+		},
+		dispose: () => {
+			if (!isDisposed) {
+				isDisposed = true;
+				store.update({ extensionTabs: store.state.extensionTabs.filter((t) => t.client !== client) });
+			}
+		},
+	};
+}
+
 // The API object of a version for a client. A different version throws an error
 export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, options?: Api.DataFlowApiOptions): Api.DataFlowApi {
 	if (version !== API_VERSION) {
@@ -211,6 +245,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 			deps.log(`The extension "${client}" added ${list.length === 1 ? '1 tool' : `${list.length} tools`} to the MCP server.`);
 			return registration;
 		},
+		registerTab: (options) => registerTab(deps.store, client, options),
 
 		getView: () => call('get_view'),
 		listFunctions: (args) => call('list_functions', args),

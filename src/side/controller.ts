@@ -17,7 +17,7 @@ import {
 	BRACKET_LEVELS, BRACKET_STYLE, LEXICAL_KEYS, plainRows, SEMANTIC_MODIFIERS, SEMANTIC_TYPES, semanticStyleIndex, shiftSpans, toRows,
 } from './model';
 import type {
-	FromSide, SideAction, SideBrackets, SideCallGraph, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideHeat, SideIncluders,
+	FromSide, SideAction, SideBrackets, SideCallGraph, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideExtensionTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideHeat, SideIncluders,
 	SideIncludes, SideLogic, SideModel, SideOutline, SideRipple, SideThreads, SideRow, SideSettings, SideStory, SideStyle, SideViewState, SideWhy, ToSide,
 } from './protocol';
 import { buildSideRipple, buildSideStory, fileKey, lineRanges, storyLines } from './storyLayer';
@@ -143,6 +143,7 @@ export class SideViewController implements vscode.Disposable {
 	private lastModelLayers?: SideModel[];
 	private lastGuide?: SideGuide;
 	private lastGuidesBelow?: readonly SideGuide[];
+	private lastTabs?: readonly SideExtensionTab[];
 	private lastGuideHeat?: GuideHeatState;
 	private lastGuideView: SideGuide | null = null;
 	private pendingModel?: SideModel; // a layer that an edit moved. It waits for the rows of the new text
@@ -266,6 +267,9 @@ export class SideViewController implements vscode.Disposable {
 				}
 				if (state.guide !== this.lastGuide || state.guidesBelow !== this.lastGuidesBelow || state.guideHeat !== this.lastGuideHeat) {
 					this.postGuide();
+				}
+				if (state.extensionTabs !== this.lastTabs) {
+					this.postTabs();
 				}
 				if (state.review !== this.lastReview || state.rippleLayer !== this.lastRippleLayer) {
 					void this.loadStory();
@@ -759,6 +763,7 @@ export class SideViewController implements vscode.Disposable {
 		this.post({ type: 'frame', frame: this.frame() });
 		this.post({ type: 'story', story: this.lastStory });
 		this.postGuide();
+		this.postTabs();
 		const model = this.model;
 		if (!model) {
 			return;
@@ -1146,6 +1151,17 @@ export class SideViewController implements vscode.Disposable {
 	// The guide that the side view got last, with the heat of the steps, for the tests
 	get guideView(): SideGuide | null {
 		return this.lastGuideView;
+	}
+
+	// The tabs of the extensions in the details column. They are the same in each file
+	private postTabs(): void {
+		this.lastTabs = this.store.state.extensionTabs;
+		this.post({ type: 'tabs', tabs: [...this.lastTabs] });
+	}
+
+	// The tabs of the extensions that the side view got last, for the tests
+	get extensionTabs(): readonly SideExtensionTab[] {
+		return this.lastTabs ?? [];
 	}
 
 	// Shows a step of the top guide: the guide goes to the step, and the text editor and the side view go to its lines. The

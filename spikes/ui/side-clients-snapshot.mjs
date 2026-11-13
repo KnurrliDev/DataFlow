@@ -52,6 +52,21 @@ writeFileSync(planFile, JSON.stringify({
 		title: 'Check the plan',
 		steps: [{ title: 'The wait for the solver', file, lines: [ready + 1, ready + 2], text: 'Check the wait.', actions: [{ id: 'run', title: 'Run the check' }] }],
 	},
+	tab: {
+		options: { id: 'plan', title: 'Plan' },
+		content: {
+			sections: [
+				{
+					title: 'Steps',
+					rows: [
+						{ id: 'r1', text: 'Check the wait for the solver', detail: 'The **solver** runs on a worker thread.', badge: 'risk 3', place: { file, line: converged }, actions: [{ id: 'accept', title: 'Accept' }] },
+						{ text: 'Write the tests' },
+					],
+				},
+				{ title: 'Notes', rows: [] },
+			],
+		},
+	},
 }));
 const logged = () => readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const clicks = () => logged().filter((x) => x.click).map((x) => ({ ...x.click, file: path.basename(x.click.file ?? '') }));
@@ -266,6 +281,25 @@ try {
 	result.step = await inSide(`return [...doc.querySelectorAll('.rg-body .item-action')].map((b) => b.textContent);`);
 	await shot('guide');
 	await inSide(`doc.querySelector('.rg-body .item-action')?.click(); return true;`);
+	await sleep(1000);
+
+	// the tab of the extension comes after the tabs of DataFlow. A click on the text of a row with a place shows the line,
+	// and its button goes to the extension
+	result.tabNames = await inSide(`return [...doc.querySelectorAll('.details .tab')].map((t) => t.textContent);`);
+	await inSide(`[...doc.querySelectorAll('.details .tab')].find((t) => t.textContent === 'Plan')?.click(); return true;`);
+	await sleep(800);
+	result.tab = await inSide(`const body = doc.querySelector('.details-body.ext-tab');
+		return body ? { client: body.dataset.client, sections: [...body.querySelectorAll('.tab-section')].map((s) => ({
+			title: s.querySelector('.tab-section-title')?.textContent,
+			rows: [...s.querySelectorAll('.tab-row')].map((r) => ({ text: r.querySelector('.tab-text')?.textContent, isLink: !!r.querySelector('button.tab-place'),
+				badge: r.querySelector('.tab-badge')?.textContent, detail: r.querySelector('.tab-detail')?.textContent, bold: r.querySelector('.tab-detail strong')?.textContent,
+				buttons: [...r.querySelectorAll('.item-action')].map((b) => b.textContent) })),
+			empty: s.querySelector(':scope > p.sub')?.textContent })) } : null;`);
+	await shot('tab');
+	await inSide(`doc.querySelector('.ext-tab button.tab-place')?.click(); return true;`);
+	await sleep(1500);
+	result.tabPlace = await inSide(`return Number(doc.querySelector('.rows > .row.cursor')?.dataset.line ?? 0);`);
+	await inSide(`doc.querySelector('.ext-tab .item-action')?.click(); return true;`);
 	await sleep(1000);
 	result.clicks = clicks();
 

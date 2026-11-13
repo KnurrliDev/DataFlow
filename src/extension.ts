@@ -2909,8 +2909,9 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 				stopCallGraph();
 				break;
 			case 'clientAction': {
-				// a click on a button of an extension goes to its API objects
-				const file = action.kind === 'step' ? store.state.guide?.steps[action.step ?? -1]?.file : side.file;
+				// a click on a button of an extension goes to its API objects. A row of a tab has its own place
+				const file = action.kind === 'step' ? store.state.guide?.steps[action.step ?? -1]?.file
+					: action.kind === 'tab' ? action.file : side.file;
 				const event = {
 					kind: action.kind, action: action.action, ...(action.item ? { item: action.item } : {}), ...(file ? { file } : {}),
 					...(action.line !== undefined ? { line: action.line } : {}), ...(action.step !== undefined ? { step: action.step + 1 } : {}),

@@ -35,8 +35,8 @@ export const ownId = (id: string | undefined, client: string | undefined): strin
 	(id && client && id.startsWith(`${client}:`) ? id.slice(client.length + 1) : id);
 
 // The buttons of a client on a note, a detail or a step. A click sends the id of the button to the extension of the client
-export function ItemActions({ actions, owner, kind, item, line, step }: {
-	actions?: SideItemAction[]; owner?: string; kind: 'note' | 'detail' | 'step'; item?: string; line?: number; step?: number;
+export function ItemActions({ actions, owner, kind, item, file, line, step }: {
+	actions?: SideItemAction[]; owner?: string; kind: 'note' | 'detail' | 'step' | 'tab'; item?: string; file?: string; line?: number; step?: number;
 }) {
 	if (!actions || actions.length === 0 || !owner) {
 		return null;
@@ -49,8 +49,8 @@ export function ItemActions({ actions, owner, kind, item, line, step }: {
 						e.stopPropagation();
 						e.preventDefault();
 						post({
-							type: 'clientAction', owner, kind, action: a.id, ...(item ? { item } : {}), ...(line !== undefined ? { line } : {}),
-							...(step !== undefined ? { step } : {}),
+							type: 'clientAction', owner, kind, action: a.id, ...(item ? { item } : {}), ...(file ? { file } : {}),
+							...(line !== undefined ? { line } : {}), ...(step !== undefined ? { step } : {}),
 						});
 					}}>
 					{a.title}

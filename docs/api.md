@@ -13,6 +13,7 @@ Examples of extensions that can use the API:
 - [The events](#the-events)
 - [Guides](#guides)
 - [Buttons](#buttons)
+- [A tab in the details column](#a-tab-in-the-details-column)
 - [Tools for the MCP server](#tools-for-the-mcp-server)
 - [Errors](#errors)
 - [Versions](#versions)
@@ -161,11 +162,11 @@ A change of a guide under the top guide gives no event.
 
 ## Buttons
 
-Your extension can put buttons on its notes, its details and the steps of its guides:
+Your extension can put buttons on its notes, its details, the steps of its guides and the rows of [its tab](#a-tab-in-the-details-column):
 
-- A range of `highlight`, a detail of `addDetail`, and a step of `showReviewPlan` or `showDiffWalk` can have the field `actions`. It is a list of a maximum of 3 buttons.
+- A range of `highlight`, a detail of `addDetail`, a step of `showReviewPlan` or `showDiffWalk`, and a row of a tab can have the field `actions`. It is a list of a maximum of 3 buttons.
 - Each button has an `id` with a maximum of 64 characters and a `title` with a maximum of 40 characters. The buttons of one item must have different ids.
-- The side view shows the buttons in the bar MODEL, in the tab Model, in the card of a detail and in the tab Guide.
+- The side view shows the buttons in the bar MODEL, in the tab Model, in the card of a detail, in the tab Guide and in your tab.
 - A click on a button sends `onDidInvokeAction` to the API objects of your client only.
 
 An MCP client cannot add buttons, because it gets no event for a click. The tools of the MCP server refuse `actions`.
@@ -174,11 +175,11 @@ The event has these fields:
 
 | Field | Function |
 | --- | --- |
-| `kind` | `note`, `detail` or `step` |
+| `kind` | `note`, `detail`, `step` or `tab` |
 | `action` | The `id` of the button |
-| `item` | The id of the note or of the detail, for example `n2` or `d1` |
-| `file` | The file of the item or of the step |
-| `line` | The first line of the item or of the step |
+| `item` | The id of the note, of the detail or of the row, for example `n2` or `d1` |
+| `file` | The file of the item, of the step or of the place of the row |
+| `line` | The first line of the item or of the step, or the line of the place of the row |
 | `step` | The number of the step, from 1 |
 
 The layers and the guide come back after a reload of the window, with their buttons. If the user clicks a button before your extension gets the API again, the status bar tells the user that your extension is not active.
@@ -196,6 +197,42 @@ context.subscriptions.push(api.onDidInvokeAction(async (e) => {
 	}
 }));
 ```
+
+## A tab in the details column
+
+Your extension can add one tab to the details column of the side view. The tab comes after the tabs of DataFlow, with the title that you give. It shows your sections and their rows:
+
+```ts
+const tab = api.registerTab({ id: 'plan', title: 'Plan' });
+context.subscriptions.push(tab);
+tab.update({
+	sections: [{
+		title: 'Steps',
+		rows: [{
+			id: 'step-1',
+			text: 'Add the limit of the rate',
+			detail: 'The **solver** reads the limit in each frame.',
+			badge: 'risk 3',
+			place: { file: 'src/battery.cpp', line: 102 },
+			actions: [{ id: 'accept', title: 'Accept' }],
+		}],
+	}],
+});
+context.subscriptions.push(api.onDidInvokeAction((e) => {
+	if (e.kind === 'tab' && e.action === 'accept') {
+		acceptStep(e.item);
+	}
+}));
+```
+
+- `id` has 1 to 64 letters, digits, `-` and `_`. `title` is the text of the tab, with a maximum of 30 characters.
+- A client has a maximum of 1 tab. A second `registerTab` throws an error until you dispose the first tab.
+- `update` replaces the content of the tab. A tab has a maximum of 200 rows in all its sections. A wrong content throws an error with each problem, and the tab keeps its content. After `dispose`, `update` throws an error.
+- A row has `text`, with a maximum of 200 characters. It can have `detail`, a small part of Markdown under the text: paragraphs, headings, lists, code blocks, `` `code` ``, `**bold**` and `*italic*`, with a maximum of 2000 characters. It can also have `badge`, a short text at the end of the row with a maximum of 20 characters.
+- `place` has a `file` and a `line`. The file is absolute, or relative to the first folder of the project. A click on the text of the row shows the line in the side view and in the text editor, as the lists of DataFlow do.
+- A row with `actions` needs an `id`. The ids of the rows of a tab must be different. A click on a button sends `onDidInvokeAction` with the kind `tab`, the id of the row and its place.
+- The content has no HTML and no scripts. The side view makes its elements from your text.
+- The tab does not come back after a reload of the window. Your extension registers it again when it starts.
 
 ## Tools for the MCP server
 

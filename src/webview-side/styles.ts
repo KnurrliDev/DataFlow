@@ -635,6 +635,19 @@ button:focus-visible, .scroller:focus-visible { outline: 1px solid var(--vscode-
 .modelbar .item-actions { flex: none; margin-left: 0; }
 .detail-card .item-actions, .mdetail-item .item-actions { display: flex; margin: 6px 0 0; }
 .rg-body .item-actions { display: flex; margin: 0; }
+/* the tab of an extension: its sections, and its rows with a badge, a detail and buttons. A row with a place is a link */
+.tab-section { display: grid; gap: 2px; margin-bottom: 8px; }
+.tab-rows { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.tab-row { display: grid; gap: 2px; padding: 3px 4px; border-radius: 4px; }
+.tab-row:hover { background: var(--vscode-list-hoverBackground); }
+.tab-row-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.tab-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+button.tab-place { padding: 0; border: 0; font: inherit; text-align: left; color: var(--vscode-textLink-foreground); background: transparent; cursor: pointer; }
+button.tab-place:hover { text-decoration: underline; }
+button.tab-place:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.tab-badge { flex: none; }
+.tab-detail { color: var(--vscode-descriptionForeground); }
+.tab-row .item-actions { display: flex; margin: 0; }
 .mnote-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
 .mnote-row > .mnote { flex: 1 1 auto; min-width: 0; }
 .mclient { display: inline-block; margin-right: 5px; padding: 0 5px; border-radius: 4px; font-size: 0.8em; font-weight: 600;

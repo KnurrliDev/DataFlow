@@ -64,6 +64,11 @@ export interface DataFlowApi {
 	// to the subscriptions of your extension
 	registerTools(tools: ExtensionTool[]): vscode.Disposable;
 
+	// Adds a tab of your extension to the details column of the side view, after the tabs of DataFlow. A client has a
+	// maximum of 1 tab. The tab shows until dispose, and update gives it its content. A click on a button of a row sends
+	// onDidInvokeAction with the kind tab. Add the result to the subscriptions of your extension
+	registerTab(options: ExtensionTabOptions): ExtensionTab;
+
 	// Read tools. They do not change the view
 	getView(): Promise<ViewFacts>; // get_view
 	listFunctions(args?: FileArgs): Promise<FunctionListFacts>; // list_functions
@@ -131,6 +136,39 @@ export interface ExtensionTool {
 	call(args: Record<string, unknown>): unknown;
 }
 
+// A tab of your extension in the details column. id: 1 to 64 letters, digits, - and _. title: the text of the tab, a
+// maximum of 30 characters
+export interface ExtensionTabOptions {
+	id: string;
+	title: string;
+}
+
+export interface ExtensionTab extends vscode.Disposable {
+	// Replaces the content of the tab. A wrong content throws an error with its problems, and the tab keeps its content.
+	// After dispose, update throws an error
+	update(content: TabContent): void;
+}
+
+// The content of a tab: sections with a title and rows, a maximum of 200 rows in all. The content has no HTML and no
+// scripts
+export interface TabContent {
+	sections: { title: string; rows: TabRow[] }[];
+}
+
+// A row of a tab. text: a maximum of 200 characters. detail: a small part of Markdown under the text: paragraphs,
+// headings, lists, code blocks, `code`, **bold** and *italic*, with no HTML and no links, a maximum of 2000 characters.
+// badge: a short text at the end of the row, a maximum of 20 characters. place: a click on the row shows the line of the
+// file, which is absolute or relative to the first folder of the project. actions: the buttons of the row. A row with
+// buttons needs an id, and the ids of the rows of a tab are different
+export interface TabRow {
+	id?: string;
+	text: string;
+	detail?: string;
+	badge?: string;
+	place?: { file: string; line: number };
+	actions?: ItemAction[];
+}
+
 //-------------------
 // Events
 
@@ -140,10 +178,11 @@ export interface EngineStateEvent {
 	error?: string; // the reason of the state failed, or of the state stopped with no compile database
 }
 
-// A click on a button of your extension. action: the id of the button. item: the id of the note or the detail. step: the
-// number of the step, from 1. file and line: the place of the note, of the detail or of the step
+// A click on a button of your extension. action: the id of the button. item: the id of the note, of the detail or of the
+// row of your tab. step: the number of the step, from 1. file and line: the place of the note, of the detail, of the step
+// or of the row
 export interface ActionEvent {
-	kind: 'note' | 'detail' | 'step';
+	kind: 'note' | 'detail' | 'step' | 'tab';
 	action: string;
 	item?: string;
 	file?: string;
@@ -244,8 +283,8 @@ export interface ShowBlocksArgs extends FunctionArgs {
 
 export type NoteKind = 'problem' | 'warning' | 'info';
 
-// A button on a note, a detail or a step. A click sends onDidInvokeAction with the id. An item has a maximum of 3 buttons.
-// The id has a maximum of 64 characters, and the title 40. Only an extension can give buttons
+// A button on a note, a detail, a step or a row of a tab. A click sends onDidInvokeAction with the id. An item has a
+// maximum of 3 buttons. The id has a maximum of 64 characters, and the title 40. Only an extension can give buttons
 export interface ItemAction {
 	id: string;
 	title: string;
