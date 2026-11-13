@@ -190,6 +190,14 @@ test('Guided review: the files of a folder, a plan of the model, the marks, the 
 	// get_view gives the step that the user looks at, and the marks
 	assert.equal(r.view.currentStep, 4);
 	assert.deepEqual(r.view.steps.map((s) => s.status), ['ok', 'question', 'todo', 'issue']);
+	// the note of the user from the field of the step goes to the model
+	assert.equal(r.userNote, 'Check the lock in the worker too.');
+	// a second plan on the top of the stack: the tab Guide names the first plan under it, the step in CMakeLists.txt opens in
+	// the text editor, and the label shows next to the title. Close review shows the first plan again at its step
+	assert.deepEqual(r.stack.guides, ['claude-code review Review of the build', 'claude-code review Review of the new cost limit']);
+	assert.deepEqual([r.stack.below, r.stack.label, r.stack.file], [['Review of the new cost limit'], 'build', 'text editor']);
+	assert.match(r.stack.editor, /CMakeLists\.txt/);
+	assert.deepEqual([r.afterSecondClose.current, r.afterSecondClose.statuses], [4, ['st-ok', 'st-question', 'st-todo', 'st-issue']]);
 	// the command Previous Review Step, and the guide after a reload of the window
 	assert.equal(r.afterCommand, 3);
 	assert.equal(r.afterReload.current, 3);
@@ -251,6 +259,10 @@ test('Diff walk: the command with the list of branches, the marks of the diff in
 	assert.match(r.model2.note ?? '', /Check the tests of the prices/);
 	assert.equal(r.view.kind, 'diff walk');
 	assert.equal(r.view.currentStep, 2);
+	// the walk of the model is on the top of the walk of the command. Close walk shows the walk of the command again at its
+	// step, and a second Close walk removes the guide
+	assert.deepEqual(r.below, ['Changes of review against main']);
+	assert.deepEqual([r.afterClose.guideTitle, r.afterClose.current, r.afterClose.title], ['Changes of review against main', 2, 'Changes in process()']);
 	assert.equal(r.closed, true);
 });
 

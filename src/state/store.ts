@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type * as Api from '../../api/dataflow-api';
 import { CompileDbInfo } from '../cdb/manager';
 import { CallGraphResult, EngineFunction, EngineState, MemberModel } from '../engine/client';
 import type { CostCategory, CostItemInfo, CostMark } from '../lenses/cost';
@@ -27,6 +28,14 @@ export interface HeatLayerState {
 export interface GuideHeatState {
 	seq: number;
 	steps: (SideStepHeat | undefined)[];
+}
+
+// The cause of the last change of the guides: what changed, who changed it, and the top guide after the change. The
+// events of the API use it only while the top guide is that guide
+export interface GuideCause {
+	change: Api.GuideChange;
+	by: string; // user, or the name of the client
+	guide: SideGuide | undefined;
 }
 
 // The scan of the call graph of the engine, for the reach of the heat score. stopped: the user stopped the scan
@@ -129,7 +138,10 @@ export interface DataFlowState {
 	rippleLayer?: RippleLayerState; // the ripple of the last review
 	modelLayers: SideModel[]; // the blocks and the notes of a language model, one layer for each file
 	isModelShown: boolean; // the layers of the model show in the code view. The switch Model of the toolbar hides them
-	guide?: SideGuide; // the guided review: the plan of a model to review the changes of the branch
+	guide?: SideGuide; // the guide that shows: the top guide of the stack, a guided review or a diff walk
+	guidesBelow: SideGuide[]; // the guides under the top guide, from the bottom of the stack to the guide under the top
+	guideSeq: number; // the last number of a guide. The ids of the guides do not repeat
+	guideCause?: GuideCause; // the cause of the last change of the guides
 	mcp: SideMcp; // the MCP server of DataFlow
 	sideMode: SideMode;
 	message?: string;
@@ -144,6 +156,8 @@ export class StateStore implements vscode.Disposable {
 		lenses: { flow: true, logic: true, cost: true, review: false, includes: true, calls: true, threads: true, heat: false },
 		modelLayers: [],
 		isModelShown: true,
+		guidesBelow: [],
+		guideSeq: 0,
 		mcp: { state: 'off' },
 		sideMode: 'file',
 	};

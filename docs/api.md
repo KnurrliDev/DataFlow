@@ -11,6 +11,7 @@ Examples of extensions that can use the API:
 - [Get the API](#get-the-api)
 - [The methods](#the-methods)
 - [The events](#the-events)
+- [Guides](#guides)
 - [Buttons](#buttons)
 - [Errors](#errors)
 - [Versions](#versions)
@@ -71,7 +72,7 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `getLogic({ file, function, line, choices })` | [`get_logic`](tools.md#get_logic) | read |
 | `getRipple()` | [`get_ripple`](tools.md#get_ripple) | read |
 | `getReview({ paths })` | [`get_review`](tools.md#get_review) | read |
-| `getDiff({ base, paths })` | [`get_diff`](tools.md#get_diff) | read |
+| `getDiff({ base, paths, allFiles })` | [`get_diff`](tools.md#get_diff) | read |
 | `showBlocks({ file, function, line, blocks })` | [`show_blocks`](tools.md#show_blocks) | view |
 | `showFlow({ file, line, name })` | [`show_flow`](tools.md#show_flow) | view |
 | `showLogicPath({ file, function, line, choices })` | [`show_logic_path`](tools.md#show_logic_path) | view |
@@ -87,10 +88,10 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `clearRipple()` | [`clear_ripple`](tools.md#clear_ripple) | view |
 | `scanCallGraph()` | [`scan_call_graph`](tools.md#scan_call_graph) | view |
 | `stopCallGraph()` | [`stop_call_graph`](tools.md#stop_call_graph) | view |
-| `showReviewPlan({ title, summary, steps })` | [`show_review_plan`](tools.md#show_review_plan) | view |
-| `showDiffWalk({ title, summary, steps, allHunks })` | [`show_diff_walk`](tools.md#show_diff_walk) | view |
-| `reviewStep({ step, note, status })` | [`review_step`](tools.md#review_step) | view |
-| `closeGuide({ kind })` | [`close_guide`](tools.md#close_guide) | view |
+| `showReviewPlan({ id, title, summary, steps })` | [`show_review_plan`](tools.md#show_review_plan) | view |
+| `showDiffWalk({ id, title, summary, steps, allHunks })` | [`show_diff_walk`](tools.md#show_diff_walk) | view |
+| `reviewStep({ id, step, note, status, label, data, force })` | [`review_step`](tools.md#review_step) | view |
+| `closeGuide({ id, kind, force })` | [`close_guide`](tools.md#close_guide) | view |
 
 The read methods do not change the view. The view methods change the side view that the user looks at. Use them only when the user asks your extension for it, for example with a command or a button.
 
@@ -113,7 +114,7 @@ These properties give the state:
 | --- | --- | --- |
 | `onDidChangeEngineState` | The engine starts, is ready, stops or fails, or the compile databases change. | `state`, `compileDatabases`, and `error` as in `engineError` |
 | `onDidChangeView` | The file, the function or the line at the cursor changes. The cursor is the cursor of the active C++ editor, or the cursor of the side view if no C++ editor shows. The event comes after the engine found the function at the cursor. | `file`, `function` with its `name` and its `lines`, and `line` |
-| `onDidChangeGuide` | A guided review or a diff walk starts, goes to a step, gets a mark or a note, or closes. | The guide as `get_view` gives it in `review`, or `null` after the close |
+| `onDidChangeGuide` | The guide that shows changes: the top guide of the stack. See [Guides](#guides). | The guide as `get_view` gives it in `review`, with `change` and `by`, or `null` if no guide shows |
 | `onDidChangeCallGraph` | The scan of the call graph starts, makes progress, stops or ends. | The data of `scan_call_graph` |
 | `onDidInvokeAction` | The user clicks a button of your extension. See [Buttons](#buttons). | `kind`, `action`, `item`, `file`, `line` and `step` |
 
@@ -124,6 +125,33 @@ Each subscription to an event gives a disposable. Add it to the subscriptions of
 ```ts
 context.subscriptions.push(api.onDidChangeView((view) => console.log(view.file, view.function?.name, view.line)));
 ```
+
+## Guides
+
+The side view keeps a stack of up to 5 guides: the guided reviews and the diff walks of the user, of MCP clients and of extensions. The top guide shows. [More than one guide](tools.md#more-than-one-guide) tells what the user sees.
+
+- `showReviewPlan` and `showDiffWalk` put a new guide on the top. The result gives its `id`, for example `g3`. With the `id` of a guide of your client, the new plan replaces that guide at its place in the stack. With 5 guides in the stack, a new guide fails.
+- `reviewStep` and `closeGuide` use the top guide, or the guide with the `id`. A guide under the top guide changes at its place, and the view stays on the top guide.
+- A note, a mark, a label, data or a close on a guide of the user or of a different client fails, except with `force: true`. Use `force` only when the user asks your extension for it.
+- A step can be in each text file of the project, or in a new file with `newFile`. A step can have a `label`, which the tab Guide shows, and `data`, which DataFlow keeps for your extension.
+- `getView` gives the top guide in `review` with the marks and the notes of the user, and the stack in `guides`.
+
+`onDidChangeGuide` comes for each change of the guide that shows. `change` gives the cause, and `by` gives `user` or the name of the client:
+
+| `change` | Cause |
+| --- | --- |
+| `start` | A new guide went on the top. |
+| `replace` | A plan replaced the top guide. |
+| `step` | A different step shows. |
+| `mark` | The mark of a step changed. |
+| `note` | The note of a client on a step changed. |
+| `userNote` | The note of the user on a step changed. |
+| `label` | The label or the data of a step changed. |
+| `move` | An edit moved the lines of steps. |
+| `close` | The top guide closed. The event gives the guide under it, or `null` if no guide is left. |
+| `show` | The user brought a guide of the stack to the top. |
+
+A change of a guide under the top guide gives no event.
 
 ## Buttons
 

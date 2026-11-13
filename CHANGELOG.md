@@ -17,6 +17,13 @@
 - The side view shows the layers of all clients. The bars of the blocks of each client stand side by side in the color of the client. The tab Model shows one group for each client, and the card of a detail names its client. `get_view` gives the items of the other clients in `otherClients`.
 - Each note and each comment gets an id, as each detail has one: `n1`, `c1` and so on. `highlight`, `comment_lines` and `add_detail` give the ids. The new view tool `remove` removes notes, comments and details by their ids, and the API gets `remove`. The layers of 0.5.0 get their ids when they come back.
 - API: an extension can put buttons on its notes, its details and the steps of its guides with `actions`. A click sends `onDidInvokeAction` only to that extension. The MCP server refuses `actions`, because an MCP client gets no event for a click.
+- Guides: the side view keeps a stack of up to 5 guided reviews and diff walks. A new plan goes on the top, and the guide under it shows again when the top guide closes. Before, a new plan replaced the guide of the user or of a different client. The tab Guide names the guides under the top guide, and a click brings one to the top. With 5 guides, a new guide fails.
+- Each guide has an id and an owner: the user for the command Walk Through the Changes, else its client. `show_review_plan` and `show_diff_walk` with the id of a guide of the client replace that guide at its place. `review_step` and `close_guide` get `id`, and they change or close a guide of a different owner only with `force`. `get_view` gives the stack in `guides`.
+- A step of a guided review can be in each text file of the project, for example `CMakeLists.txt`, or in a new file with `newFile`. The text editor shows a step of a file that is not a C or C++ file, and the side view keeps its file. `get_diff` with `allFiles` also gives the changes of the other text files.
+- A step can have a `label`, which the tab Guide shows next to the title, and `data` of the client. `review_step` changes them.
+- The tab Guide has a field for the note of the user on the current step. `get_view` gives the note of the user and the text of the note of the model. The summary has the notes of the user.
+- API: `onDidChangeGuide` gives `change` and `by`: the cause of the change, and the user or the client.
+- A guided review has a maximum of 40 steps, as a diff walk. Before, the maximum was 20.
 
 ## 0.5.0
 

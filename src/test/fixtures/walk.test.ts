@@ -21,8 +21,10 @@ suite('Diff walk', () => {
 		this.timeout(120000);
 		api = await activateDataFlow(source());
 	});
+	// each test starts with no guide. A new walk goes on the top of the stack of the guides, and the stack has a maximum
+	setup(() => api.store.update({ guide: undefined, guidesBelow: [] }));
 	suiteTeardown(async () => {
-		await vscode.commands.executeCommand('dataflow.guide.close');
+		api.store.update({ guide: undefined, guidesBelow: [] });
 		rmSync(extra(), { force: true });
 	});
 
@@ -165,11 +167,11 @@ suite('Diff walk', () => {
 
 			// close_guide: a different kind or a wrong value does not close the walk. Then the walk closes, and a second
 			// call finds no guide
-			await assert.rejects(api.mcpHost.closeGuide('review'), /The side view shows a diff walk, not a guided review\. The view did not change\./);
+			await assert.rejects(api.mcpHost.closeGuide('review'), /The guide g\d+ is a diff walk, not a guided review\. The view did not change\./);
 			await assert.rejects(api.mcpHost.closeGuide('walk'), /"kind" must be one of "review", "diff walk"\./);
 			assert.strictEqual(api.store.state.guide?.title, 'A counter for the cycles');
 			assert.deepStrictEqual(await api.mcpHost.closeGuide('diff walk'),
-				{ closed: true, kind: 'diff walk', title: 'A counter for the cycles', steps: 2, progress: '1 of 2 steps reviewed: 1 question' });
+				{ closed: true, id: guide.id, kind: 'diff walk', title: 'A counter for the cycles', steps: 2, progress: '1 of 2 steps reviewed: 1 question', shows: null });
 			assert.strictEqual(api.store.state.guide, undefined);
 			assert.deepStrictEqual(await api.mcpHost.closeGuide(undefined), { closed: false, note: 'No guided review or diff walk shows, so the view did not change.' });
 

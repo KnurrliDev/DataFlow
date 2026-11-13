@@ -812,6 +812,20 @@ button.mnote { cursor: pointer; }
 .rg-checks { margin: 0; padding-left: 18px; }
 .rg-checks li::marker { content: "☐  "; color: var(--vscode-dataflow-reviewGuide); }
 .rg-note { padding: 4px 6px; border-radius: 4px; background: color-mix(in srgb, var(--vscode-dataflow-model) 7%, transparent); }
+/* the guides under the top guide, the label of a client, the mark of a step in a text file or a new file, and the note
+   of the user */
+.rg-below { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.rg-below-item { display: inline-flex; align-items: baseline; gap: 4px; }
+.rg-owner { color: var(--vscode-descriptionForeground); }
+.rg-label { flex: none; padding: 0 5px; border-radius: 4px; font-size: 0.8em; font-weight: 600; color: var(--vscode-dataflow-reviewGuide);
+  background: color-mix(in srgb, var(--vscode-dataflow-reviewGuide) 14%, transparent); }
+.rg-file { flex: none; padding: 0 5px; border-radius: 4px; font-size: 0.8em; font-style: italic; color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border, transparent); }
+.rg-user-note { display: grid; gap: 2px; }
+.rg-user-note textarea { box-sizing: border-box; width: 100%; min-height: 2.6em; padding: 3px 6px; resize: vertical; font: inherit;
+  color: var(--vscode-input-foreground); background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, transparent)); border-radius: 2px; }
+.rg-user-note textarea:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .rg-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .rg-gap { flex: 1; }
 .rg-footer { display: flex; gap: 8px; padding-top: 6px; border-top: 1px solid var(--vscode-panel-border, transparent); }

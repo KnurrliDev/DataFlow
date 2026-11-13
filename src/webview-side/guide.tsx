@@ -121,8 +121,39 @@ function diffRowsOf(step: SideGuideStep, file: string | undefined, rows: readonl
 				return { ...r, spans: pairedSpans(r.text, pairRow) };
 			}
 		}
-		return { ...r, spans: lexSpans(r.text) };
+		// a file that is not a C or C++ file gets no tokens of the C++ lexer
+		return { ...r, spans: step.fileKind === 'text' ? [] : lexSpans(r.text) };
 	});
+}
+
+// The note of the user on a step. DataFlow keeps it when the field loses the focus, or with Ctrl+Enter. The saved note
+// comes into the field, except while the user writes
+function UserNote({ step, index }: { step: SideGuideStep; index: number }) {
+	const ref = useRef<HTMLTextAreaElement>(null);
+	useEffect(() => {
+		const el = ref.current;
+		if (el && document.activeElement !== el) {
+			el.value = step.userNote ?? '';
+		}
+	}, [step.userNote, index]);
+	const save = () => {
+		const text = ref.current?.value ?? '';
+		if (text.trim() !== (step.userNote ?? '')) {
+			post({ type: 'guideUserNote', index, note: text });
+		}
+	};
+	return (
+		<div class="rg-user-note">
+			<label class="sub" for={`rg-user-note-${index}`}>Your note</label>
+			<textarea id={`rg-user-note-${index}`} ref={ref} rows={2} placeholder="For example the reason of an issue. The model and the summary get it."
+				onBlur={save} onKeyDown={(e) => {
+					if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+						e.preventDefault();
+						save();
+					}
+				}} />
+		</div>
+	);
 }
 
 // The diff of the current step of a diff walk. A click on a row shows its line in the file view and in the text editor
@@ -192,6 +223,20 @@ export function GuideDetails({ guide, file, rows, settings }: {
 				{(!isWalk || guide.client) && <span class="mpill">model</span>}
 				{sourceText(guide)}
 			</p>
+			{guide.below && guide.below.length > 0 && (
+				<p class="sub rg-below" role="group" aria-label="Guides under this guide">
+					<span>{guide.below.length === 1 ? 'Under this guide:' : `Under this guide, ${guide.below.length} guides:`}</span>
+					{guide.below.map((g) => (
+						<span class="rg-below-item">
+							<button type="button" class="link small" title={`Show the ${g.kind === 'diff' ? 'diff walk' : 'review'} ${g.id}. This guide stays under it.`}
+								onClick={() => post({ type: 'guideShow', id: g.id })}>
+								{g.title}
+							</button>
+							<span class="rg-owner">({g.owner})</span>
+						</span>
+					))}
+				</p>
+			)}
 			{guide.summary && <p>{guide.summary}</p>}
 			<div class="rg-progress">
 				<span class="sub">{progressText(guide)}</span>
@@ -207,13 +252,16 @@ export function GuideDetails({ guide, file, rows, settings }: {
 								<span class="rg-head-text">
 									<span class="rg-step-title">{s.title}</span>
 									<span class="rg-meta">
+										{s.label && <span class="rg-label" title={`Label of ${guide.owner ?? guide.client ?? 'the model'}`}>{s.label}</span>}
 										{s.kind && <span class={`rg-kind k-${s.kind}`}>{s.kind}</span>}
 										{s.heat && (
 											<span class={`rg-heat b-${s.heat.band}`} title={`${s.heat.name}\n${scoreTitle(s.heat.score, s.heat.band)}`}>
 												<Flames count={s.heat.flames} />{s.heat.score}
 											</span>
 										)}
-										<span class="rg-place">{s.name}:{lineText(s)}</span>
+										<span class="rg-place">{s.fileKind === 'new' ? s.name : `${s.name}:${lineText(s)}`}</span>
+										{s.fileKind === 'text' && <span class="rg-file" title="The side view shows only C and C++ files. The text editor shows this step.">text editor</span>}
+										{s.fileKind === 'new' && <span class="rg-file" title="The file is not there yet. The step opens it when it is there.">new file</span>}
 										{s.diff && <DiffStats diff={s.diff} />}
 									</span>
 								</span>
@@ -233,6 +281,7 @@ export function GuideDetails({ guide, file, rows, settings }: {
 											<Markdown text={s.note} />
 										</div>
 									)}
+									<UserNote step={s} index={i} />
 									<ItemActions actions={s.actions} owner={guide.client} kind="step" step={i} line={s.first} />
 									<div class="rg-actions">
 										<StatusButtons step={s} index={i} />

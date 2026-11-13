@@ -137,6 +137,7 @@ suite('Heat', () => {
 
 	test('With the lens Heat on, each step of the tab Guide gets the heat of its hottest function', async function () {
 		this.timeout(60000);
+		api.store.update({ guide: undefined, guidesBelow: [] });
 		const guide = await vscode.commands.executeCommand<SideGuide | undefined>('dataflow.diffWalk.start', 'target');
 		try {
 			assert.ok(guide);

@@ -170,13 +170,27 @@ The model does these steps:
 - The tab **Guide** of the details column shows the plan: the title, the summary of the model, your progress, and each step with its kind and its place. The current step also shows its text, its questions and the note of the model. To go to a step, click it.
 - While the lens **Heat** shows, each step in the tab Guide also shows the flames and the score of its hottest function. To see the name of the function, move the mouse on the flames.
 - To mark a step, click **OK**, **Issue** or **Question** in the bar or in the tab Guide. To remove the mark, click it again.
-- Ask the model about the current step, or ask for the next step. The model reads the current step and your marks with `get_view`. With `review_step`, it goes to a step and adds its answer or a finding as a note.
-- To put the summary of the review on the clipboard, click **Copy summary**. The summary is Markdown, for example for a comment on a pull request. It has each step with its place, its mark and the note of the model.
-- To remove the guide, click **Close review**, or ask the model to close it. A new plan of the model replaces the old plan.
+- The current step in the tab Guide has the field **Your note**. Write a note for the model there, for example the reason of an issue. DataFlow keeps the note when the field loses the focus, or when you push Ctrl+Enter.
+- Ask the model about the current step, or ask for the next step. The model reads the current step, your marks and your notes with `get_view`. With `review_step`, it goes to a step and adds its answer or a finding as a note.
+- To put the summary of the review on the clipboard, click **Copy summary**. The summary is Markdown, for example for a comment on a pull request. It has each step with its place, its mark, the note of the model and your note.
+- To remove the guide, click **Close review**, or ask the model to close it. The guide under it then shows again.
+
+A step can be in each text file of the project, for example `CMakeLists.txt`, a `.ui` file or a `.qml` file. The side view shows only C and C++ files. Thus such a step opens its file in the text editor beside the side view, and the side view keeps its file. The tab Guide marks the step with **text editor**. A step can also be in a new file that is not there yet. Such a step opens no editor, and the tab Guide marks it with **new file**. When the file is there, the step opens it.
+
+A model or an extension can give a step a short label, for example the risk of the step. The tab Guide shows the label next to the title.
 
 These commands do the same as the buttons: **DataFlow: Next Guide Step**, **DataFlow: Previous Guide Step**, **DataFlow: Copy Guide Summary** and **DataFlow: Close Guide**. They show in the Command Palette while a guided review or a diff walk shows. You can give them keys in the keyboard shortcuts of VS Code.
 
-During an edit, the steps move with their code. After a reload of the window, the guide comes back at the same step with your marks. Each step goes to the nearest place where its first and its last line have the same text as before.
+During an edit, the steps move with their code, in each text file. After a reload of the window, the guides come back at the same step with your marks and your notes. Each step goes to the nearest place where its first and its last line have the same text as before.
+
+### More than one guide
+
+The side view keeps a stack of up to 5 guides: the guided reviews and the diff walks of you, of the model and of extensions. The top guide shows. A new plan goes on the top, and the guides under it stay. When the top guide closes, the guide under it shows again at its step.
+
+- The tab Guide names the guides under the top guide, for example "Under this guide: Review of the new limit (claude-code)". To bring a guide to the top, click its name.
+- Each guide has an id, for example g3, and an owner. You are the owner of a walk of the command **DataFlow: Walk Through the Changes**. Else the owner is the client that made the guide.
+- A model changes or closes a guide of a different owner only when you ask it for it. To change its own plan, the model gives the id of the plan, and the new plan replaces the old plan at its place in the stack.
+- With 5 guides in the stack, a new guide fails. Close a guide first.
 
 The color of the guide is the theme color `dataflow.reviewGuide`. The default is the blue of the chart colors of your color theme.
 
@@ -224,7 +238,7 @@ During an edit, the steps and their marks move with their code, but the diff of 
 
 To remove the walk, click **Close walk** in the tab Guide, or ask the model, for example "Close the diff walk".
 
-The side view shows only C and C++ files. The summary of a walk of the command gives the deleted files, and the changed files that are not C or C++ files.
+The side view shows only C and C++ files. The summary of a walk of the command gives the deleted files, and the changed files that are not C or C++ files. With `allFiles`, `get_diff` also gives the changes of the text files that are not C or C++ files, for example `CMakeLists.txt`. Then a step of such a file opens in the text editor, as in a guided review. The command **DataFlow: Walk Through the Changes** shows only C and C++ files.
 
 ## The tools
 
@@ -247,7 +261,7 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`get_logic`](#get_logic) | read | The data of Logic Map: the decisions of a function with their options, and one path through the function for the choices |
 | [`get_ripple`](#get_ripple) | read | The data of the last review of Change Ripple: the code that each change reaches, also in the callers |
 | [`get_review`](#get_review) | read | The C and C++ files under the paths of a guided review, with the diff of each changed file against the target branch |
-| [`get_diff`](#get_diff) | read | The hunks of the changed C and C++ files against a base, with their functions and their diff, for a diff walk |
+| [`get_diff`](#get_diff) | read | The hunks of the changed C and C++ files against a base, with their functions and their diff, for a diff walk. With `allFiles`, also the other changed text files |
 | [`show_blocks`](#show_blocks) | view | Shows the logical blocks of a function, with a maximum of five levels. A new call replaces the blocks of its function. The blocks of the other functions of the file stay. |
 | [`show_flow`](#show_flow) | view | Starts Flow Lens on a variable or a data member, as a click does |
 | [`show_logic_path`](#show_logic_path) | view | Shows Logic Map for a function with a path for the choices |
@@ -263,10 +277,10 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`clear_ripple`](#clear_ripple) | view | Closes Change Ripple |
 | [`scan_call_graph`](#scan_call_graph) | view | Starts the scan of the call graph for the heat score |
 | [`stop_call_graph`](#stop_call_graph) | view | Stops the scan of the call graph |
-| [`show_review_plan`](#show_review_plan) | view | Shows the plan of a guided review, at its first step |
-| [`show_diff_walk`](#show_diff_walk) | view | Shows the plan of a diff walk, at its first step |
-| [`review_step`](#review_step) | view | Goes to a step of the guided review or of the diff walk, and adds a note or a mark of the model |
-| [`close_guide`](#close_guide) | view | Closes the guided review or the diff walk |
+| [`show_review_plan`](#show_review_plan) | view | Shows the plan of a guided review on the top of the stack of the guides, at its first step |
+| [`show_diff_walk`](#show_diff_walk) | view | Shows the plan of a diff walk on the top of the stack of the guides, at its first step |
+| [`review_step`](#review_step) | view | Goes to a step of a guide, and adds a note, a mark, a label or data of the model |
+| [`close_guide`](#close_guide) | view | Closes a guided review or a diff walk. The guide under it then shows |
 
 Lines start at 1. Many tools use these parameters:
 
@@ -280,7 +294,7 @@ Lines start at 1. Many tools use these parameters:
 
 Gives what the user looks at in VS Code: the active C++ file, the function and the line at the cursor, and the selection. The selection can also be a selection in the side view. The result also gives the lenses of the side view and the layers of the model. The model calls this tool first when you write "this function", "here" or "the selection".
 
-`model` gives the layers of the client in the file. `otherClients` gives the number of blocks, notes, comments and details of each other client in the file.
+`model` gives the layers of the client in the file. `otherClients` gives the number of blocks, notes, comments and details of each other client in the file. `review` gives the guide that shows, with the marks and the notes of the user. `guides` gives the guides of the stack with their ids and owners, the top guide first.
 
 Parameters: none.
 
@@ -691,21 +705,25 @@ Example request: "Do a guided review of src/power."
 
 ### show_review_plan
 
-Shows the plan of a guided review in the side view, and goes to the lines of step 1. A new plan replaces the old plan.
+Shows the plan of a guided review in the side view, and goes to the lines of step 1. The plan goes on the top of the stack of the guides, and the guides under it stay.
 
 | Parameter | Type | Function |
 | --- | --- | --- |
+| `id` | text | The id of a guide of the model. The new plan replaces that guide at its place in the stack. The default is a new guide on the top. |
 | `title` | text | A short title of the review. DataFlow cuts a title after 80 characters. The default is "Review of the changes". |
 | `summary` | text | One to three sentences: what the code or the changes do. DataFlow cuts a summary after 1000 characters. |
-| `steps` | list | Necessary. The steps in the order of the review, from 1 to 20 steps. |
+| `steps` | list | Necessary. The steps in the order of the review, from 1 to 40 steps. |
 
 Each step has these fields:
 
 | Field | Type | Function |
 | --- | --- | --- |
 | `title` | text | Necessary. A short title in the imperative, for example "Check the new limit". DataFlow cuts a title after 80 characters. |
-| `file` | text | The file of the step: a path relative to the repository, as `get_review` gives it, or an absolute path. It must be a C or C++ file. The default is the file of the step before. |
-| `lines` | two integers | Necessary. The first and the last line of the step. |
+| `file` | text | The file of the step: a path relative to the repository, as `get_review` gives it, or an absolute path. It can be each text file of the project. The default is the file of the step before. |
+| `newFile` | text | A file that is not there yet, in the place of `file`: a path relative to the repository, or an absolute path in a folder of the project. |
+| `lines` | two integers | The first and the last line of the step. Necessary with `file`. Optional with `newFile`. |
+| `label` | text | A short label that the tab Guide shows next to the title. DataFlow cuts a label after 40 characters. |
+| `data` | object | Data of the client on the step, a JSON object with a maximum of 4096 characters. DataFlow keeps it, and `get_view` gives it. |
 | `text` | text | Necessary. What the reviewer looks at in this step and why. It can use a small part of Markdown: paragraphs, lists, `code`, **bold** and *italic*. DataFlow cuts a text after 2000 characters. |
 | `checks` | list of texts | The questions that the reviewer answers in this step, a maximum of 5. DataFlow cuts a question after 200 characters. |
 | `kind` | text | `change` (changed lines), `ripple` (code that a change reaches), `context` (code that explains a change), `risk` (a possible problem) or `test` (the tests of the change). |
@@ -724,17 +742,19 @@ Gives the changes for a diff walk: the hunks of the changed C and C++ files agai
 | --- | --- | --- |
 | `base` | text | `uncommitted` (the default): the changes against HEAD. `target`: the changes of the branch against the target branch of Change Ripple. A different text is a commit, a tag or a branch, for example `HEAD~1`: the changes since its merge base with HEAD. Each diff goes to the working tree, with the text of the editors and the C and C++ files that git does not track yet. |
 | `paths` | list of texts | Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. The default is all changed files. |
+| `allFiles` | true or false | `true`: also the hunks of the changed text files that are not C or C++ files, for example `CMakeLists.txt` or a `.ui` file. Such a file has `isCpp: false`, and its hunks have no functions and no heat. The default is `false`: only C and C++ files. |
 
-The result also gives `suggestedSteps`: the hunks of one function in one step, as the command of DataFlow makes them. The heat of a suggested step is the highest score of its changed functions. `callGraph` and `noHeat` are as for `get_review`. It also gives the deleted files (`deletedFiles`) and the changed files that are not C or C++ files (`otherChangedFiles`). After 1500 lines of diff, a hunk has no diff, and `isDiffTruncated` is true. The model reads such a hunk with the other read tools.
+The result also gives `suggestedSteps`: the hunks of one function in one step, as the command of DataFlow makes them. The hunks of a text file that is not a C or C++ file make one step. The heat of a suggested step is the highest score of its changed functions. `callGraph` and `noHeat` are as for `get_review`. It also gives the deleted files (`deletedFiles`) and the changed files that are not C or C++ files (`otherChangedFiles`). After 1500 lines of diff, a hunk has no diff, and `isDiffTruncated` is true. The model reads such a hunk with the other read tools.
 
 Example request: "Walk me through the changes that you made."
 
 ### show_diff_walk
 
-Shows the plan of a diff walk in the side view, and goes to the lines of step 1. A new plan replaces the old plan, also a guided review. Call `get_diff` first: the steps name the hunks of the last `get_diff`.
+Shows the plan of a diff walk in the side view, and goes to the lines of step 1. The walk goes on the top of the stack of the guides, and the guides under it stay. Call `get_diff` first: the steps name the hunks of the last `get_diff`.
 
 | Parameter | Type | Function |
 | --- | --- | --- |
+| `id` | text | The id of a guide of the model. The new walk replaces that guide at its place in the stack. The default is a new guide on the top. |
 | `title` | text | A short title of the walk. DataFlow cuts a title after 80 characters. |
 | `summary` | text | One to three sentences: what the changes do. DataFlow cuts a summary after 1000 characters. |
 | `steps` | list | Necessary. The steps in the order of the walk, from 1 to 40 steps. |
@@ -749,6 +769,8 @@ Each step has these fields:
 | `text` | text | Necessary. What changed in this step and why. It can use the small part of Markdown of `show_review_plan`. DataFlow cuts a text after 2000 characters. |
 | `checks` | list of texts | Questions for the user in this step, a maximum of 5. |
 | `kind` | text | `change`, `ripple`, `context`, `risk` or `test`, as in `show_review_plan`. |
+| `label` | text | A short label next to the title, as in `show_review_plan`. |
+| `data` | object | Data of the client on the step, as in `show_review_plan`. |
 
 DataFlow adds a step at the end for each hunk that no step names, so the walk shows all changes. The result gives these steps in `addedSteps`. With `allHunks` set to `false`, DataFlow adds no steps. If a step has a problem, for example an id that is not in the diff, the view does not change. The model gets each problem.
 
@@ -756,27 +778,35 @@ Example request: "Show the walk, with the new settings first."
 
 ### review_step
 
-Goes to a step of the guided review or of the diff walk in the side view, as the buttons of the user do. The model can also add a note to the step, for example an answer or a finding, and mark the step.
+Goes to a step of a guide in the side view, as the buttons of the user do. The model can also add a note to the step, for example an answer or a finding, and mark the step.
 
 | Parameter | Type | Function |
 | --- | --- | --- |
+| `id` | text | The id of the guide, for example `g2`. The default is the top guide. A guide under the top guide changes at its place, and the view stays on the top guide. |
 | `step` | integer | Necessary. The number of the step, from 1. |
 | `note` | text | The note of the model for the step, with a small part of Markdown. An empty text removes the note. DataFlow cuts a note after 2000 characters. |
 | `status` | text | The mark of the step: `todo`, `ok`, `issue` or `question`. |
+| `label` | text | The label of the step. An empty text removes the label. |
+| `data` | object | The data of the client on the step. `null` removes the data. |
+| `force` | true or false | `true`: change a guide of you or of a different client. The model gives it only when you ask for the change. |
+
+A call with only `step` goes to the step of each guide. A note, a mark, a label or data on a guide of a different owner needs `force`. The result gives `isShown`: false if the guide is under the top guide.
 
 Example request: "Go to the next step, and mark this step as an issue."
 
 ### close_guide
 
-Closes the guided review or the diff walk in the side view, as **Close review** and **Close walk** do. The marks and the notes of the steps go away, and the guide does not come back after a reload of the window. The model calls this tool only when you ask for it.
+Closes a guided review or a diff walk in the side view, as **Close review** and **Close walk** do. The guide under it then shows again. The marks and the notes of the steps go away, and the guide does not come back after a reload of the window. The model calls this tool only when you ask for it, or to close its own guide.
 
 | Parameter | Type | Function |
 | --- | --- | --- |
-| `kind` | text | `review` or `diff walk`: the tool closes the guide only if it has this kind. The default is the guide that shows. |
+| `id` | text | The id of the guide. The default is the top guide. |
+| `kind` | text | `review` or `diff walk`: the tool closes the guide only if it has this kind. |
+| `force` | true or false | `true`: close a guide of you or of a different client. The model gives it only when you ask for it. |
 
 Example request: "Delete the diff walk."
 
-If no guide shows, the view does not change. If the guide has a different kind, the tool gives an error, and the guide stays.
+If no guide shows, the view does not change. If the guide has a different kind, or a different owner and no `force`, the tool gives an error, and the guide stays. The result gives the guide that shows after the close in `shows`.
 
 ## Security and privacy
 

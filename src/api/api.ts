@@ -5,6 +5,7 @@ import { fileKey } from '../lenses/member';
 import { callGraphFacts, DataFlowMcpHost, type HostDeps } from '../mcp/host';
 import { createTools } from '../mcp/tools';
 import { guideFacts } from '../review/guide';
+import { guideChangeOf } from '../review/stack';
 import type { SideGuide } from '../side/protocol';
 import type { CallGraphView, DataFlowState, StateStore } from '../state/store';
 
@@ -43,7 +44,7 @@ const engineEvent = (state: DataFlowState): Api.EngineStateEvent => {
 export class ApiEvents implements vscode.Disposable {
 	private readonly engine = new vscode.EventEmitter<Api.EngineStateEvent>();
 	private readonly view = new vscode.EventEmitter<Api.ViewEvent>();
-	private readonly guide = new vscode.EventEmitter<Api.GuideFacts | null>();
+	private readonly guide = new vscode.EventEmitter<Api.GuideEvent | null>();
 	private readonly callGraph = new vscode.EventEmitter<Api.CallGraphFacts>();
 	private readonly action = new vscode.EventEmitter<{ owner: string; event: Api.ActionEvent }>();
 	private readonly clients = new Set<string>(); // the clients with an API object
@@ -111,9 +112,17 @@ export class ApiEvents implements vscode.Disposable {
 				this.view.fire(view);
 			}
 		}
+		// the guide that shows: the top guide. The store gives the cause of its change. A change with no cause in the store
+		// gets the difference of the two guides, and the user as its author
 		if (state.guide !== this.lastGuide) {
+			const before = this.lastGuide;
 			this.lastGuide = state.guide;
-			this.guide.fire(state.guide ? guideFacts(state.guide) : null);
+			if (!state.guide) {
+				this.guide.fire(null);
+			} else {
+				const cause = state.guideCause?.guide === state.guide ? state.guideCause : undefined;
+				this.guide.fire({ ...guideFacts(state.guide), change: cause?.change ?? guideChangeOf(before, state.guide), by: cause?.by ?? 'user' });
+			}
 		}
 		if (state.callGraph !== this.lastCallGraph) {
 			this.lastCallGraph = state.callGraph;

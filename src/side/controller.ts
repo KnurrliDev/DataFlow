@@ -4,7 +4,9 @@ import { EngineClient, FileResult } from '../engine/client';
 import { mergeModelLayers } from '../lenses/blocks';
 import { toUtf16Column, toUtf8Column } from '../lenses/flow';
 import type { ReviewState } from '../lenses/ripple';
-import { guideSummary, withCurrent, withStatus } from '../review/guide';
+import { isCppFile } from '../review/git';
+import { guideSummary, withCurrent, withStatus, withUserNote } from '../review/guide';
+import { dropGuide, raiseGuide, setGuide, setStack, sideGuideRef, stackOf } from '../review/stack';
 import { CallGraphView, CostLayerState, GuideHeatState, HeatLayerState, LogicPathState, RippleLayerState, StateStore, TraceState } from '../state/store';
 import { buildSideCost } from './costLayer';
 import { DefinitionPlace, otherPlaces, PlaceHistory, SidePlace } from './definition';
@@ -27,6 +29,8 @@ const CPP_LANGUAGES = new Set(['c', 'cpp', 'cuda-cpp']);
 const isCpp = (doc: vscode.TextDocument) => doc.uri.scheme === 'file' && CPP_LANGUAGES.has(doc.languageId);
 const sameDoc = (a: vscode.TextDocument | undefined, b: vscode.TextDocument | undefined) =>
 	!!a && !!b && a.uri.toString() === b.uri.toString();
+// True if a file is there, for example the new file of a step of a guide
+const fileExists = (file: string): Thenable<boolean> => vscode.workspace.fs.stat(vscode.Uri.file(file)).then(() => true, () => false);
 
 // The engine sends the tokens in parts of this number of lines. The first part contains the visible lines.
 const CHUNK_LINES = 1000;
@@ -138,6 +142,7 @@ export class SideViewController implements vscode.Disposable {
 	private lastModel: SideModel | null = null;
 	private lastModelLayers?: SideModel[];
 	private lastGuide?: SideGuide;
+	private lastGuidesBelow?: readonly SideGuide[];
 	private lastGuideHeat?: GuideHeatState;
 	private lastGuideView: SideGuide | null = null;
 	private pendingModel?: SideModel; // a layer that an edit moved. It waits for the rows of the new text
@@ -259,7 +264,7 @@ export class SideViewController implements vscode.Disposable {
 				if (state.modelLayers !== this.lastModelLayers) {
 					this.postModel();
 				}
-				if (state.guide !== this.lastGuide || state.guideHeat !== this.lastGuideHeat) {
+				if (state.guide !== this.lastGuide || state.guidesBelow !== this.lastGuidesBelow || state.guideHeat !== this.lastGuideHeat) {
 					this.postGuide();
 				}
 				if (state.review !== this.lastReview || state.rippleLayer !== this.lastRippleLayer) {
@@ -574,15 +579,30 @@ export class SideViewController implements vscode.Disposable {
 				this.store.update({ sideMode: 'file' });
 				break;
 			case 'openPlace':
-				void this.openPlace(message.file, message.line, message.col);
+				// the side view shows only C and C++ files, for example a row of the diff of a step in a CMake file
+				void (isCppFile(message.file) ? this.openPlace(message.file, message.line, message.col) : this.openTextPlace(message.file, message.line, message.line));
 				break;
 			case 'guideGo':
 				void this.goToGuideStep(message.index);
 				break;
-			case 'guideStatus':
-				if (this.store.state.guide) {
-					this.store.update({ guide: withStatus(this.store.state.guide, message.index, message.status) });
+			case 'guideStatus': {
+				const guide = this.store.state.guide;
+				const next = guide && withStatus(guide, message.index, message.status);
+				if (next && next !== guide) {
+					setGuide(this.store, next, 'mark', 'user');
 				}
+				break;
+			}
+			case 'guideUserNote': {
+				const guide = this.store.state.guide;
+				const next = guide && withUserNote(guide, message.index, message.note);
+				if (next && next !== guide) {
+					setGuide(this.store, next, 'userNote', 'user');
+				}
+				break;
+			}
+			case 'guideShow':
+				void this.showGuide(message.id);
 				break;
 			case 'guideCopy':
 				void this.copyGuideSummary();
@@ -595,7 +615,7 @@ export class SideViewController implements vscode.Disposable {
 					vscode.window.setStatusBarMessage('DataFlow: The forward declarations are on the clipboard.', 4000));
 				break;
 			case 'guideClose':
-				this.store.update({ guide: undefined });
+				void this.closeGuide();
 				break;
 			case 'openDefinition':
 				void this.openDefinition(message.file, message.line, message.col);
@@ -1112,11 +1132,14 @@ export class SideViewController implements vscode.Disposable {
 	// The guided review. It is the same in each file, so the side view keeps it when the file changes. While the lens Heat
 	// shows, each step gets the heat of its hottest function
 	private postGuide(): void {
-		const { guide, guideHeat } = this.store.state;
+		const { guide, guidesBelow, guideHeat } = this.store.state;
 		this.lastGuide = guide;
+		this.lastGuidesBelow = guidesBelow;
 		this.lastGuideHeat = guideHeat;
 		const heat = guide && guideHeat?.seq === guide.seq ? guideHeat.steps : undefined;
-		this.lastGuideView = guide && heat ? { ...guide, steps: guide.steps.map((s, i) => (heat[i] ? { ...s, heat: heat[i] } : s)) } : guide ?? null;
+		const view = guide && heat ? { ...guide, steps: guide.steps.map((s, i) => (heat[i] ? { ...s, heat: heat[i] } : s)) } : guide;
+		// the tab Guide names the guides under the top guide, the next guide first
+		this.lastGuideView = view ? { ...view, ...(guidesBelow.length > 0 ? { below: [...guidesBelow].reverse().map(sideGuideRef) } : {}) } : null;
 		this.post({ type: 'guide', guide: this.lastGuideView });
 	}
 
@@ -1125,22 +1148,66 @@ export class SideViewController implements vscode.Disposable {
 		return this.lastGuideView;
 	}
 
-	// Shows a step of the guided review: the guide goes to the step, and the text editor and the side view go to its lines
-	async goToGuideStep(index: number): Promise<void> {
+	// Shows a step of the top guide: the guide goes to the step, and the text editor and the side view go to its lines. The
+	// side view shows only C and C++ files, so the text editor shows a step in a different text file, and the side view
+	// keeps its file. A step of a new file that is not there yet opens no editor. by: the user or the client
+	async goToGuideStep(index: number, by = 'user'): Promise<void> {
 		const guide = this.store.state.guide;
 		if (!guide) {
 			return;
 		}
 		const next = withCurrent(guide, index);
 		if (next !== guide) {
-			this.store.update({ guide: next });
+			setGuide(this.store, next, 'step', by);
 		}
 		const step = next.steps[next.current];
-		try {
-			await this.openPlace(step.file, step.first);
-		} catch {
-			void vscode.window.showWarningMessage(`DataFlow cannot open ${step.name}, the file of step ${next.current + 1} of the guided review.`);
+		if (step.fileKind === 'new' && !await fileExists(step.file)) {
+			vscode.window.setStatusBarMessage(`DataFlow: ${step.name} of step ${next.current + 1} is a new file. It is not there yet.`, 5000);
+			return;
 		}
+		try {
+			if (isCppFile(step.file)) {
+				await this.openPlace(step.file, step.first);
+			} else {
+				await this.openTextPlace(step.file, step.first, step.last);
+			}
+		} catch {
+			void vscode.window.showWarningMessage(`DataFlow cannot open ${step.name}, the file of step ${next.current + 1} of the guide.`);
+		}
+	}
+
+	// Closes the top guide, as the button Close review or Close walk does. The guide under it shows again at its step
+	async closeGuide(): Promise<void> {
+		const stack = stackOf(this.store.state);
+		if (!stack.guide) {
+			return;
+		}
+		const next = dropGuide(stack, stack.guide.id);
+		setStack(this.store, next, 'close', 'user');
+		if (next.guide) {
+			await this.goToGuideStep(next.guide.current);
+		}
+	}
+
+	// Brings a guide of the stack to the top, at its step
+	private async showGuide(id: string): Promise<void> {
+		const stack = stackOf(this.store.state);
+		const next = raiseGuide(stack, id);
+		if (next === stack || !next.guide) {
+			return;
+		}
+		setStack(this.store, next, 'show', 'user');
+		await this.goToGuideStep(next.guide.current);
+		this.showDetails('guide');
+	}
+
+	// Opens a text file that the side view cannot show in the text editor beside the side view, at the lines. The side
+	// view keeps its file
+	private async openTextPlace(file: string, first: number, last: number): Promise<void> {
+		const start = new vscode.Position(Math.max(0, first - 1), 0);
+		const end = new vscode.Position(Math.max(0, last - 1), 0);
+		const editor = await vscode.window.showTextDocument(vscode.Uri.file(file), { viewColumn: this.editorColumn(), selection: new vscode.Range(start, start), preserveFocus: true });
+		editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
 	}
 
 	// The summary of the guided review on the clipboard, for example for a comment on the pull request

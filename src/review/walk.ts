@@ -6,7 +6,7 @@ import type { SideGuide, SideGuideKind, SideGuideStep, SideItemAction, SideStepD
 import { bandText, changedFunctions, HeatChange, HeatFunction, heatFact, HeatModel, hottestChanges, MAX_HOT_CHANGES } from '../lenses/heat';
 import type { DiffLine } from './git';
 import {
-	diffText, GUIDE_KINDS, markedLines, MAX_CHECK, MAX_GUIDE_SUMMARY, MAX_STEP_CHECKS, MAX_STEP_TEXT, MAX_STEP_TITLE,
+	diffText, GUIDE_KINDS, markedLines, MAX_CHECK, MAX_GUIDE_SUMMARY, MAX_STEP_CHECKS, MAX_STEP_TEXT, MAX_STEP_TITLE, resolveData, resolveLabel,
 } from './guide';
 
 // A diff walk: DataFlow or a language model goes through the changes of a diff, one step after the other. Each step has
@@ -45,6 +45,7 @@ export interface WalkFile {
 	lineCount: number; // the number of lines in the working tree
 	hunks: DiffLine[][];
 	isNew?: boolean; // the base does not have the file
+	isCpp?: boolean; // false: a text file that is not a C or C++ file. It has no functions
 	functions?: WalkFunction[]; // undefined if the engine did not give the functions of the file
 }
 
@@ -71,6 +72,7 @@ export interface WalkHunk {
 	functions: WalkFunction[]; // the functions with a changed line
 	newFunctions: WalkFunction[]; // the functions that the hunk adds with all their lines
 	isNewFile: boolean;
+	isCpp: boolean; // false: a hunk of a text file that is not a C or C++ file
 }
 
 // The hunks of the files, with an id for each hunk
@@ -103,6 +105,7 @@ export function walkHunks(files: readonly WalkFile[]): WalkHunk[] {
 				functions,
 				newFunctions: functions.filter(isAllAdded),
 				isNewFile: !!f.isNew,
+				isCpp: f.isCpp !== false,
 			});
 		}
 	}
@@ -112,17 +115,18 @@ export function walkHunks(files: readonly WalkFile[]): WalkHunk[] {
 //-------------------
 // The default steps
 
-const isSameFunction = (a: WalkHunk, b: WalkHunk) => a.file === b.file && a.functions.length === 1 && b.functions.length === 1
-	&& a.functions[0].qualified === b.functions[0].qualified && a.functions[0].first === b.functions[0].first;
+// Two hunks of one step: the hunks of one function, or the hunks of one text file that is not a C or C++ file
+const isSameStep = (a: WalkHunk, b: WalkHunk) => a.file === b.file && ((!a.isCpp && !b.isCpp) || (a.functions.length === 1 && b.functions.length === 1
+	&& a.functions[0].qualified === b.functions[0].qualified && a.functions[0].first === b.functions[0].first));
 
-// The default steps: the hunks of one function make one step. A hunk in no function, or in more than one function, is
-// one step. With more than MAX_WALK_STEPS steps, each file is one step, and the files after MAX_WALK_STEPS files are not
-// in the walk
+// The default steps: the hunks of one function make one step, and the hunks of a file that is not a C or C++ file make
+// one step. A hunk in no function, or in more than one function, is one step. With more than MAX_WALK_STEPS steps, each
+// file is one step, and the files after MAX_WALK_STEPS files are not in the walk
 export function walkGroups(hunks: readonly WalkHunk[]): { groups: WalkHunk[][]; skipped: WalkHunk[] } {
 	const byFunction: WalkHunk[][] = [];
 	for (const h of hunks) {
 		const last = byFunction[byFunction.length - 1];
-		if (last && isSameFunction(last[last.length - 1], h)) {
+		if (last && isSameStep(last[last.length - 1], h)) {
 			last.push(h);
 		} else {
 			byFunction.push([h]);
@@ -156,6 +160,9 @@ function namesText(fns: readonly WalkFunction[]): string {
 export function groupTitle(group: readonly WalkHunk[]): string {
 	if (group[0].isNewFile) {
 		return clip(`New file ${fileName(group[0].file)}`, MAX_STEP_TITLE);
+	}
+	if (!group[0].isCpp) {
+		return clip(`Changes in ${fileName(group[0].file)}`, MAX_STEP_TITLE);
 	}
 	const fns = uniqueFunctions(group.flatMap((h) => h.functions));
 	const added = uniqueFunctions(group.flatMap((h) => h.newFunctions));
@@ -254,8 +261,11 @@ export function stepDiff(group: readonly WalkHunk[]): SideStepDiff {
 	return { rows, added, changed, removed, plus, minus };
 }
 
-// A step with the hunks of one file, from the first changed line of its hunks to the last changed line
-function walkStep(group: readonly WalkHunk[], fields: { title: string; text: string; checks?: string[]; kind?: SideGuideKind; actions?: SideItemAction[] }): SideGuideStep {
+// A step with the hunks of one file, from the first changed line of its hunks to the last changed line. A step of a file
+// that is not a C or C++ file opens in the text editor
+function walkStep(group: readonly WalkHunk[], fields: {
+	title: string; text: string; checks?: string[]; kind?: SideGuideKind; actions?: SideItemAction[]; label?: string; data?: Record<string, unknown>;
+}): SideGuideStep {
 	const file = group[0].file;
 	return {
 		title: fields.title,
@@ -267,6 +277,9 @@ function walkStep(group: readonly WalkHunk[], fields: { title: string; text: str
 		checks: fields.checks ?? [],
 		...(fields.kind ? { kind: fields.kind } : {}),
 		status: 'todo',
+		...(group[0].isCpp ? {} : { fileKind: 'text' as const }),
+		...(fields.label ? { label: fields.label } : {}),
+		...(fields.data ? { data: fields.data } : {}),
 		...(fields.actions ? { actions: fields.actions } : {}),
 		diff: stepDiff(group),
 	};
@@ -312,14 +325,17 @@ export function walkTitle(ref: string, branches: { local: string[]; remote: stri
 	return active ? `Changes of ${active} against ${ref}` : `Changes against ${ref}`;
 }
 
-// The walk of the command: the default steps with the facts of their changes. Undefined if the diff has no hunk
-export function commandWalk(input: WalkInput, seq: number): SideGuide | undefined {
+// The walk of the command: the default steps with the facts of their changes. The user is the owner. Undefined if the
+// diff has no hunk
+export function commandWalk(input: WalkInput, seq: number, id = `g${seq}`): SideGuide | undefined {
 	const hunks = walkHunks(input.files);
 	if (hunks.length === 0) {
 		return undefined;
 	}
 	const { groups, skipped } = walkGroups(hunks);
 	return {
+		id,
+		owner: 'user',
 		kind: 'diff',
 		title: clip(input.title, MAX_STEP_TITLE),
 		summary: walkSummary(input, hunks, skipped),
@@ -340,10 +356,13 @@ export interface WalkStepInput {
 	hunks?: unknown;
 	checks?: unknown;
 	kind?: unknown;
+	label?: unknown;
+	data?: unknown;
 	actions?: unknown; // the buttons of an extension: [{ id, title }]
 }
 
 export interface WalkPlanInput {
+	id?: unknown; // the id of a guide of the client that the plan replaces
 	title?: unknown;
 	summary?: unknown;
 	steps?: unknown;
@@ -359,7 +378,7 @@ function idsText(ids: readonly string[]): string {
 // step are in one file. The hunks that no step names get default steps after the steps of the plan, so the walk shows
 // all changes. With allHunks false, the walk has only the steps of the plan, and notShown names the other hunks. The
 // result has a problem for each wrong step, so the model can correct all of them in one call
-export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[], options: { input: WalkInput; seq: number; client?: string }):
+export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[], options: { input: WalkInput; seq: number; id?: string; owner?: string; client?: string }):
 	{ guide?: SideGuide; problems: string[]; added: WalkHunk[][]; notShown: string[] } {
 	if (!Array.isArray(input.steps) || input.steps.length === 0) {
 		return { problems: ['Give "steps": a list with one step or more.'], added: [], notShown: [] };
@@ -370,7 +389,7 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 	const problems: string[] = [];
 	const indexOf = new Map(hunks.map((h, i) => [h.id, i]));
 	const used = new Set<string>();
-	const planned: { group: WalkHunk[]; raw: WalkStepInput; actions?: SideItemAction[] }[] = [];
+	const planned: { group: WalkHunk[]; raw: WalkStepInput; actions?: SideItemAction[]; label?: string; data?: Record<string, unknown> }[] = [];
 	input.steps.forEach((raw: WalkStepInput, i) => {
 		const n = i + 1;
 		if (!raw || typeof raw !== 'object') {
@@ -408,8 +427,10 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 			problems.push(`Step ${n}: "checks" must be a list of texts.`);
 		}
 		const actions = resolveActions(raw.actions, `Step ${n}`, problems);
+		const label = resolveLabel(raw.label, `Step ${n}`, problems);
+		const data = resolveData(raw.data, `Step ${n}`, problems);
 		if (problems.length === before && group) {
-			planned.push({ group, raw, actions });
+			planned.push({ group, raw, actions, label, data });
 			group.forEach((h) => used.add(h.id));
 		}
 	});
@@ -428,12 +449,14 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 		};
 	}
 	const steps = [
-		...planned.map(({ group, raw, actions }) => walkStep(group, {
+		...planned.map(({ group, raw, actions, label, data }) => walkStep(group, {
 			title: clip((raw.title as string).trim(), MAX_STEP_TITLE),
 			text: clip((raw.text as string).trim(), MAX_STEP_TEXT),
 			checks: ((raw.checks as string[] | undefined) ?? []).filter(isText).slice(0, MAX_STEP_CHECKS).map((c) => clip(c.trim(), MAX_CHECK)),
 			kind: raw.kind as SideGuideKind | undefined,
 			actions,
+			label,
+			data,
 		})),
 		...restGroups.groups.map((g) => walkStep(g, {
 			title: groupTitle(g), text: `${groupText(g)} The plan of the model has no step for this change, so DataFlow added this step.`,
@@ -441,6 +464,8 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 	];
 	return {
 		guide: {
+			id: options.id ?? `g${options.seq}`,
+			...(options.owner ? { owner: options.owner } : {}),
 			kind: 'diff',
 			title: isText(input.title) ? clip(input.title.trim(), MAX_STEP_TITLE) : clip(options.input.title, MAX_STEP_TITLE),
 			...(isText(input.summary) ? { summary: clip(input.summary.trim(), MAX_GUIDE_SUMMARY) } : {}),
@@ -492,6 +517,7 @@ export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[], heat?: R
 		file: rel(f.file),
 		lines: f.lineCount,
 		...(f.isNew ? { isNew: true } : {}),
+		...(f.isCpp === false ? { isCpp: false as const } : {}),
 		hunks: hunks.filter((h) => h.file === f.file).map((h) => {
 			const text = h.lines.map(diffText);
 			const isShown = text.length <= left;

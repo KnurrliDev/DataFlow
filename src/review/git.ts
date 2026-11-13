@@ -62,6 +62,9 @@ const CPP_FILE = /\.(c|cc|cpp|cxx|c\+\+|cu|h|hh|hpp|hxx|h\+\+|cuh|inl|ipp|tpp|ix
 // The C and C++ files that VS Code opens as plain text
 export const INCLUDE_FILE = /\.inc$/i;
 
+// A new file that is not a C or C++ file gets into a diff with all text files only up to this number of characters
+const MAX_NEW_TEXT = 1024 * 1024;
+
 export function isCppFile(file: string): boolean {
 	return CPP_FILE.test(file);
 }
@@ -298,17 +301,19 @@ export class ReviewRepository {
 	// changes include the changes that are not committed. With the target HEAD, only these changes are in the diff.
 	// The engine slices the text of the editors, so a file with changes that are not saved gets the diff of the text
 	// of its editor. A file of the base also gets a diff if only its editor has changes. With untracked, the C and C++
-	// files that git does not track yet are new files of the diff.
-	async diff(target: string, options: { untracked?: boolean } = {}): Promise<ReviewDiff> {
+	// files that git does not track yet are new files of the diff. With allText, the diff also has the changed text files
+	// that are not C or C++ files. A binary file has no lines in the diff, so it is not in the files
+	async diff(target: string, options: { untracked?: boolean; allText?: boolean } = {}): Promise<ReviewDiff> {
 		const mergeBase = await this.mergeBase(target);
 		if (!mergeBase) {
 			throw new Error(`The target branch ${target} does not exist, or it has no commit in common with HEAD. `
 				+ 'Click Target in the Change Ripple bar, and select a different branch.');
 		}
+		const isWanted = (file: string) => !!options.allText || isCppFile(file);
 		const unsaved = new Map<string, vscode.TextDocument>();
 		for (const doc of vscode.workspace.textDocuments) {
 			const relative = path.relative(this.root, doc.uri.fsPath);
-			if (doc.isDirty && doc.uri.scheme === 'file' && isCppFile(doc.uri.fsPath) && relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+			if (doc.isDirty && doc.uri.scheme === 'file' && isWanted(doc.uri.fsPath) && relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
 				unsaved.set(pathKey(doc.uri.fsPath), doc);
 			}
 		}
@@ -324,7 +329,7 @@ export class ReviewRepository {
 			}
 		};
 		for (const change of await this.repo.diffWith(mergeBase)) {
-			if (!isCppFile(change.uri.fsPath)) {
+			if (!isWanted(change.uri.fsPath)) {
 				other.push(change.uri.fsPath);
 				continue;
 			}
@@ -338,14 +343,16 @@ export class ReviewRepository {
 		}
 		if (options.untracked) {
 			const known = new Set(files.map((f) => pathKey(f.uri.fsPath)));
-			for (const file of (await this.untrackedFiles()).filter(isCppFile)) {
+			for (const file of (await this.untrackedFiles()).filter(isWanted)) {
 				if (known.has(pathKey(file))) {
 					continue;
 				}
 				const doc = unsaved.get(pathKey(file));
 				unsaved.delete(pathKey(file));
 				const text = doc ? doc.getText() : await readFile(file, 'utf8').catch(() => undefined);
-				if (text !== undefined) {
+				// a new file that is not a C or C++ file can be binary or large, for example an image or a log
+				const isTextFile = text !== undefined && (isCppFile(file) || (text.length <= MAX_NEW_TEXT && !text.includes('\u0000')));
+				if (text !== undefined && isTextFile) {
 					add(vscode.Uri.file(file), await this.diffText(mergeBase, file, text, true));
 				}
 			}

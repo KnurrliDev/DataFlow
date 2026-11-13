@@ -722,6 +722,8 @@ export interface SideMcp {
 // through the MCP server. A diff walk goes through the changes of a diff: the command of DataFlow makes the steps, or a
 // model sends them. The user goes from step to step in the side view, or asks the model. Lines start at 1.
 export interface SideGuide {
+	id: string; // g1, g2 and so on. A plan that replaces the guide keeps its id
+	owner?: string; // user for a command of DataFlow, else the client. A guide of an older version: see guideOwner
 	kind?: 'review' | 'diff'; // undefined is a guided review
 	title: string;
 	summary?: string; // what the changes do, in the words of the model
@@ -732,6 +734,15 @@ export interface SideGuide {
 	steps: SideGuideStep[];
 	current: number; // the index of the step that the side view shows
 	seq: number; // a new plan gets a new number
+	below?: SideGuideRef[]; // the view of the top guide: the guides under it, the next guide first
+}
+
+// A guide of the stack under the top guide, for the tab Guide
+export interface SideGuideRef {
+	id: string;
+	title: string;
+	owner: string;
+	kind?: 'review' | 'diff';
 }
 
 // The mark of the user, or of the model, on a step
@@ -751,6 +762,10 @@ export interface SideGuideStep {
 	kind?: SideGuideKind;
 	status: SideGuideStatus;
 	note?: string; // a note of the model on the step, for example the answer to a question of the user
+	userNote?: string; // the note of the user from the text field of the tab Guide
+	label?: string; // a short text of the client next to the title
+	data?: Record<string, unknown>; // data of the client. The side view does not show it
+	fileKind?: 'text' | 'new'; // text: not a C or C++ file, the text editor shows it. new: the file is not there yet
 	actions?: SideItemAction[]; // the buttons of the extension of the guide
 	diff?: SideStepDiff; // a diff walk: the diff of the step
 	heat?: SideStepHeat; // the hottest function in the lines of the step, while the lens Heat shows
@@ -845,6 +860,8 @@ export type SideAction =
 	| { type: 'guideDiff'; index: number } // opens the diff editor of a step of the diff walk at the lines of the step
 	| { type: 'guideGo'; index: number } // shows a step of the guide
 	| { type: 'guideStatus'; index: number; status: SideGuideStatus } // the mark of the user on a step
+	| { type: 'guideUserNote'; index: number; note: string } // the note of the user on a step. An empty text removes it
+	| { type: 'guideShow'; id: string } // brings a guide of the stack to the top
 	| { type: 'guideCopy' } // puts the summary of the guide on the clipboard
 	| { type: 'guideClose' } // removes the guide
 	| { type: 'heatScan' } // starts the scan of the call graph, or continues a scan that stopped

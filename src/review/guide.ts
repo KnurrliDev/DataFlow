@@ -4,18 +4,22 @@ import { resolveActions, type TextChange } from '../lenses/blocks';
 import { bandText, changedFunctions, HeatChange, heatFact, HeatModel, hottestChanges, MAX_HOT_CHANGES } from '../lenses/heat';
 import type { SideGuide, SideGuideKind, SideGuideStatus, SideGuideStep, SideStepDiff } from '../side/protocol';
 import type { DiffLine } from './git';
+import { guideOwner } from './stack';
 
 // A guided review: the user names the files and the folders to review, a language model makes a plan for them, and the
 // user goes through the plan step by step in the side view. This file gives the files and their changes to the model,
 // checks the plan of the model, changes the state of the guide and writes its summary. Lines start at 1.
 
-export const MAX_GUIDE_STEPS = 20;
+export const MAX_GUIDE_STEPS = 40;
 export const MAX_STEP_TITLE = 80;
 export const MAX_STEP_TEXT = 2000;
 export const MAX_STEP_CHECKS = 5;
 export const MAX_CHECK = 200;
 export const MAX_GUIDE_NOTE = 2000;
 export const MAX_GUIDE_SUMMARY = 1000;
+// The data of a client on a step: a short label, and a JSON object with a maximum length as JSON text
+export const MAX_STEP_LABEL = 40;
+export const MAX_STEP_DATA = 4096;
 export const GUIDE_KINDS: readonly SideGuideKind[] = ['change', 'ripple', 'context', 'risk', 'test'];
 export const GUIDE_STATUSES: readonly SideGuideStatus[] = ['todo', 'ok', 'issue', 'question'];
 // The two types of a guide, with the names that the model gets from get_view
@@ -116,27 +120,73 @@ export function reviewFacts(input: ReviewFilesInput, heat?: ReadonlyMap<string, 
 export interface GuideStepInput {
 	title?: unknown;
 	file?: unknown;
+	newFile?: unknown; // a file that is not there yet, in the place of file
 	lines?: unknown;
 	text?: unknown;
 	checks?: unknown;
 	kind?: unknown;
+	label?: unknown;
+	data?: unknown;
 	actions?: unknown; // the buttons of an extension: [{ id, title }]
 }
 
 export interface GuidePlanInput {
+	id?: unknown; // the id of a guide of the client that the plan replaces
 	title?: unknown;
 	summary?: unknown;
 	steps?: unknown;
 }
 
 // The file of a step: its full path and its number of lines, or the reason why a step cannot use it, for example a file
-// that is not a C or C++ file. Undefined if the project has no such file
-export type GuideFileLookup = (file: string) => { file: string; lineCount: number; problem?: string } | undefined;
+// that is not a text file. isCpp false: a text file that is not a C or C++ file. Undefined if the project has no such file
+export type GuideFileLookup = (file: string) => { file: string; lineCount: number; problem?: string; isCpp?: boolean } | undefined;
 
-// Checks the plan of the model. A step with no file uses the file of the step before it, or else the default file. The
-// result has a problem for each wrong step, so the model can correct all of them in one call
-export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup, options: { defaultFile?: string; seq: number; client?: string; target?: string }):
-	{ guide?: SideGuide; problems: string[] } {
+// The place of a new file of a step: its full path in a folder of the project, and its number of lines if it is there
+// already. Undefined if the path is not in a folder of the project
+export type NewFileLookup = (file: string) => { file: string; lineCount?: number; problem?: string } | undefined;
+
+// The label of a step of a client: a short text. Undefined for no label
+export function resolveLabel(input: unknown, name: string, problems: string[]): string | undefined {
+	if (input === undefined || input === null) {
+		return undefined;
+	}
+	if (typeof input !== 'string') {
+		problems.push(`${name}: "label" must be a text.`);
+		return undefined;
+	}
+	const text = input.trim().replace(/\s+/g, ' ');
+	return text ? clip(text, MAX_STEP_LABEL) : undefined;
+}
+
+// The data of a step of a client: a JSON object with a maximum of MAX_STEP_DATA characters as JSON text. The result is a
+// copy with only the JSON values. Undefined for no data
+export function resolveData(input: unknown, name: string, problems: string[]): Record<string, unknown> | undefined {
+	if (input === undefined || input === null) {
+		return undefined;
+	}
+	let text: string | undefined;
+	try {
+		text = typeof input === 'object' && !Array.isArray(input) ? JSON.stringify(input) : undefined;
+	} catch {
+		text = undefined;
+	}
+	if (text === undefined) {
+		problems.push(`${name}: "data" must be a JSON object.`);
+		return undefined;
+	}
+	if (text.length > MAX_STEP_DATA) {
+		problems.push(`${name}: "data" has ${text.length} characters as JSON. The maximum is ${MAX_STEP_DATA}.`);
+		return undefined;
+	}
+	return JSON.parse(text) as Record<string, unknown>;
+}
+
+// Checks the plan of the model. A step with no file uses the file of the step before it, or else the default file. A
+// step can be in each text file of the project, or in a new file. The result has a problem for each wrong step, so the
+// model can correct all of them in one call
+export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup, options: {
+	defaultFile?: string; seq: number; id?: string; owner?: string; client?: string; target?: string; newFile?: NewFileLookup;
+}): { guide?: SideGuide; problems: string[] } {
 	const problems: string[] = [];
 	if (!Array.isArray(input.steps) || input.steps.length === 0) {
 		return { problems: ['Give "steps": a list with one step or more.'] };
@@ -158,23 +208,45 @@ export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup,
 		if (!isText(raw.text)) {
 			problems.push(`Step ${n} has no "text".`);
 		}
-		const given = isText(raw.file) ? raw.file : lastFile;
-		const found = given ? lookup(given) : undefined;
-		if (!given) {
-			problems.push(`Step ${n} has no "file".`);
-		} else if (!found) {
-			problems.push(`Step ${n}: the file ${given} is not in the project.`);
-		} else if (found.problem) {
-			problems.push(`Step ${n}: ${found.problem}`);
+		// the file of the step: a text file of the project, or a new file. A step of a new file can have no lines
+		let found: { file: string; lineCount: number; problem?: string; isCpp?: boolean } | undefined;
+		const isNew = raw.newFile !== undefined && raw.newFile !== null;
+		if (isNew) {
+			const place = isText(raw.newFile) ? options.newFile?.(raw.newFile.trim()) : undefined;
+			if (raw.file !== undefined && raw.file !== null) {
+				problems.push(`Step ${n}: give "file" or "newFile", not both.`);
+			} else if (!isText(raw.newFile)) {
+				problems.push(`Step ${n}: "newFile" must be the path of the new file.`);
+			} else if (!place) {
+				problems.push(`Step ${n}: the new file ${raw.newFile.trim()} is not in a folder of the project.`);
+			} else if (place.problem) {
+				problems.push(`Step ${n}: ${place.problem}`);
+			} else {
+				found = { file: place.file, lineCount: place.lineCount ?? 0 };
+			}
 		} else {
-			lastFile = found.file;
+			const given = isText(raw.file) ? raw.file : lastFile;
+			found = given ? lookup(given) : undefined;
+			if (!given) {
+				problems.push(`Step ${n} has no "file".`);
+			} else if (!found) {
+				problems.push(`Step ${n}: the file ${given} is not in the project. For a file that is not there yet, give "newFile".`);
+			} else if (found.problem) {
+				problems.push(`Step ${n}: ${found.problem}`);
+			} else {
+				lastFile = found.file;
+			}
 		}
-		const lines = raw.lines;
+		const lines = isNew && (raw.lines === undefined || raw.lines === null) ? [1, 1] : raw.lines;
 		const isPair = Array.isArray(lines) && lines.length === 2 && lines.every((l) => Number.isInteger(l));
 		if (!isPair) {
 			problems.push(`Step ${n}: "lines" must be two whole numbers, the first and the last line.`);
-		} else if (found && !found.problem && (lines[0] < 1 || lines[0] > lines[1] || lines[1] > found.lineCount)) {
+		} else if (lines[0] < 1 || lines[0] > lines[1]) {
+			problems.push(`Step ${n}: the lines ${lines[0]} to ${lines[1]} are not a range of lines from 1.`);
+		} else if (found && !found.problem && found.lineCount > 0 && lines[1] > found.lineCount) {
 			problems.push(`Step ${n}: the lines ${lines[0]} to ${lines[1]} are not in ${fileName(found.file)}, which has ${found.lineCount} lines.`);
+		} else if (found && !found.problem && !isNew && found.lineCount < 1) {
+			problems.push(`Step ${n}: ${fileName(found.file)} has no lines.`);
 		}
 		if (raw.kind !== undefined && !GUIDE_KINDS.includes(raw.kind as SideGuideKind)) {
 			problems.push(`Step ${n}: "kind" must be one of ${GUIDE_KINDS.join(', ')}.`);
@@ -183,10 +255,13 @@ export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup,
 			problems.push(`Step ${n}: "checks" must be a list of texts.`);
 		}
 		const actions = resolveActions(raw.actions, `Step ${n}`, problems);
+		const label = resolveLabel(raw.label, `Step ${n}`, problems);
+		const data = resolveData(raw.data, `Step ${n}`, problems);
 		if (problems.length > 0 || !found || found.problem || !isPair) {
 			return;
 		}
 		const checks = ((raw.checks as string[] | undefined) ?? []).filter(isText).slice(0, MAX_STEP_CHECKS).map((c) => clip(c.trim(), MAX_CHECK));
+		const fileKind = isNew ? 'new' : found.isCpp === false ? 'text' : undefined;
 		steps.push({
 			title: clip((raw.title as string).trim(), MAX_STEP_TITLE),
 			file: found.file,
@@ -197,6 +272,9 @@ export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup,
 			checks,
 			...(raw.kind ? { kind: raw.kind as SideGuideKind } : {}),
 			status: 'todo',
+			...(fileKind ? { fileKind } : {}),
+			...(label ? { label } : {}),
+			...(data ? { data } : {}),
 			...(actions ? { actions } : {}),
 		});
 	});
@@ -205,6 +283,8 @@ export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup,
 	}
 	return {
 		guide: {
+			id: options.id ?? `g${options.seq}`,
+			...(options.owner ? { owner: options.owner } : {}),
 			title: isText(input.title) ? clip(input.title.trim(), MAX_STEP_TITLE) : 'Review of the changes',
 			...(isText(input.summary) ? { summary: clip(input.summary.trim(), MAX_GUIDE_SUMMARY) } : {}),
 			...(options.client ? { client: options.client } : {}),
@@ -242,6 +322,26 @@ export function withNote(guide: SideGuide, index: number, note: string): SideGui
 	const i = stepIndex(guide, index);
 	const text = note.trim();
 	return i === undefined ? guide : changeStep(guide, i, { note: text ? clip(text, MAX_GUIDE_NOTE) : undefined });
+}
+
+// The note of the user from the text field of the tab Guide. The same text gives the same guide
+export function withUserNote(guide: SideGuide, index: number, note: string): SideGuide {
+	const i = stepIndex(guide, index);
+	const text = note.trim() ? clip(note.trim(), MAX_GUIDE_NOTE) : undefined;
+	return i === undefined || guide.steps[i].userNote === text ? guide : changeStep(guide, i, { userNote: text });
+}
+
+// The label and the data of a client on a step: undefined keeps them, an empty label and null data remove them. The
+// values are checked values of resolveLabel and resolveData
+export function withClientData(guide: SideGuide, index: number, change: { label?: string; data?: Record<string, unknown> | null }): SideGuide {
+	const i = stepIndex(guide, index);
+	if (i === undefined) {
+		return guide;
+	}
+	const step = guide.steps[i];
+	const label = change.label === undefined ? step.label : change.label || undefined;
+	const data = change.data === undefined ? step.data : change.data ?? undefined;
+	return label === step.label && JSON.stringify(data) === JSON.stringify(step.data) ? guide : changeStep(guide, i, { label, data });
 }
 
 //-------------------
@@ -354,12 +454,16 @@ export function storeGuide(guide: SideGuide, lines: GuideFileLines): StoredGuide
 
 // Finds the steps of a stored guide in the text of a new session. A step moves to the nearest place where its first and
 // its last line have their stored texts. A step that the text does not have keeps its lines in the file. A step of a
-// file that is gone goes away. Returns undefined if no step stays
+// file that is gone goes away, except a step of a new file. Returns undefined if no step stays
 export function restoreGuide(stored: StoredGuide, lines: GuideFileLines): SideGuide | undefined {
 	const steps: SideGuideStep[] = [];
 	let current = stored.guide.current;
 	stored.guide.steps.forEach((s, i) => {
 		const l = lines(s.file);
+		if (s.fileKind === 'new' && (!l || l.count < 1)) {
+			steps.push(s);
+			return;
+		}
 		if (!l || l.count < 1) {
 			if (i < stored.guide.current) {
 				current -= 1;
@@ -401,15 +505,20 @@ export function guideProgress(guide: SideGuide): string {
 	return `${done} of ${guide.steps.length} steps reviewed${marks.length > 0 ? `: ${marks.join(', ')}` : ''}`;
 }
 
-// The guide for the model in get_view: the step that the user looks at, and the marks of the user
+// The guide for the model in get_view: the step that the user looks at, the marks and the notes of the user, and the
+// notes, the labels and the data of the client
 export function guideFacts(guide: SideGuide): Api.GuideFacts {
 	return {
+		id: guide.id,
+		owner: guideOwner(guide),
 		...(guide.kind === 'diff' ? { kind: 'diff walk', base: guide.base } : {}),
 		title: guide.title,
 		currentStep: guide.current + 1,
 		progress: guideProgress(guide),
 		steps: guide.steps.map((s, i) => ({
-			step: i + 1, title: s.title, file: s.name, lines: [s.first, s.last], status: s.status, ...(s.note ? { hasNote: true } : {}),
+			step: i + 1, title: s.title, file: s.name, lines: [s.first, s.last], status: s.status, ...(s.fileKind ? { fileKind: s.fileKind } : {}),
+			...(s.label ? { label: s.label } : {}), ...(s.data ? { data: s.data } : {}),
+			...(s.note ? { hasNote: true, note: s.note } : {}), ...(s.userNote ? { userNote: s.userNote } : {}),
 			...(s.diff ? { added: s.diff.plus, removed: s.diff.minus } : {}),
 		})),
 	};
@@ -429,10 +538,15 @@ export function guideSummary(guide: SideGuide): string {
 	guide.steps.forEach((s, i) => {
 		const box = s.status === 'todo' ? '[ ]' : '[x]';
 		const lines = s.first === s.last ? `${s.first}` : `${s.first}-${s.last}`;
+		const place = s.fileKind === 'new' ? `\`${s.name}\`, new file` : `\`${s.name}:${lines}\``;
 		const stats = s.diff ? `, +${s.diff.plus} −${s.diff.minus}` : '';
-		out.push(`- ${box} ${i + 1}. **${s.title}** (\`${s.name}:${lines}\`${stats}): ${STATUS_TEXT[s.status]}`);
+		const label = s.label ? ` [${s.label}]` : '';
+		out.push(`- ${box} ${i + 1}. **${s.title}**${label} (${place}${stats}): ${STATUS_TEXT[s.status]}`);
 		if (s.note) {
 			out.push(...s.note.split(/\r?\n/).map((l) => `  > ${l}`));
+		}
+		if (s.userNote) {
+			out.push(...s.userNote.split(/\r?\n/).map((l, j) => `  > ${j === 0 ? 'Note of the reviewer: ' : ''}${l}`));
 		}
 	});
 	return out.join('\n');

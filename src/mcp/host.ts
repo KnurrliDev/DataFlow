@@ -18,16 +18,19 @@ import { buildSideThreads } from '../lenses/threads';
 import { buildControls, Choices, Control } from '../logic/paths';
 import { INCLUDE_FILE, isCppFile } from '../review/git';
 import {
-	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, GUIDE_TYPES, guideType, MAX_REVIEW_FILES, resolveGuidePlan, reviewFacts, ReviewFilesInput, stepIndex,
-	withNote, withStatus,
+	guideFacts, GuidePlanInput, guideProgress, GUIDE_STATUSES, GUIDE_TYPES, guideType, MAX_REVIEW_FILES, resolveData, resolveGuidePlan, resolveLabel, reviewFacts,
+	ReviewFilesInput, stepIndex, withClientData, withCurrent, withNote, withStatus,
 } from '../review/guide';
+import {
+	dropGuide, findGuide, guideOwner, guideRef, guidesText, MAX_GUIDES, nextGuideSeq, pushGuide, putGuide, setGuide, setStack, stackGuides, stackOf,
+} from '../review/stack';
 import type { RippleModel } from '../review/ripple';
 import { groupTitle, resolveWalkPlan, walkFacts, walkHunks, type WalkHunk, type WalkInput, type WalkPlanInput } from '../review/walk';
 import type { SideViewController } from '../side/controller';
 import type { CodePlace } from '../side/details';
 import { functionTitle } from '../side/names';
 import { typeNameColumns } from '../side/outline';
-import type { SideGuideStatus, SideModel, SideOutlineData, SideOutlineMember, SideOutlinePlace } from '../side/protocol';
+import type { SideGuide, SideGuideStatus, SideModel, SideOutlineData, SideOutlineMember, SideOutlinePlace } from '../side/protocol';
 import { LENSES, type CallGraphView, type Lens, type StateStore } from '../state/store';
 import type * as Api from '../../api/dataflow-api';
 import type { FunctionArg, McpHost } from './tools';
@@ -61,7 +64,7 @@ export interface HostDeps {
 	reviewFiles(paths: string[]): Promise<ReviewFilesInput | { message: string }>;
 	// the changes of a diff walk against a base: "uncommitted", "target", or a commit, a tag or a branch. With paths, only
 	// the files under the paths. Or the reason why no diff is available
-	walkInput(base: string | undefined, paths?: string[]): Promise<WalkInput | { message: string }>;
+	walkInput(base: string | undefined, paths?: string[], allFiles?: boolean): Promise<WalkInput | { message: string }>;
 	// the header with the definition of a type that a translation unit only declares: the definition provider of VS Code
 	// at the place of the name, if a place is known, else a search of the headers of the project
 	definitionHeader(name: string, place?: { doc: vscode.TextDocument; pos: vscode.Position }): Promise<string | undefined>;
@@ -237,6 +240,7 @@ export class DataFlowMcpHost implements McpHost {
 				client: ownerOf(l), blocks: l.blocks.length, notes: l.notes.length, comments: l.comments.length, details: l.details.length,
 			})) } : {}),
 			review: state.guide ? guideFacts(state.guide) : null,
+			guides: stackGuides(stackOf(state)).map(guideRef),
 			engine: state.engine,
 			project: { folders: this.roots(), compileDatabases: state.databases.map((d) => d.makefile ?? d.path) },
 		};
@@ -767,117 +771,221 @@ export class DataFlowMcpHost implements McpHost {
 		return { ...reviewFacts(files, models), ...notes };
 	}
 
-	// Shows the plan of a guided review in the side view, at its first step
+	// Shows the plan of a guided review in the side view, at its first step. The plan goes on the top of the stack of the
+	// guides, or in the place of the guide of the client with its id
 	async showReviewPlan(plan: GuidePlanInput): Promise<Api.ReviewPlanResult> {
 		this.checkActions(hasStepActions(plan.steps));
 		const { store, side } = this.deps;
-		// the files of the steps: a path relative to the repository or to a folder of the project, or an absolute path
-		const files = new Map<string, { file: string; lineCount: number; problem?: string }>();
+		const replace = this.planPlace(plan.id);
+		// the files of the steps: a path relative to the repository or to a folder of the project, or an absolute path. A
+		// step can be in each text file. The side view shows only C and C++ files, so the text editor shows the other files
+		const files = new Map<string, { file: string; lineCount: number; problem?: string; isCpp?: boolean }>();
 		const steps = Array.isArray(plan.steps) ? plan.steps : [];
-		const given = new Set(steps.map((s) => (s && typeof s === 'object' ? (s as { file?: unknown }).file : undefined)).filter((f): f is string => typeof f === 'string'));
+		const named = (key: 'file' | 'newFile') => new Set(steps.map((s) => (s && typeof s === 'object' ? (s as Record<string, unknown>)[key] : undefined))
+			.filter((f): f is string => typeof f === 'string' && f.trim().length > 0).map((f) => f.trim()));
 		const current = this.deps.currentEditor()?.document.uri.fsPath ?? side.file;
-		for (const name of [...given, ...(current ? [current] : [])]) {
+		for (const name of [...named('file'), ...(current ? [current] : [])]) {
 			const full = this.projectFile(name);
 			if (!full) {
 				continue;
 			}
-			if (!isCppFile(full)) {
-				files.set(name, { file: full, lineCount: 0, problem: `${path.basename(full)} is not a C or C++ file. The side view shows only C and C++ files.` });
+			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full)).then((d) => d, () => undefined);
+			if (!doc) {
+				files.set(name, { file: full, lineCount: 0, problem: `${path.basename(full)} is not a text file. A step can be in a text file of the project.` });
 				continue;
 			}
-			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
-			const found = { file: doc.uri.fsPath, lineCount: doc.lineCount };
+			const found = { file: doc.uri.fsPath, lineCount: doc.lineCount, ...(isCppFile(doc.uri.fsPath) ? {} : { isCpp: false }) };
 			files.set(name, found);
 			files.set(found.file, found);
 		}
+		const newFiles = new Map<string, { file: string; lineCount?: number; problem?: string } | undefined>();
+		for (const name of named('newFile')) {
+			newFiles.set(name, await this.newFilePlace(name));
+		}
+		const seq = nextGuideSeq(store.state);
 		const { guide, problems } = resolveGuidePlan(plan, (f) => files.get(f), {
-			defaultFile: current, seq: (store.state.guide?.seq ?? 0) + 1, client: this.deps.client(), target: this.lastReview?.target,
+			defaultFile: current, seq, id: replace?.id ?? `g${seq}`, owner: this.owner(), client: this.deps.client(), target: this.lastReview?.target,
+			newFile: (f) => newFiles.get(f),
 		});
 		if (!guide) {
 			throw new Error(`The view did not change.\n${problems.join('\n')}`);
 		}
-		store.update({ guide });
-		await side.goToGuideStep(0);
-		side.showDetails('guide');
+		const isShown = await this.placeGuide(guide, replace);
 		const root = this.lastReview?.root;
 		const rel = (f: string) => (root && isInside(f, root) ? path.relative(root, f).replace(/\\/g, '/') : f);
 		return {
+			id: guide.id,
 			title: guide.title,
-			steps: guide.steps.map((s, i) => ({ step: i + 1, title: s.title, file: rel(s.file), lines: [s.first, s.last] })),
-			shown: 1,
-			note: 'The side view shows step 1. The user goes to the next step with the button Next, or asks you. get_view gives the step that the user looks at.',
+			steps: guide.steps.map((s, i) => ({ step: i + 1, title: s.title, file: rel(s.file), lines: [s.first, s.last], ...(s.fileKind ? { fileKind: s.fileKind } : {}) })),
+			shown: isShown ? 1 : 0,
+			note: isShown ? `The side view shows step 1 of the guide ${guide.id}. The user goes to the next step with the button Next, or asks you. `
+				+ 'get_view gives the step that the user looks at. A step in a file that is not a C or C++ file opens in the text editor.'
+				: this.belowNote(guide),
 		};
+	}
+
+	// The note of a plan that replaced a guide under the top guide
+	private belowNote(guide: SideGuide): string {
+		const top = this.deps.store.state.guide;
+		return `The guide ${guide.id} changed. It is under the guide ${top?.id} "${top?.title}" (${top ? guideOwner(top) : ''}), so the view did not change. `
+			+ 'It shows again when the guides above it close, or when the user brings it to the top.';
+	}
+
+	// The guide that a new plan replaces: the guide of the client with the id. With no id, the plan goes on the top, if
+	// the stack has space for it
+	private planPlace(id: unknown): SideGuide | undefined {
+		const stack = stackOf(this.deps.store.state);
+		if (id !== undefined && id !== null) {
+			const guide = this.targetGuide(id);
+			if (guideOwner(guide) !== this.owner()) {
+				throw new Error(`The guide ${guide.id} "${guide.title}" belongs to ${guideOwner(guide)}. A plan replaces only a guide of your client. `
+					+ 'The view did not change. Give no "id" to put the plan on the top of the stack.');
+			}
+			return guide;
+		}
+		if (stackGuides(stack).length >= MAX_GUIDES) {
+			throw new Error(`The side view has ${MAX_GUIDES} guides, the maximum: ${guidesText(stack)}. The view did not change. `
+				+ 'Give the id of your guide to replace it, or close a guide with close_guide. Close a guide of a different owner only if the user asks for it.');
+		}
+		return undefined;
+	}
+
+	// Puts a new guide on the top of the stack, or in the place of the guide that it replaces. The top guide goes to its
+	// first step. False if the guide is under the top guide
+	private async placeGuide(guide: SideGuide, replace: SideGuide | undefined): Promise<boolean> {
+		const { store, side } = this.deps;
+		const stack = stackOf(store.state);
+		const isTop = !replace || stack.guide?.id === replace.id;
+		setStack(store, replace ? putGuide(stack, guide) : pushGuide(stack, guide), replace ? 'replace' : 'start', this.owner());
+		if (isTop) {
+			await side.goToGuideStep(0, this.owner());
+			side.showDetails('guide');
+		}
+		return isTop;
+	}
+
+	// The guide with the id, or the top guide
+	private targetGuide(id: unknown): SideGuide {
+		const stack = stackOf(this.deps.store.state);
+		if (id !== undefined && id !== null) {
+			if (typeof id !== 'string' || !id.trim()) {
+				throw new Error('"id" must be the id of a guide, for example "g2". get_view gives the guides.');
+			}
+			const guide = findGuide(stack, id.trim());
+			if (!guide) {
+				throw new Error(`No guide has the id ${id.trim()}. ${stack.guide ? `The guides are ${guidesText(stack)}.` : 'The side view shows no guide.'}`);
+			}
+			return guide;
+		}
+		if (!stack.guide) {
+			throw new Error('No guided review or diff walk shows. Call show_review_plan or show_diff_walk first.');
+		}
+		return stack.guide;
+	}
+
+	// A change of a guide of a different owner needs force
+	private checkOwner(guide: SideGuide, force: boolean | undefined, verb: string): void {
+		const owner = guideOwner(guide);
+		if (owner !== this.owner() && force !== true) {
+			throw new Error(`The guide ${guide.id} "${guide.title}" belongs to ${owner}, not to your client. The view did not change. `
+				+ `If the user asked you to ${verb} it, call the tool again with "force": true.`);
+		}
+	}
+
+	// The place of a new file of a step: a path in a folder of the project. A relative path starts at the repository of the
+	// review, else at the first folder of the project. The file can be there already
+	private async newFilePlace(name: string): Promise<{ file: string; lineCount?: number; problem?: string } | undefined> {
+		const roots = [...(this.lastReview?.root ? [this.lastReview.root] : []), ...this.roots()];
+		const full = path.isAbsolute(name) ? path.normalize(name) : roots.length > 0 ? path.join(roots[0], name) : undefined;
+		if (!full || !roots.some((r) => isInside(full, r))) {
+			return undefined;
+		}
+		if (!existsSync(full)) {
+			return { file: full };
+		}
+		const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full)).then((d) => d, () => undefined);
+		return doc ? { file: doc.uri.fsPath, lineCount: doc.lineCount } : { file: full, problem: `${path.basename(full)} is there already, and it is not a text file.` };
 	}
 
 	//-------------------
 	// Diff walk
 
-	// The changes of a diff walk: the hunks of the changed C and C++ files against the base, with an id for each hunk
-	async diff(base: string | undefined, paths: unknown): Promise<Api.DiffFacts> {
+	// The changes of a diff walk: the hunks of the changed C and C++ files against the base, with an id for each hunk. With
+	// allFiles, also the hunks of the changed text files that are not C or C++ files
+	async diff(base: string | undefined, paths: unknown, allFiles?: boolean): Promise<Api.DiffFacts> {
 		if (paths !== undefined && (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.trim().length > 0))) {
 			throw new Error('"paths" must be a list of files and folders.');
 		}
-		const input = await this.deps.walkInput(base, (paths as string[] | undefined)?.map((p) => p.trim()));
+		const input = await this.deps.walkInput(base, (paths as string[] | undefined)?.map((p) => p.trim()), allFiles === true);
 		if ('message' in input) {
 			throw new Error(input.message);
 		}
 		const hunks = walkHunks(input.files);
 		this.lastWalk = { input, hunks };
 		if (hunks.length === 0) {
-			return { ...walkFacts(input, hunks), note: `No C or C++ file changed against ${input.base}, so a diff walk has no steps.` };
+			const what = allFiles ? 'No text file' : 'No C or C++ file';
+			return { ...walkFacts(input, hunks), note: `${what} changed against ${input.base}, so a diff walk has no steps.` };
 		}
-		// the heat of the changed functions, so the plan can start with the hottest changes
-		const files = [...new Set(hunks.map((h) => h.file))];
+		// the heat of the changed functions, so the plan can start with the hottest changes. Only C and C++ files have heat
+		const files = [...new Set(hunks.filter((h) => h.isCpp).map((h) => h.file))];
+		if (files.length === 0) {
+			return walkFacts(input, hunks);
+		}
 		const { models, notes } = await this.heatOfFiles(files, (f) => path.relative(input.root, f).replace(/\\/g, '/'));
 		return { ...walkFacts(input, hunks, models), ...notes };
 	}
 
-	// Shows the plan of a diff walk in the side view, at its first step
+	// Shows the plan of a diff walk in the side view, at its first step. The plan goes on the top of the stack of the
+	// guides, or in the place of the guide of the client with its id
 	async showDiffWalk(plan: WalkPlanInput): Promise<Api.DiffWalkResult> {
 		this.checkActions(hasStepActions(plan.steps));
-		const { store, side } = this.deps;
+		const { store } = this.deps;
 		const walk = this.lastWalk;
 		if (!walk) {
 			throw new Error('Call get_diff first. The steps of a diff walk name the hunks of get_diff.');
 		}
 		if (walk.hunks.length === 0) {
-			throw new Error(`The last get_diff has no hunks: no C or C++ file changed against ${walk.input.base}.`);
+			throw new Error(`The last get_diff has no hunks: no file changed against ${walk.input.base}.`);
 		}
+		const replace = this.planPlace(plan.id);
+		const seq = nextGuideSeq(store.state);
 		const { guide, problems, added, notShown } = resolveWalkPlan(plan, walk.hunks, {
-			input: walk.input, seq: (store.state.guide?.seq ?? 0) + 1, client: this.deps.client(),
+			input: walk.input, seq, id: replace?.id ?? `g${seq}`, owner: this.owner(), client: this.deps.client(),
 		});
 		if (!guide) {
 			throw new Error(`The view did not change.\n${problems.join('\n')}`);
 		}
-		store.update({ guide });
-		await side.goToGuideStep(0);
-		side.showDetails('guide');
+		const isShown = await this.placeGuide(guide, replace);
 		const root = walk.input.root;
 		const rel = (f: string) => (isInside(f, root) ? path.relative(root, f).replace(/\\/g, '/') : f);
 		const planned = guide.steps.length - added.length;
 		return {
+			id: guide.id,
 			title: guide.title,
-			steps: guide.steps.map((s, i) => ({ step: i + 1, title: s.title, file: rel(s.file), lines: [s.first, s.last], ...(i >= planned ? { addedByDataFlow: true } : {}) })),
+			steps: guide.steps.map((s, i) => ({
+				step: i + 1, title: s.title, file: rel(s.file), lines: [s.first, s.last], ...(s.fileKind === 'text' ? { fileKind: 'text' as const } : {}),
+				...(i >= planned ? { addedByDataFlow: true } : {}),
+			})),
 			...(added.length > 0 ? {
 				addedSteps: added.map((g) => ({ title: groupTitle(g), hunks: g.map((h) => h.id) })),
 				addedNote: 'Your plan has no step for these hunks, so DataFlow added a step for each of them after your steps. To change this, call show_diff_walk again with all hunks.',
 			} : {}),
 			...(notShown.length > 0 ? { notShown } : {}),
-			shown: 1,
-			note: 'The side view shows step 1 with its diff. The user goes to the next step with the button Next, or asks you. get_view gives the step that the user looks at.',
+			shown: isShown ? 1 : 0,
+			note: isShown ? `The side view shows step 1 of the guide ${guide.id} with its diff. The user goes to the next step with the button Next, or asks you. `
+				+ 'get_view gives the step that the user looks at.' : this.belowNote(guide),
 		};
 	}
 
-	// Goes to a step of the guided review or of the diff walk, and adds a note or a mark to it
-	async reviewStep(step: number, note: unknown, status: string | undefined): Promise<Api.ReviewStepResult> {
+	// Goes to a step of a guide, and adds a note, a mark, a label or data to it. The default guide is the top guide. A
+	// guide under the top guide changes in place, and the view stays. A change of a guide of a different owner needs force.
+	// Only a step with no change goes to the step of each guide
+	async reviewStep(step: number, note: unknown, status: string | undefined, more: { id?: unknown; force?: boolean; label?: unknown; data?: unknown } = {}): Promise<Api.ReviewStepResult> {
 		const { store, side } = this.deps;
-		const guide = store.state.guide;
-		if (!guide) {
-			throw new Error('No guided review or diff walk shows. Call show_review_plan or show_diff_walk first.');
-		}
+		const guide = this.targetGuide(more.id);
 		const index = step - 1;
 		if (stepIndex(guide, index) === undefined) {
-			throw new Error(`The ${guide.kind === 'diff' ? 'diff walk' : 'review'} has ${guide.steps.length} steps. Give a step from 1 to ${guide.steps.length}.`);
+			throw new Error(`The ${guide.kind === 'diff' ? 'diff walk' : 'review'} ${guide.id} has ${guide.steps.length} steps. Give a step from 1 to ${guide.steps.length}.`);
 		}
 		if (status !== undefined && !GUIDE_STATUSES.includes(status as SideGuideStatus)) {
 			throw new Error(`"status" must be one of ${GUIDE_STATUSES.join(', ')}.`);
@@ -885,6 +993,18 @@ export class DataFlowMcpHost implements McpHost {
 		if (note !== undefined && typeof note !== 'string') {
 			throw new Error('"note" must be a text.');
 		}
+		// the label and the data: an empty label and null data remove them
+		const problems: string[] = [];
+		const label = more.label === undefined ? undefined : typeof more.label === 'string' && !more.label.trim() ? '' : resolveLabel(more.label, `Step ${step}`, problems);
+		const data = more.data === undefined ? undefined : more.data === null ? null : resolveData(more.data, `Step ${step}`, problems);
+		if (problems.length > 0) {
+			throw new Error(`The view did not change.\n${problems.join('\n')}`);
+		}
+		const isChange = typeof note === 'string' || !!status || label !== undefined || data !== undefined;
+		if (isChange) {
+			this.checkOwner(guide, more.force, 'change');
+		}
+		const isShown = store.state.guide?.id === guide.id;
 		let next = guide;
 		if (typeof note === 'string') {
 			next = withNote(next, index, note);
@@ -892,33 +1012,53 @@ export class DataFlowMcpHost implements McpHost {
 		if (status) {
 			next = withStatus(next, index, status as SideGuideStatus);
 		}
-		if (next !== guide) {
-			store.update({ guide: next });
+		if (label !== undefined || data !== undefined) {
+			next = withClientData(next, index, { ...(label !== undefined ? { label } : {}), ...(data !== undefined ? { data } : {}) });
 		}
-		await side.goToGuideStep(index);
-		side.showDetails('guide');
+		// a guide under the top guide goes to the step at its place. It shows the step when it comes to the top again
+		if (!isShown) {
+			next = withCurrent(next, index);
+		}
+		if (next !== guide) {
+			const [a, b] = [guide.steps[index], next.steps[index]];
+			const change = a.status !== b.status ? 'mark' : a.note !== b.note ? 'note' : a.label !== b.label || a.data !== b.data ? 'label' : 'step';
+			setGuide(store, next, change, this.owner());
+		}
+		if (isShown) {
+			await side.goToGuideStep(index, this.owner());
+			side.showDetails('guide');
+		}
 		const s = next.steps[index];
-		return { step, title: s.title, file: s.file, lines: [s.first, s.last], status: s.status, progress: guideProgress(next) };
+		return { id: next.id, isShown, step, title: s.title, file: s.file, lines: [s.first, s.last], status: s.status, progress: guideProgress(next) };
 	}
 
-	// Closes the guided review or the diff walk, as the button Close review or Close walk of the user does. The state of
-	// the workspace then also has no guide. With a kind, only a guide of this kind closes
-	async closeGuide(kind: string | undefined): Promise<Api.CloseGuideResult> {
+	// Closes a guide, as the button Close review or Close walk of the user does. The default guide is the top guide. The
+	// guide under it then shows. With a kind, only a guide of this kind closes. A guide of a different owner needs force
+	async closeGuide(kind: string | undefined, more: { id?: unknown; force?: boolean } = {}): Promise<Api.CloseGuideResult> {
 		if (kind !== undefined && !(GUIDE_TYPES as readonly string[]).includes(kind)) {
 			throw new Error(`"kind" must be one of ${GUIDE_TYPES.map((t) => `"${t}"`).join(', ')}.`);
 		}
-		const { store } = this.deps;
-		const guide = store.state.guide;
-		if (!guide) {
+		const { store, side } = this.deps;
+		const stack = stackOf(store.state);
+		if (!stack.guide) {
 			return { closed: false, note: 'No guided review or diff walk shows, so the view did not change.' };
 		}
-		const shown = guideType(guide);
-		if (kind !== undefined && kind !== shown) {
+		const guide = this.targetGuide(more.id);
+		const type = guideType(guide);
+		if (kind !== undefined && kind !== type) {
 			const name = (k: string) => (k === 'review' ? 'guided review' : 'diff walk');
-			throw new Error(`The side view shows a ${name(shown)}, not a ${name(kind)}. The view did not change.`);
+			throw new Error(`The guide ${guide.id} is a ${name(type)}, not a ${name(kind)}. The view did not change.`);
 		}
-		store.update({ guide: undefined });
-		return { closed: true, kind: shown, title: guide.title, steps: guide.steps.length, progress: guideProgress(guide) };
+		this.checkOwner(guide, more.force, 'close');
+		const next = dropGuide(stack, guide.id);
+		setStack(store, next, 'close', this.owner());
+		// the guide under the closed top guide shows again at its step
+		if (next.guide && stack.guide.id === guide.id) {
+			await side.goToGuideStep(next.guide.current, this.owner());
+		}
+		return {
+			closed: true, id: guide.id, kind: type, title: guide.title, steps: guide.steps.length, progress: guideProgress(guide), shows: next.guide ? guideRef(next.guide) : null,
+		};
 	}
 
 	//-------------------

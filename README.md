@@ -136,7 +136,7 @@ The view tools of the MCP server put the words of the model into the side view. 
 
 ### Guided review
 
-Name the files or the folders to review, for example "Do a guided review of src/power". The model makes a plan of steps with `get_review` and `show_review_plan`. The side view shows one step after the other: its lines in the code, what to look at, and the questions to answer. Mark each step as OK, issue or question, and ask the model about it. With `review_step`, the model goes to a step and adds its answer or a finding. [Guided review](docs/tools.md#guided-review)
+Name the files or the folders to review, for example "Do a guided review of src/power". The model makes a plan of steps with `get_review` and `show_review_plan`. The side view shows one step after the other: its lines in the code, what to look at, and the questions to answer. Mark each step as OK, issue or question, write your note for the model, and ask the model about it. With `review_step`, the model goes to a step and adds its answer or a finding. A step can also be in a CMake file or in a new file, and the side view keeps a stack of up to 5 guides. [Guided review](docs/tools.md#guided-review)
 
 ![A guided review at step 4 of 4: the lines of the step in the code, the plan in the tab Guide with the marks, and a note of the model on an issue.](docs/images/guided-review.png)
 

@@ -253,6 +253,34 @@ try {
 	await shot('window');
 	result.view = (await tool('get_view')).review;
 
+	// the note of the user in the field of the current step: the model gets it when the field loses the focus
+	await inSide(`const t = doc.querySelector('.rg-step.current .rg-user-note textarea'); t.focus(); t.value = 'Check the lock in the worker too.';
+		t.dispatchEvent(new FocusEvent('blur')); t.blur(); return true;`);
+	await until(async () => (await tool('get_view')).review.steps[3].userNote === 'Check the lock in the worker too.', 'note of the user');
+	result.userNote = (await tool('get_view')).review.steps[3].userNote;
+
+	// a second plan of the model on the top of the stack: a step in CMakeLists.txt with a label. The tab Guide names the
+	// first plan under it. Close review shows the first plan again at its step
+	const second = await tool('show_review_plan', {
+		title: 'Review of the build',
+		steps: [{ title: 'Read the build', file: 'CMakeLists.txt', lines: [1, 2], label: 'build', text: 'The project and its standard.' }],
+	});
+	await until(() => inSide(`return doc.querySelector('.rg-bar .rg-title')?.textContent === 'Read the build';`), 'second plan');
+	await inSide(`doc.querySelector('.rg-bar .rg-title')?.click(); return true;`);
+	await until(() => inSide(`return !!doc.querySelector('.rg-below');`), 'guides under the top guide');
+	result.stack = {
+		id: second.id,
+		guides: (await tool('get_view')).guides.map((g) => `${g.owner} ${g.kind} ${g.title}`),
+		below: await inSide(`return [...doc.querySelectorAll('.rg-below button')].map((b) => b.textContent);`),
+		label: await inSide(`return doc.querySelector('.rg-step .rg-label')?.textContent ?? null;`),
+		file: await inSide(`return doc.querySelector('.rg-step .rg-file')?.textContent ?? null;`),
+		editor: await wb.evaluate(`[...document.querySelectorAll('.tabs-container .tab.active')].map((t) => t.getAttribute('aria-label') ?? t.textContent).join('|')`),
+	};
+	await shot('stack', await sideBox());
+	await inSide(`[...doc.querySelectorAll('.rg-details button')].find((b) => b.textContent.includes('Close review'))?.click(); return true;`);
+	await until(async () => (await guideState()).current === 4 && !(await inSide(`return !!doc.querySelector('.rg-below');`)), 'first plan again');
+	result.afterSecondClose = await guideState();
+
 	// the command Previous Guide Step goes to step 3
 	await command('DataFlow: Previous Guide Step');
 	await until(async () => (await guideState()).current === 3, 'step 3 after the command');

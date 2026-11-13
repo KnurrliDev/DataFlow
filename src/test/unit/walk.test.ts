@@ -336,10 +336,36 @@ suite('Diff walk', () => {
 		const summary = guideSummary(guide);
 		assert.match(summary, /^## Changes that are not committed\n\n1 file: 7 lines added, 3 lines removed\.\n\nChanges against HEAD \(1a2b3c4\)\.\n\n0 of 4 steps reviewed\.\n/);
 		assert.match(summary, /- \[ \] 2\. \*\*Changes in clamp_rate\(\)\*\* \(`rate\.cpp:6`, \+1 −1\): not reviewed/);
-		const facts = guideFacts(guide) as { kind: string; base: string; steps: { added: number; removed: number }[] };
+		const facts = guideFacts(guide) as { kind: string; base: string; owner: string; steps: { added: number; removed: number }[] };
 		assert.strictEqual(facts.kind, 'diff walk');
 		assert.strictEqual(facts.base, 'HEAD (1a2b3c4)');
 		assert.deepStrictEqual(facts.steps.map((s) => [s.added, s.removed]), [[1, 0], [1, 1], [1, 2], [4, 0]]);
+		// the walk of the command belongs to the user
+		assert.deepStrictEqual([guide.id, guide.owner, facts.owner], ['g1', 'user', 'user']);
+	});
+
+	test('The hunks of a text file that is not a C or C++ file make one step in the text editor, with no functions and no heat', () => {
+		const CMAKE = path.join(ROOT, 'CMakeLists.txt');
+		const cmake: WalkFile = {
+			file: CMAKE, lineCount: 30, isCpp: false,
+			hunks: diffHunks(['@@ -2,0 +3,1 @@', '+add_subdirectory(tests)', '@@ -20,1 +21,1 @@', '-set(X 1)', '+set(X 2)'].join('\n')),
+		};
+		const hunks = walkHunks([rateFile(), cmake]);
+		const text = hunks.filter((h) => !h.isCpp);
+		assert.deepStrictEqual(text.map((h) => [h.id, h.first, h.last, h.functions.length]), [['h5', 3, 3, 0], ['h6', 21, 21, 0]]);
+		// the two hunks of the text file are one step
+		const { groups } = walkGroups(hunks);
+		assert.deepStrictEqual(groups.map((g) => g.map((h) => h.id)), [['h1'], ['h2'], ['h3'], ['h4'], ['h5', 'h6']]);
+		assert.strictEqual(groupTitle(groups[4]), 'Changes in CMakeLists.txt');
+		const guide = commandWalk(input([rateFile(), cmake]), 2)!;
+		assert.deepStrictEqual(guide.steps.map((s) => s.fileKind), [undefined, undefined, undefined, undefined, 'text']);
+		// a plan of a model with a label and data on the step of the text file
+		const { guide: planned, problems } = resolveWalkPlan({ steps: [{ title: 'The build', text: 'x', hunks: ['h5', 'h6'], label: 'build', data: { a: 1 } }], allHunks: false },
+			hunks, { input: input([rateFile(), cmake]), seq: 3, owner: 'my-extension' });
+		assert.deepStrictEqual(problems, []);
+		assert.deepStrictEqual([planned?.id, planned?.owner, planned?.steps[0].fileKind, planned?.steps[0].label, planned?.steps[0].data], ['g3', 'my-extension', 'text', 'build', { a: 1 }]);
+		const facts = walkFacts(input([rateFile(), cmake]), hunks) as { files: { file: string; isCpp?: boolean }[] };
+		assert.deepStrictEqual(facts.files.map((f) => [f.file, f.isCpp]), [['src/rate.cpp', undefined], ['CMakeLists.txt', false]]);
 	});
 
 	test('The title of a walk of the command gives the two branches, or the commit or the tag of the base', () => {

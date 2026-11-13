@@ -44,8 +44,9 @@ export interface DataFlowApi {
 	// The file, the function or the line at the cursor changes. The cursor is the cursor of the active C++ editor, or
 	// of the side view if no C++ editor shows. The event comes after the engine found the function at the cursor
 	readonly onDidChangeView: vscode.Event<ViewEvent>;
-	// A guided review or a diff walk starts, goes to a step, gets a mark or a note, or closes (null)
-	readonly onDidChangeGuide: vscode.Event<GuideFacts | null>;
+	// The guide that shows changes: the top guide of the stack. It starts, goes to a step, gets a mark or a note, or
+	// closes. change and by give the cause. null: no guide shows
+	readonly onDidChangeGuide: vscode.Event<GuideEvent | null>;
 	// The scan of the call graph starts, makes progress, stops or ends. At its end, the heat of the functions can change
 	readonly onDidChangeCallGraph: vscode.Event<CallGraphFacts>;
 	// The user clicked a button of your extension on a note, a detail or a step of a guide
@@ -180,10 +181,12 @@ export interface ReviewArgs {
 	paths: string[];
 }
 
-// base: "uncommitted" (default), "target", or a commit, a tag or a branch. paths: only the changes under these paths
+// base: "uncommitted" (default), "target", or a commit, a tag or a branch. paths: only the changes under these paths.
+// allFiles: also the changed text files that are not C or C++ files, for example CMakeLists.txt. Default: false
 export interface DiffArgs {
 	base?: string;
 	paths?: string[];
+	allFiles?: boolean;
 }
 
 export interface BlockInput {
@@ -253,28 +256,50 @@ export interface ShowLineArgs extends FileArgs {
 export type GuideKind = 'change' | 'ripple' | 'context' | 'risk' | 'test';
 export type GuideStatus = 'todo' | 'ok' | 'issue' | 'question';
 
+// The data of your client on a step: label, a short text that the tab Guide shows next to the title, maximum 40
+// characters. data: a JSON object that DataFlow keeps and gives again in GuideFacts, maximum 4096 characters as JSON
+export interface StepClientData {
+	label?: string;
+	data?: Record<string, unknown>;
+}
+
+// id: the id of a guide of your client. The new plan replaces that guide at its place in the stack. With no id, the
+// new guide goes on the top of the stack. The stack has a maximum of 5 guides
 export interface ReviewPlanArgs {
+	id?: string;
 	title?: string;
 	summary?: string;
-	steps: { title: string; file?: string; lines: [number, number]; text: string; checks?: string[]; kind?: GuideKind; actions?: ItemAction[] }[];
+	// file: a text file of the project. newFile: a file that is not there yet, in the place of file. lines: necessary
+	// with file, optional with newFile
+	steps: ({ title: string; file?: string; newFile?: string; lines?: [number, number]; text: string; checks?: string[]; kind?: GuideKind; actions?: ItemAction[] } & StepClientData)[];
 }
 
 export interface DiffWalkArgs {
+	id?: string; // as in ReviewPlanArgs
 	title?: string;
 	summary?: string;
-	steps: { title: string; hunks: string[]; text: string; checks?: string[]; kind?: GuideKind; actions?: ItemAction[] }[]; // hunks: the ids of getDiff
+	steps: ({ title: string; hunks: string[]; text: string; checks?: string[]; kind?: GuideKind; actions?: ItemAction[] } & StepClientData)[]; // hunks: the ids of getDiff
 	// true (default): a step at the end for each hunk that no step names. false: only the hunks of the steps
 	allHunks?: boolean;
 }
 
+// id: the guide. Default: the top guide. A guide under the top guide changes in place, and the view stays. force: true
+// changes a guide of a different owner. Use it only when the user asks for it
 export interface ReviewStepArgs {
+	id?: string;
 	step: number;
 	note?: string; // an empty text removes the note
 	status?: GuideStatus;
+	label?: string; // an empty text removes the label
+	data?: Record<string, unknown> | null; // null removes the data
+	force?: boolean;
 }
 
+// id: the guide. Default: the top guide. force: as in ReviewStepArgs
 export interface CloseGuideArgs {
+	id?: string;
 	kind?: 'review' | 'diff walk';
+	force?: boolean;
 }
 
 //-------------------
@@ -294,7 +319,8 @@ export interface ViewFacts {
 	sideView: { isOpen: boolean; file: string | null; lenses: string[]; modelLayersShown: boolean };
 	model: { functions: { function: string; blocks: string[] }[]; notes: number; comments: number; details: string[] } | null; // your layer
 	otherClients?: { client: string; blocks: number; notes: number; comments: number; details: number }[]; // the layers of the other clients
-	review: GuideFacts | null; // the guided review or the diff walk
+	review: GuideFacts | null; // the guide that shows: the top guide of the stack
+	guides?: GuideRef[]; // the guides of the stack, the top guide first
 	engine: EngineState;
 	project: { folders: string[]; compileDatabases: string[] };
 }
@@ -651,7 +677,8 @@ export interface DiffFacts {
 	root: string;
 	base: string;
 	hottestChanges?: (HotChange & { hunks: string[] })[];
-	files: { file: string; lines: number; isNew?: boolean; hunks: DiffHunkFacts[] }[];
+	// isCpp false: a text file that is not a C or C++ file (allFiles). It has no functions and no heat
+	files: { file: string; lines: number; isNew?: boolean; isCpp?: false; hunks: DiffHunkFacts[] }[];
 	suggestedSteps: { title: string; hunks: string[]; heat?: number }[];
 	notInSuggestedSteps?: string[];
 	deletedFiles?: string[];
@@ -663,12 +690,49 @@ export interface DiffFacts {
 }
 
 export interface GuideFacts {
+	id: string; // g1, g2 and so on
+	owner: string; // user for a command of DataFlow, else the name of the client that made the guide
 	kind?: 'diff walk'; // no kind: a guided review
 	base?: string;
 	title: string;
 	currentStep: number;
 	progress: string;
-	steps: { step: number; title: string; file: string; lines: [number, number]; status: GuideStatus; hasNote?: boolean; added?: number; removed?: number }[];
+	steps: GuideStepFacts[];
+}
+
+// file: the name of the file. fileKind text: a text file that is not a C or C++ file, which opens in the text editor.
+// fileKind new: a file that is not there yet. note: the note of the client. userNote: the note of the user
+export interface GuideStepFacts extends StepClientData {
+	step: number;
+	title: string;
+	file: string;
+	lines: [number, number];
+	status: GuideStatus;
+	fileKind?: 'text' | 'new';
+	hasNote?: boolean;
+	note?: string;
+	userNote?: string;
+	added?: number;
+	removed?: number;
+}
+
+// A guide of the stack
+export interface GuideRef {
+	id: string;
+	owner: string;
+	title: string;
+	kind: 'review' | 'diff walk';
+}
+
+// The cause of a change of the guide that shows. start: a new guide on the top. replace: a plan replaced the top guide.
+// step: a different step shows. mark, note, userNote: the mark, the note of the client or the note of the user of a
+// step changed. label: the label or the data of a step changed. move: an edit moved the lines of steps. close: the top
+// guide closed, and the guide under it shows. show: the user brought a guide of the stack to the top
+export type GuideChange = 'start' | 'replace' | 'step' | 'mark' | 'note' | 'userNote' | 'label' | 'move' | 'close' | 'show';
+
+export interface GuideEvent extends GuideFacts {
+	change: GuideChange;
+	by: string; // user, or the name of the client
 }
 
 export interface CallGraphFacts {
@@ -758,16 +822,20 @@ export interface StopCallGraphResult extends CallGraphFacts {
 	stopped: boolean;
 }
 
+// id: the id of the guide, for review_step, close_guide and a new plan that replaces it. shown: 1 if the guide shows,
+// 0 if it is under the top guide
 export interface ReviewPlanResult {
+	id: string;
 	title: string;
-	steps: { step: number; title: string; file: string; lines: [number, number] }[];
+	steps: { step: number; title: string; file: string; lines: [number, number]; fileKind?: 'text' | 'new' }[];
 	shown: number;
 	note: string;
 }
 
 export interface DiffWalkResult {
+	id: string;
 	title: string;
-	steps: { step: number; title: string; file: string; lines: [number, number]; addedByDataFlow?: boolean }[];
+	steps: { step: number; title: string; file: string; lines: [number, number]; fileKind?: 'text'; addedByDataFlow?: boolean }[];
 	addedSteps?: { title: string; hunks: string[] }[];
 	addedNote?: string;
 	notShown?: string[]; // with allHunks false: the hunks that no step names
@@ -775,7 +843,10 @@ export interface DiffWalkResult {
 	note: string;
 }
 
+// isShown: false if the guide is under the top guide. Then the view did not go to the step
 export interface ReviewStepResult {
+	id: string;
+	isShown: boolean;
 	step: number;
 	title: string;
 	file: string;
@@ -784,6 +855,7 @@ export interface ReviewStepResult {
 	progress: string;
 }
 
+// shows: the guide that shows after the close, or null
 export type CloseGuideResult =
 	| { closed: false; note: string }
-	| { closed: true; kind: 'review' | 'diff walk'; title: string; steps: number; progress: string };
+	| { closed: true; id: string; kind: 'review' | 'diff walk'; title: string; steps: number; progress: string; shows: GuideRef | null };

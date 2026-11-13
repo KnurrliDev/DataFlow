@@ -6,6 +6,8 @@ import type { CompileDbInfo } from '../../cdb/manager';
 import type { EngineFunction } from '../../engine/client';
 import { DataFlowMcpHost, type HostDeps } from '../../mcp/host';
 import { createTools } from '../../mcp/tools';
+import { withCurrent, withStatus } from '../../review/guide';
+import { dropGuide, pushGuide, setGuide, setStack, stackOf } from '../../review/stack';
 import type { SideGuide } from '../../side/protocol';
 import { Lens, StateStore } from '../../state/store';
 
@@ -146,6 +148,24 @@ suite('API for other extensions', () => {
 			'guide closed',
 			'graph scanning 2',
 		]);
+	});
+
+	test('The guide event gives the cause of the change and its author, also for a change with no cause in the store', () => {
+		const api = createApi(deps, events, 1);
+		const seen: string[] = [];
+		const subscription = api.onDidChangeGuide((g) => seen.push(g ? `${g.id} ${g.change} ${g.by} ${g.currentStep}` : 'none'));
+		const step = (title: string) => ({ title, file: 'C:/p/src/a.cpp', name: 'a.cpp', first: 1, last: 2, text: 'x', checks: [], status: 'todo' as const });
+		const make = (seq: number, owner: string): SideGuide => ({ id: `g${seq}`, owner, title: `Plan ${seq}`, current: 0, seq, steps: [step('A'), step('B')] });
+		setStack(store, pushGuide(stackOf(store.state), make(1, 'user')), 'start', 'user');
+		setStack(store, pushGuide(stackOf(store.state), make(2, 'ext-a')), 'start', 'ext-a');
+		setGuide(store, withStatus(store.state.guide!, 1, 'ok'), 'mark', 'user');
+		// a change with no cause in the store: the difference of the guides gives the change, and the user is its author
+		store.update({ guide: withCurrent(store.state.guide!, 1) });
+		setStack(store, dropGuide(stackOf(store.state), 'g2'), 'close', 'ext-a');
+		setStack(store, dropGuide(stackOf(store.state), 'g1'), 'close', 'user');
+		subscription.dispose();
+		assert.deepStrictEqual(seen, ['g1 start user 1', 'g2 start ext-a 1', 'g2 mark user 1', 'g2 step user 2', 'g1 close ext-a 1', 'none']);
+		assert.strictEqual(store.state.guideSeq, 2);
 	});
 
 	test('A click on a button goes to the API objects of the client of the item, and an MCP client cannot add buttons', async () => {

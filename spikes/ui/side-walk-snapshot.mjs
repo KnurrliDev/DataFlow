@@ -291,7 +291,13 @@ try {
 	await command('DataFlow: Toggle Heat');
 	await until(() => inSide(`return !doc.querySelector('.rg-heat');`), 'heat off');
 
-	// Close walk removes the bar and the marks of the diff
+	// the walk of the model is on the top of the walk of the command. Close walk shows the walk of the command again at
+	// its step, and a second Close walk removes the bar and the marks of the diff
+	result.below = await inSide(`return [...doc.querySelectorAll('.rg-below button')].map((b) => b.textContent);`);
+	await inSide(`[...doc.querySelectorAll('.rg-details button')].find((b) => b.textContent.includes('Close walk'))?.click(); return true;`);
+	await until(async () => (await walkState()).title !== 'Loosen the limit of the cost' && !!(await walkState()).title, 'walk of the command again');
+	await sleep(800);
+	result.afterClose = await walkState();
 	await inSide(`[...doc.querySelectorAll('.rg-details button')].find((b) => b.textContent.includes('Close walk'))?.click(); return true;`);
 	await sleep(800);
 	result.closed = await inSide(`return !doc.querySelector('.rg-bar') && doc.querySelectorAll('.row.rg-line, .row.df-add, .row.df-del').length === 0;`);

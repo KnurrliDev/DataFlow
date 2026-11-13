@@ -41,6 +41,7 @@ import { commitUri, INCLUDE_FILE, isCppFile, openReviewRepository, ReviewDiff, R
 import { MAX_REVIEW_FILES, moveGuide, type ReviewFilesInput } from './review/guide';
 import { CallSite, RippleModel, runRipple } from './review/ripple';
 import { targetCandidates, targetItems, walkBranchItems } from './review/targets';
+import { MAX_GUIDES, nextGuideSeq, pushGuide, setStack, stackGuides, stackOf } from './review/stack';
 import { commandWalk, walkTitle, type WalkFile, type WalkFunction, type WalkInput } from './review/walk';
 import { SideViewController } from './side/controller';
 import { functionTitle, withBrackets } from './side/names';
@@ -1769,7 +1770,8 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		const request = new vscode.CancellationTokenSource();
 		guideHeatRequest = request;
 		const steps: (SideStepHeat | undefined)[] = guide.steps.map(() => undefined);
-		for (const file of [...new Set(guide.steps.map((s) => s.file))]) {
+		// only C and C++ files have heat. A new file of a step can be not there yet
+		for (const file of [...new Set(guide.steps.map((s) => s.file))].filter(isCppFile)) {
 			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file)).then((d) => d, () => undefined);
 			const model = doc && await computeHeat(client, doc, request.token).catch(() => undefined);
 			if (request.token.isCancellationRequested) {
@@ -2295,8 +2297,9 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	// the engine. The base "uncommitted" gives the changes against HEAD. "target" gives the changes of the branch against
 	// the target branch of Change Ripple. A different base is a commit, a tag or a branch: the diff starts at its merge
 	// base with HEAD. Each diff goes to the working tree, with the text of the editors and the C and C++ files that git
-	// does not track yet. With paths, only the files under the paths
-	const walkInput = async (base: string | undefined, paths?: string[], token?: vscode.CancellationToken): Promise<WalkInput | { message: string }> => {
+	// does not track yet. With paths, only the files under the paths. With allFiles, also the changed text files that are
+	// not C or C++ files, with no functions
+	const walkInput = async (base: string | undefined, paths?: string[], token?: vscode.CancellationToken, allFiles = false): Promise<WalkInput | { message: string }> => {
 		const folder = reviewFolder();
 		if (!folder) {
 			return { message: 'Open a folder of a git repository, or select a project with "DataFlow: Open Project".' };
@@ -2331,7 +2334,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		vscode.workspace.textDocuments.forEach(flushChange);
 		let diff: ReviewDiff;
 		try {
-			diff = await repo.diff(ref, { untracked: true });
+			diff = await repo.diff(ref, { untracked: true, allText: allFiles });
 		} catch (error) {
 			return { message: error instanceof Error ? error.message : String(error) };
 		}
@@ -2351,8 +2354,9 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 				return { message: 'The diff walk was canceled.' };
 			}
 			const file = f.uri.fsPath;
+			const isCppChange = isCppFile(file);
 			let functions: WalkFunction[] | undefined;
-			if (client && Date.now() - started < WALK_ENGINE_MS) {
+			if (isCppChange && client && Date.now() - started < WALK_ENGINE_MS) {
 				const result = await withTimeout(client.functions(file).catch(() => undefined), WALK_FILE_MS);
 				functions = result?.functions.map((fn) => ({
 					name: withBrackets(functionTitle(fn)), qualified: functionTitle(fn, true), first: fn.range.begin.line, last: fn.range.end.line,
@@ -2360,7 +2364,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			}
 			const doc = vscode.workspace.textDocuments.find((d) => fileKey(d.uri.fsPath) === fileKey(file));
 			const lineCount = doc ? doc.lineCount : (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/).length;
-			files.push({ file, lineCount, hunks: f.hunks, ...(f.isNew ? { isNew: true } : {}), ...(functions ? { functions } : {}) });
+			files.push({ file, lineCount, hunks: f.hunks, ...(f.isNew ? { isNew: true } : {}), ...(isCppChange ? {} : { isCpp: false }), ...(functions ? { functions } : {}) });
 		}
 		const short = mergeBase.slice(0, 7);
 		return {
@@ -2442,6 +2446,13 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	// The command "Walk Through the Changes": a diff walk with the default steps of DataFlow, one step for each changed
 	// function. The tests give the base
 	const startDiffWalk = async (base?: string): Promise<SideGuide | undefined> => {
+		// the walk goes on the top of the stack of the guides, if the stack has space for it
+		const isFull = () => stackGuides(stackOf(store.state)).length >= MAX_GUIDES;
+		const fullText = `DataFlow: The side view has ${MAX_GUIDES} guides, the maximum. Close a guide in the tab Guide first.`;
+		if (isFull()) {
+			void vscode.window.showWarningMessage(fullText);
+			return undefined;
+		}
 		const choice = base ?? await pickWalkBase();
 		if (choice === undefined) {
 			return undefined;
@@ -2454,12 +2465,16 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			void vscode.window.showWarningMessage(input.message);
 			return undefined;
 		}
-		const guide = commandWalk(input, (store.state.guide?.seq ?? 0) + 1);
+		const guide = commandWalk(input, nextGuideSeq(store.state));
 		if (!guide) {
 			void vscode.window.showInformationMessage(`DataFlow: No C or C++ file changed against ${input.base}.`);
 			return undefined;
 		}
-		store.update({ guide });
+		if (isFull()) {
+			void vscode.window.showWarningMessage(fullText);
+			return undefined;
+		}
+		setStack(store, pushGuide(stackOf(store.state), guide), 'start', 'user');
 		side.open();
 		await side.goToGuideStep(0);
 		side.showDetails('guide');
@@ -2816,7 +2831,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		client: (): string | undefined => mcp.clientName,
 		incomingCalls: (file, line, col) => editorIncomingCalls(file, line, col),
 		reviewFiles: (paths) => reviewFiles(paths),
-		walkInput: (base, paths) => walkInput(base, paths),
+		walkInput: (base, paths, allFiles) => walkInput(base, paths, undefined, allFiles),
 		definitionHeader: (name, place) => definitionHeaderOf(name, place),
 		heat: (doc) => {
 			const client = engine;
@@ -2963,6 +2978,14 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			mcpHost.removeLayer(file);
 		}
 	};
+	// Moves the lines of the steps of all guides of the stack with the changes of an edit of a text file
+	const moveGuides = (file: string, changes: readonly vscode.TextDocumentContentChangeEvent[]): void => {
+		const stack = stackOf(store.state);
+		const moved = { guide: stack.guide && moveGuide(stack.guide, file, changes), guidesBelow: stack.guidesBelow.map((g) => moveGuide(g, file, changes)) };
+		if (moved.guide !== stack.guide || moved.guidesBelow.some((g, i) => g !== stack.guidesBelow[i])) {
+			setStack(store, moved, 'move', 'user');
+		}
+	};
 
 	// A change of the settings: of VS Code, or of the settings file of the project. affects tells if a section changed
 	const applySettings = (affects: (section: string) => boolean): void => {
@@ -3081,7 +3104,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		vscode.commands.registerCommand('dataflow.guide.next', () => store.state.guide && side.goToGuideStep(store.state.guide.current + 1)),
 		vscode.commands.registerCommand('dataflow.guide.previous', () => store.state.guide && side.goToGuideStep(store.state.guide.current - 1)),
 		vscode.commands.registerCommand('dataflow.guide.copySummary', () => side.copyGuideSummary()),
-		vscode.commands.registerCommand('dataflow.guide.close', () => store.update({ guide: undefined })),
+		vscode.commands.registerCommand('dataflow.guide.close', () => side.closeGuide()),
 		// the diff walk of DataFlow. A menu can give a different argument, so only a text is a base
 		vscode.commands.registerCommand('dataflow.diffWalk.start', (base?: unknown) => startDiffWalk(typeof base === 'string' ? base : undefined)),
 		// The tests use these commands, as the side view does. They are not in the Command Palette.
@@ -3124,6 +3147,10 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			}
 		}),
 		vscode.workspace.onDidChangeTextDocument((e) => {
+			// the steps of the guides move with their code, in each text file
+			if (e.document.uri.scheme === 'file' && e.contentChanges.length > 0) {
+				moveGuides(e.document.uri.fsPath, e.contentChanges);
+			}
 			if (!isCpp(e.document)) {
 				return;
 			}
@@ -3133,14 +3160,9 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			if (current?.file === file && e.contentChanges.some((c) => c.range.start.line <= current.lastLine || c.text.includes('#'))) {
 				isIncludesDirty = true;
 			}
-			// the blocks and the notes of the model, and the steps of the guided review, move with their code
+			// the blocks and the notes of the model move with their code
 			if (!mcpHost.moveLayer(file, e.contentChanges)) {
 				log.info(`The blocks and the notes of the model in ${path.basename(file)} went away, because an edit replaced all their lines.`);
-			}
-			const guide = store.state.guide;
-			const movedGuide = guide && moveGuide(guide, file, e.contentChanges);
-			if (movedGuide && movedGuide !== guide) {
-				store.update({ guide: movedGuide });
 			}
 			clearTimeout(changeTimers.get(file));
 			changeTimers.set(file, setTimeout(() => sendChange(e.document), 250));

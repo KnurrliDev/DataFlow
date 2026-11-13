@@ -36,10 +36,10 @@ export interface McpHost {
 	remove(file: string | undefined, ids: unknown): Promise<Api.RemoveResult>;
 	review(paths: unknown): Promise<Api.ReviewFacts>;
 	showReviewPlan(plan: GuidePlanInput): Promise<Api.ReviewPlanResult>;
-	reviewStep(step: number, note: unknown, status: string | undefined): Promise<Api.ReviewStepResult>;
-	diff(base: string | undefined, paths: unknown): Promise<Api.DiffFacts>;
+	reviewStep(step: number, note: unknown, status: string | undefined, more?: { id?: unknown; force?: boolean; label?: unknown; data?: unknown }): Promise<Api.ReviewStepResult>;
+	diff(base: string | undefined, paths: unknown, allFiles?: boolean): Promise<Api.DiffFacts>;
 	showDiffWalk(plan: WalkPlanInput): Promise<Api.DiffWalkResult>;
-	closeGuide(kind: string | undefined): Promise<Api.CloseGuideResult>;
+	closeGuide(kind: string | undefined, more?: { id?: unknown; force?: boolean }): Promise<Api.CloseGuideResult>;
 	logic(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts>;
 	showLogicPath(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts>;
 	ripple(): Promise<Api.RippleFacts>;
@@ -71,6 +71,8 @@ export const INSTRUCTIONS = [
 	'To walk the user through the changes of the working tree, of the branch or since a commit, for example the changes that you made, call get_diff, '
 	+ 'read the changed code, then call show_diff_walk with steps of hunks, and go on with review_step. The prompt diff-walk gives the steps.',
 	'get_review and get_diff give the heat of the changed functions. Start a plan with the hottest changes, unless a different order explains the change better.',
+	'The side view keeps a stack of up to 5 guides, and the top guide shows. A new plan goes on the top. To change your plan, give its id to show_review_plan or show_diff_walk. '
+	+ 'review_step and close_guide change a guide of the user or of a different client only with "force": true, when the user asks you for it.',
 	'When the user asks you to close or delete the guided review or the diff walk, call close_guide.',
 ].join(' ');
 
@@ -78,6 +80,14 @@ const FILE = { type: 'string', description: 'The C++ file: an absolute path, or 
 const FUNCTION = { type: 'string', description: 'The function: its qualified name, for example electricity::power_ctrl::process, its name, or the text of its macro call (macroCall). Default: the function at the cursor.' };
 const LINE_IN_FUNCTION = { type: 'integer', minimum: 1, description: 'A line in the function. Use it for an overloaded name, or instead of "function".' };
 const LINES = { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 2, maxItems: 2, description: 'The first and the last line, from 1.' };
+// The guides: the id of a guide, the force for a guide of a different owner, and the data of a client on a step
+const GUIDE_ID = { type: 'string', description: 'The id of a guide, for example "g2". get_view gives the guides of the stack. Default: the top guide, which shows.' };
+const FORCE = {
+	type: 'boolean',
+	description: 'true: change a guide of the user or of a different client. Give it only when the user asks you for this change. Default: false.',
+};
+const STEP_LABEL = { type: 'string', description: 'A short label that the tab Guide shows next to the title, for example "risk 4". Maximum 40 characters.' };
+const STEP_DATA = { type: 'object', description: 'Your data for the step: a JSON object that DataFlow keeps and gives again in get_view. Maximum 4096 characters as JSON.' };
 const CHOICES = {
 	type: 'object', additionalProperties: { type: 'string' },
 	description: 'The options that you select for the path: the key of a decision from get_logic, and one of its options, for example {"if:count > 0#0": "no"}. '
@@ -443,8 +453,12 @@ export function createTools(host: McpHost): McpTool[] {
 			['paths'], true, (a) => host.review(a.raw('paths'))),
 		tool('show_review_plan', 'Show a review plan',
 			'Shows a guided review in the DataFlow side view: a plan of steps that walks the user through the changes of the branch, in the order that a reviewer reads them. '
-			+ 'The side view goes to the lines of step 1 and shows its text and its checks. The user goes to the next step with a button, or asks you. A new plan replaces the old plan. Call get_review first.',
+			+ 'The side view goes to the lines of step 1 and shows its text and its checks. The user goes to the next step with a button, or asks you. '
+			+ 'The plan goes on the top of the stack of the guides, and the guides under it stay. To change your plan, give its id: the new plan replaces it. '
+			+ 'A step can be in each text file of the project: a file that is not a C or C++ file opens in the text editor. A step can also be in a file that is not there yet. '
+			+ 'Call get_review first.',
 			{
+				id: { type: 'string', description: 'The id of your guide that the plan replaces, from the result of show_review_plan or from get_view. Default: a new guide on the top.' },
 				title: { type: 'string', description: 'A short title of the review, for example "Review of the new limit". Maximum 80 characters.' },
 				summary: { type: 'string', description: 'One to three sentences: what the changes do. Maximum 1000 characters.' },
 				steps: {
@@ -452,7 +466,10 @@ export function createTools(host: McpHost): McpTool[] {
 					items: object({
 						title: { type: 'string', description: 'A short title in the imperative, for example "Check the new limit". Maximum 80 characters.' },
 						file: { type: 'string', description: 'The file of the step: a path relative to the repository, as get_review gives it, or an absolute path. Default: the file of the step before.' },
-						lines: LINES,
+						newFile: { type: 'string', description: 'A file that is not there yet, in the place of "file": a path relative to the repository, or an absolute path in a folder of the project.' },
+						lines: { ...LINES, description: 'The first and the last line, from 1. Necessary with "file". Optional with "newFile".' },
+						label: STEP_LABEL,
+						data: STEP_DATA,
 						text: {
 							type: 'string',
 							description: 'What the reviewer looks at in this step and why, in 2 to 5 sentences. A small part of Markdown: paragraphs, lists, `code` and **bold**. Maximum 2000 characters.',
@@ -465,10 +482,10 @@ export function createTools(host: McpHost): McpTool[] {
 							type: 'string', enum: [...GUIDE_KINDS],
 							description: 'change: changed lines. ripple: code that a change reaches. context: code that explains a change. risk: a possible problem. test: the tests of the change.',
 						},
-					}, ['title', 'lines', 'text']),
+					}, ['title', 'text']),
 				},
 			},
-			['steps'], false, (a) => host.showReviewPlan({ title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps') })),
+			['steps'], false, (a) => host.showReviewPlan({ id: a.raw('id'), title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps') })),
 		tool('get_diff', 'Get the changes for a diff walk',
 			'The hunks of the changed C and C++ files against a base, for a diff walk. Each hunk has an id, its first and last changed line in the working tree, the functions that it changes '
 			+ 'with their heat, and its diff with the line numbers of the working tree. hottestChanges gives the changed functions with the reasons of their heat, the hottest first. '
@@ -485,13 +502,20 @@ export function createTools(host: McpHost): McpTool[] {
 					type: 'array', minItems: 1, items: { type: 'string' },
 					description: 'Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. Default: all changed files.',
 				},
+				allFiles: {
+					type: 'boolean',
+					description: 'true: also the changed text files that are not C or C++ files, for example CMakeLists.txt or a .ui file, with isCpp false. They have no functions and no heat. '
+						+ 'Default: false, only C and C++ files.',
+				},
 			},
-			[], true, (a) => host.diff(a.text('base'), a.raw('paths'))),
+			[], true, (a) => host.diff(a.text('base'), a.raw('paths'), a.optionalFlag('allFiles'))),
 		tool('show_diff_walk', 'Show a diff walk',
 			'Shows a diff walk in the DataFlow side view: a plan of steps that walks the user through the changes of get_diff, in the order that explains them best. Each step names its hunks. '
 			+ 'The side view goes to the lines of step 1, marks the added and the removed lines, and shows the diff and the text of the step. DataFlow adds a step at the end for each hunk that no step names, '
-			+ 'except with allHunks false. A new plan replaces the old plan or the guided review. Call get_diff first.',
+			+ 'except with allHunks false. The walk goes on the top of the stack of the guides, and the guides under it stay. To change your walk, give its id: the new walk replaces it. '
+			+ 'Call get_diff first.',
 			{
+				id: { type: 'string', description: 'The id of your guide that the walk replaces, from the result of show_diff_walk or from get_view. Default: a new guide on the top.' },
 				title: { type: 'string', description: 'A short title of the walk, for example "The new charge limit". Maximum 80 characters.' },
 				summary: { type: 'string', description: 'One to three sentences: what the changes do. Maximum 1000 characters.' },
 				steps: {
@@ -514,6 +538,8 @@ export function createTools(host: McpHost): McpTool[] {
 							type: 'string', enum: [...GUIDE_KINDS],
 							description: 'change: the main change. ripple: code that a change reaches. context: code that explains a change. risk: a possible problem. test: the tests of the change.',
 						},
+						label: STEP_LABEL,
+						data: STEP_DATA,
 					}, ['title', 'hunks', 'text']),
 				},
 				allHunks: {
@@ -522,28 +548,39 @@ export function createTools(host: McpHost): McpTool[] {
 						+ 'false: the walk shows only the hunks of the steps, and the result names the other hunks in notShown.',
 				},
 			},
-			['steps'], false, (a) => host.showDiffWalk({ title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps'), allHunks: a.optionalFlag('allHunks') })),
+			['steps'], false, (a) => host.showDiffWalk({ id: a.raw('id'), title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps'), allHunks: a.optionalFlag('allHunks') })),
 		tool('review_step', 'Go to a step',
 			'Shows a step of the guided review or of the diff walk in the DataFlow side view, as the buttons of the user do. Give "note" to add your explanation, an answer or a finding to the step: '
-			+ 'the side view shows it under the text of the step. Give "status" to mark the step. get_view gives the step that the user looks at and the marks of the user.',
+			+ 'the side view shows it under the text of the step. Give "status" to mark the step, and "label" or "data" to change your data on it. '
+			+ 'get_view gives the step that the user looks at, the marks and the notes of the user. With the id of a guide under the top guide, the guide changes and the view stays. '
+			+ 'A change of a guide of the user or of a different client needs "force": true.',
 			{
+				id: GUIDE_ID,
 				step: { type: 'integer', minimum: 1, description: 'The number of the step, from 1.' },
 				note: { type: 'string', description: 'Your note for the step: a small part of Markdown. An empty text removes the note. Maximum 2000 characters.' },
 				status: { type: 'string', enum: [...GUIDE_STATUSES], description: 'The mark of the step.' },
+				label: { ...STEP_LABEL, description: `${STEP_LABEL.description} An empty text removes the label.` },
+				data: { ...STEP_DATA, type: ['object', 'null'], description: `${STEP_DATA.description} null removes the data.` },
+				force: FORCE,
 			},
-			['step'], false, (a) => host.reviewStep(a.requiredLine('step'), a.raw('note'), a.text('status'))),
+			['step'], false, (a) => host.reviewStep(a.requiredLine('step'), a.raw('note'), a.text('status'), {
+				id: a.raw('id'), force: a.flag('force'), label: a.raw('label'), data: a.raw('data'),
+			})),
 		{
-			...tool('close_guide', 'Close the review or the walk',
-				'Closes the guided review or the diff walk in the DataFlow side view, as the button Close review or Close walk of the user does. '
+			...tool('close_guide', 'Close a review or a walk',
+				'Closes a guided review or a diff walk in the DataFlow side view, as the button Close review or Close walk of the user does. The guide under it then shows. '
 				+ 'The marks and the notes of the steps go away, and the guide does not come back in the next session of VS Code. '
-				+ 'Call it only when the user asks you to close or delete the review or the walk. get_view gives the guide that shows.',
+				+ 'Call it only when the user asks you to close or delete the review or the walk, or to close your own guide. get_view gives the guides of the stack. '
+				+ 'A guide of the user or of a different client needs "force": true.',
 				{
+					id: GUIDE_ID,
 					kind: {
 						type: 'string', enum: [...GUIDE_TYPES],
-						description: 'Close the guide only if it has this kind: "review" for a guided review, "diff walk" for a diff walk. Default: the guide that shows.',
+						description: 'Close the guide only if it has this kind: "review" for a guided review, "diff walk" for a diff walk.',
 					},
+					force: FORCE,
 				},
-				[], false, (a) => host.closeGuide(a.text('kind'))),
+				[], false, (a) => host.closeGuide(a.text('kind'), { id: a.raw('id'), force: a.flag('force') })),
 			isDestructive: true,
 		},
 	];
@@ -586,8 +623,8 @@ export function createPrompts(): McpPrompt[] {
 			'   Give each step a short title in the imperative, the file and the lines, a text with what to look at and why, and one to three questions in "checks".',
 			'4. Call show_review_plan. The side view shows step 1.',
 			'5. Explain step 1 in a few sentences. Then stop, and wait for me.',
-			'6. When I ask for the next step, call get_view: it gives the step that I look at and my marks. Explain that step, or call review_step to go to the next step. '
-			+ 'If you find a problem, add it with review_step as a note with the status issue.',
+			'6. When I ask for the next step, call get_view: it gives the step that I look at, my marks and my notes. Explain that step, or call review_step to go to the next step. '
+			+ 'If you find a problem, add it with review_step as a note with the status issue. To change the plan, call show_review_plan again with its id.',
 			'Use the facts of the tool results. If you are not sure of a fact, say so.',
 		].join('\n'),
 	}, {
@@ -610,8 +647,8 @@ export function createPrompts(): McpPrompt[] {
 			'   Give each step a short title, its hunks, and a text that says what changed and why, in 2 to 5 sentences.',
 			'4. Call show_diff_walk. The side view shows step 1 with its diff.',
 			'5. Explain step 1 in a few sentences. Then stop, and wait for me.',
-			'6. When I ask for the next step, call get_view: it gives the step that I look at. Explain that step, or call review_step to go to the next step. '
-			+ 'If you find a problem, add it with review_step as a note with the status issue.',
+			'6. When I ask for the next step, call get_view: it gives the step that I look at, my marks and my notes. Explain that step, or call review_step to go to the next step. '
+			+ 'If you find a problem, add it with review_step as a note with the status issue. To change the walk, call show_diff_walk again with its id.',
 			'Use the facts of the tool results. If you are not sure why a line changed, say so.',
 		].join('\n'),
 	}];
