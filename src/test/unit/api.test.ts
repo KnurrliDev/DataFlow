@@ -4,7 +4,8 @@ import type * as Api from '../../../api/dataflow-api';
 import { ApiDeps, ApiEvents, createApi } from '../../api/api';
 import type { CompileDbInfo } from '../../cdb/manager';
 import type { EngineFunction } from '../../engine/client';
-import type { HostDeps } from '../../mcp/host';
+import { DataFlowMcpHost, type HostDeps } from '../../mcp/host';
+import { createTools } from '../../mcp/tools';
 import type { SideGuide } from '../../side/protocol';
 import { Lens, StateStore } from '../../state/store';
 
@@ -46,7 +47,7 @@ suite('API for other extensions', () => {
 		assert.strictEqual(api.version, 1);
 		assert.strictEqual(api.engineState, 'stopped');
 		assert.deepStrictEqual(api.compileDatabases, []);
-		assert.strictEqual(api.tools.length, 34);
+		assert.strictEqual(api.tools.length, 35);
 		assert.deepStrictEqual(api.tools.filter((t) => t.isDestructive).map((t) => t.name), ['close_guide']);
 		assert.ok(api.tools.find((t) => t.name === 'get_logic')?.isReadOnly);
 		assert.ok(!api.tools.find((t) => t.name === 'set_lens')?.isReadOnly);
@@ -145,5 +146,31 @@ suite('API for other extensions', () => {
 			'guide closed',
 			'graph scanning 2',
 		]);
+	});
+
+	test('A click on a button goes to the API objects of the client of the item, and an MCP client cannot add buttons', async () => {
+		const a = createApi(deps, events, 1, { client: 'ext-a' });
+		const b = createApi(deps, events, 1, { client: 'ext-b' });
+		const seen: string[] = [];
+		const subscriptions = [
+			a.onDidInvokeAction((e) => seen.push(`a ${e.kind} ${e.action} ${e.item} ${e.line}`)),
+			b.onDidInvokeAction((e) => seen.push(`b ${e.kind} ${e.action} ${e.step}`)),
+		];
+		assert.strictEqual(events.invokeAction('ext-a', { kind: 'note', action: 'fix', item: 'n2', line: 4 }), true);
+		assert.strictEqual(events.invokeAction('ext-b', { kind: 'step', action: 'run', step: 2 }), true);
+		// a client with no API object gets no click
+		assert.strictEqual(events.invokeAction('ext-c', { kind: 'detail', action: 'open' }), false);
+		subscriptions.forEach((s) => s.dispose());
+		assert.strictEqual(events.invokeAction('ext-a', { kind: 'note', action: 'fix' }), true);
+		assert.deepStrictEqual(seen, ['a note fix n2 4', 'b step run 2']);
+
+		// an MCP client gets no event for a click, so its tools refuse buttons before they change the view
+		const mcpTools = createTools(new DataFlowMcpHost({ ...deps.hostDeps, client: () => 'claude-code' }));
+		const call = (name: string, args: Record<string, unknown>) => mcpTools.find((t) => t.name === name)!.call(args);
+		const actions = [{ id: 'fix', title: 'Fix it' }];
+		await assert.rejects(call('highlight', { ranges: [{ lines: [1, 1], kind: 'info', note: 'x', actions }] }), /"actions" need the API for extensions\./);
+		await assert.rejects(call('add_detail', { line: 1, text: 'x', actions }), /"actions" need the API for extensions\./);
+		await assert.rejects(call('show_review_plan', { steps: [{ title: 'A', lines: [1, 1], text: 'x', actions }] }), /"actions" need the API for extensions\./);
+		assert.deepStrictEqual(store.state.modelLayers, []);
 	});
 });

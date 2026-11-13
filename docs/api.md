@@ -11,6 +11,7 @@ Examples of extensions that can use the API:
 - [Get the API](#get-the-api)
 - [The methods](#the-methods)
 - [The events](#the-events)
+- [Buttons](#buttons)
 - [Errors](#errors)
 - [Versions](#versions)
 - [Examples](#examples)
@@ -42,6 +43,8 @@ Examples of extensions that can use the API:
    ```
 
 `client` is the name of your extension. The side view shows it on the blocks, the notes, the comments, the details and the guides of your extension. The default is `extension`. The log of DataFlow tells when an extension gets the API.
+
+Each client has its own layers in each file: its blocks, notes, comments and details. The view methods change only the layers of your client. The layers of other extensions and of MCP clients stay. Thus use a name that other extensions do not use.
 
 Each call of `getApi` gives a new API object. `showReviewPlan` uses the result of the last `getReview` of the same API object, and `showDiffWalk` uses the result of the last `getDiff` of the same API object.
 
@@ -75,8 +78,9 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `showLine({ file, line })` | [`show_line`](tools.md#show_line) | view |
 | `highlight({ file, ranges, append })` | [`highlight`](tools.md#highlight) | view |
 | `commentLines({ file, comments, append })` | [`comment_lines`](tools.md#comment_lines) | view |
-| `addDetail({ file, line, expression, title, text })` | [`add_detail`](tools.md#add_detail) | view |
+| `addDetail({ file, line, expression, title, text, actions })` | [`add_detail`](tools.md#add_detail) | view |
 | `clear({ file })` | [`clear`](tools.md#clear) | view |
+| `remove({ file, ids })` | [`remove`](tools.md#remove) | view |
 | `setLens({ lens, on })` | [`set_lens`](tools.md#set_lens) | view |
 | `clearFlow()` | [`clear_flow`](tools.md#clear_flow) | view |
 | `startRipple()` | [`start_ripple`](tools.md#start_ripple) | view |
@@ -89,6 +93,8 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `closeGuide({ kind })` | [`close_guide`](tools.md#close_guide) | view |
 
 The read methods do not change the view. The view methods change the side view that the user looks at. Use them only when the user asks your extension for it, for example with a command or a button.
+
+The results of `highlight`, `commentLines` and `addDetail` give the ids of the new items, for example `n1`, `c1` and `d1`. `remove` removes items of your client by their ids.
 
 `callTool(name, args)` runs a tool by its name, for example `callTool('get_view')`. `tools` gives the name, the description and the JSON schema of the arguments of each tool.
 
@@ -109,6 +115,7 @@ These properties give the state:
 | `onDidChangeView` | The file, the function or the line at the cursor changes. The cursor is the cursor of the active C++ editor, or the cursor of the side view if no C++ editor shows. The event comes after the engine found the function at the cursor. | `file`, `function` with its `name` and its `lines`, and `line` |
 | `onDidChangeGuide` | A guided review or a diff walk starts, goes to a step, gets a mark or a note, or closes. | The guide as `get_view` gives it in `review`, or `null` after the close |
 | `onDidChangeCallGraph` | The scan of the call graph starts, makes progress, stops or ends. | The data of `scan_call_graph` |
+| `onDidInvokeAction` | The user clicks a button of your extension. See [Buttons](#buttons). | `kind`, `action`, `item`, `file`, `line` and `step` |
 
 At the end of a scan of the call graph, the heat of the functions can change. Then call `getHeat` again.
 
@@ -116,6 +123,44 @@ Each subscription to an event gives a disposable. Add it to the subscriptions of
 
 ```ts
 context.subscriptions.push(api.onDidChangeView((view) => console.log(view.file, view.function?.name, view.line)));
+```
+
+## Buttons
+
+Your extension can put buttons on its notes, its details and the steps of its guides:
+
+- A range of `highlight`, a detail of `addDetail`, and a step of `showReviewPlan` or `showDiffWalk` can have the field `actions`. It is a list of a maximum of 3 buttons.
+- Each button has an `id` with a maximum of 64 characters and a `title` with a maximum of 40 characters. The buttons of one item must have different ids.
+- The side view shows the buttons in the bar MODEL, in the tab Model, in the card of a detail and in the tab Guide.
+- A click on a button sends `onDidInvokeAction` to the API objects of your client only.
+
+An MCP client cannot add buttons, because it gets no event for a click. The tools of the MCP server refuse `actions`.
+
+The event has these fields:
+
+| Field | Function |
+| --- | --- |
+| `kind` | `note`, `detail` or `step` |
+| `action` | The `id` of the button |
+| `item` | The id of the note or of the detail, for example `n2` or `d1` |
+| `file` | The file of the item or of the step |
+| `line` | The first line of the item or of the step |
+| `step` | The number of the step, from 1 |
+
+The layers and the guide come back after a reload of the window, with their buttons. If the user clicks a button before your extension gets the API again, the status bar tells the user that your extension is not active.
+
+```ts
+const file = 'src/battery.cpp';
+await api.highlight({
+	file,
+	ranges: [{ lines: [102, 102], kind: 'warning', note: 'The solver can block here.', actions: [{ id: 'fix', title: 'Fix it' }] }],
+	append: true,
+});
+context.subscriptions.push(api.onDidInvokeAction(async (e) => {
+	if (e.kind === 'note' && e.action === 'fix' && e.item) {
+		await api.remove({ file: e.file ?? file, ids: [e.item] });
+	}
+}));
 ```
 
 ## Errors

@@ -43,7 +43,7 @@ suite('API for other extensions on the fixture', () => {
 		assert.throws(() => exports.getApi(2 as 1), /DataFlow has no API version 2/);
 		assert.strictEqual(api.engineState, 'ready');
 		assert.ok(api.compileDatabases.length > 0, JSON.stringify(api.compileDatabases));
-		assert.strictEqual(api.tools.length, 34);
+		assert.strictEqual(api.tools.length, 35);
 		assert.strictEqual(api.engineError, undefined);
 		const view = await api.getView();
 		assert.deepStrictEqual([view.file, view.engine], [file(), 'ready']);
@@ -162,5 +162,55 @@ suite('API for other extensions on the fixture', () => {
 		assert.deepStrictEqual(solve.callers.map((c) => [c.function, c.depth, c.calls, c.callLines, path.basename(c.file)]),
 			[[PROCESS, 1, 'electricity::power_ctrl::solve_power_plan', [lineOf('return solve_power_plan(charge);')], 'battery.cpp']]);
 		await assert.rejects(api.getCallers({ function: 'process', depth: 9 }), /"depth" must be a whole number from 1 to 6\./);
+	});
+
+	test('Each client has its own layer: the ids of its items, remove, and the clicks on its buttons', async function () {
+		this.timeout(60000);
+		const other = exports.getApi(1, { client: 'api-test-2' });
+		const layerOf = (client: string) => internals.store.state.modelLayers.find((l) => l.file === file() && l.client === client);
+		const line = lineOf('return requests;');
+		try {
+			// the notes, the comments and the details get ids. append continues the numbers
+			const notes = await api.highlight({ ranges: [{ lines: [line, line], kind: 'warning', note: 'Check the requests', actions: [{ id: 'fix', title: 'Fix it' }] }] });
+			assert.deepStrictEqual(notes.notes.map((n) => n.id), ['n1']);
+			const more = await api.highlight({ ranges: [{ lines: [line - 1, line - 1], kind: 'info', note: 'Before the return' }], append: true });
+			assert.deepStrictEqual([more.notes.map((n) => n.id), more.notesInFile], [['n2'], 2]);
+			assert.deepStrictEqual((await api.commentLines({ comments: [{ line, text: 'the result' }] })).ids, ['c1']);
+			const detail = await api.addDetail({ line, text: 'The requests of the plan.', actions: [{ id: 'open', title: 'Open' }] });
+			assert.strictEqual(detail.id, 'd1');
+			// the notes are in the sequence of their lines, so n2 on the line before comes first
+			assert.deepStrictEqual(layerOf('api-test')?.notes.map((n) => [n.id, n.actions]), [['n2', undefined], ['n1', [{ id: 'fix', title: 'Fix it' }]]]);
+
+			// the other client has its own layer with its own ids, and clear removes only that layer
+			assert.deepStrictEqual((await other.highlight({ ranges: [{ lines: [line, line], kind: 'info', note: 'Other' }] })).notes.map((n) => n.id), ['n1']);
+			assert.deepStrictEqual([layerOf('api-test')?.notes.length, layerOf('api-test-2')?.notes.length], [2, 1]);
+			assert.deepStrictEqual((await other.getView()).otherClients, [{ client: 'api-test', blocks: 0, notes: 2, comments: 1, details: 1 }]);
+			// the side view gets the layers of the two clients as one layer, and the ids get the names of the clients
+			await waitFor(() => internals.side.modelLayer?.clients?.length === 2, 10000, () => JSON.stringify(internals.side.modelLayer?.clients ?? null));
+			const side = internals.side.modelLayer;
+			assert.deepStrictEqual([side?.clients, side?.notes.map((n) => n.id)], [['api-test', 'api-test-2'], ['api-test:n2', 'api-test:n1', 'api-test-2:n1']]);
+			assert.deepStrictEqual(await other.clear({ file: file() }), { removed: 1 });
+			assert.deepStrictEqual([layerOf('api-test')?.notes.length, layerOf('api-test-2')], [2, undefined]);
+
+			// remove takes away the items of the ids, and gives the ids that the layer does not have
+			const removed = await api.remove({ ids: ['n1', 'c1', 'n9'] });
+			assert.deepStrictEqual([removed.removed, removed.unknown, removed.notesInFile, removed.commentsInFile, removed.detailsInFile],
+				[['n1', 'c1'], ['n9'], 1, 0, 1]);
+			await assert.rejects(api.remove({ ids: [] }), /Give "ids"/);
+
+			// a click on a button goes to the extension of the item with the file and the line
+			const clicks: Api.ActionEvent[] = [];
+			const subscription = api.onDidInvokeAction((e) => clicks.push(e));
+			try {
+				internals.side.receive({ type: 'clientAction', owner: 'api-test', kind: 'detail', action: 'open', item: 'd1', line });
+				internals.side.receive({ type: 'clientAction', owner: 'nobody', kind: 'note', action: 'fix', item: 'n1', line });
+			} finally {
+				subscription.dispose();
+			}
+			assert.deepStrictEqual(clicks.map((c) => ({ ...c, file: path.basename(c.file ?? '') })),
+				[{ kind: 'detail', action: 'open', item: 'd1', file: 'battery.cpp', line }]);
+		} finally {
+			await other.clear();
+		}
 	});
 });

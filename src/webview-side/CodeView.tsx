@@ -181,7 +181,10 @@ function Row(props: RowProps) {
 	return (
 		<div class={classes} data-line={line}>
 			<span class="ln">
-				{props.modelBars?.map((b) => <span class={`mbar lv-${Math.min(b.level, 4)}${b.isFirst ? ' first' : ''}${b.isLast ? ' last' : ''}`} />)}
+				{props.modelBars?.map((b) => (
+					<span class={`mbar lv-${Math.min(b.depth ?? b.level, 4)}${b.client ? ` cl-${Math.min(b.client, 4)}` : ''}${b.isFirst ? ' first' : ''}${
+						b.isLast ? ' last' : ''}`} style={{ left: `${1 + b.level * BAR_STEP}px` }} />
+				))}
 				{props.heatBand && <span class={`heat-bar b-${props.heatBand}`} aria-hidden="true" />}
 				{props.heatFn && (
 					<button type="button" class={`heat-hint b-${props.heatFn.band}`} title={`${heatTitle(props.heatFn)}. Show the reasons in the tab Heat.`}

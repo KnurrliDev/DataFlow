@@ -1,8 +1,8 @@
 import * as assert from 'assert';
 import type { StructureAccess, StructureModel, StructureStatement } from '../../engine/client';
 import {
-	blockData, mergeComments, ModelBlockInput, moveModelLayer, resolveComments, resolveNotes, restoreModelLayer, snapBlocks, storeModelLayer, structureSummary,
-	TextChange,
+	blockData, mergeComments, mergeModelLayers, ModelBlockInput, moveModelLayer, ownerOf, resolveActions, resolveComments, resolveNotes, restoreModelLayer,
+	snapBlocks, storeModelLayer, structureSummary, TextChange, withIds, withLayerIds,
 } from '../../lenses/blocks';
 import type { SideModel, SideModelBlock, SideModelExtra } from '../../side/protocol';
 
@@ -418,5 +418,70 @@ suite('Blocks of a model after an edit', () => {
 			blocks: ['1 10-13', '2 15-21 exit@19', '2a 16-17', '2b 18-21'],
 			notes: ['16-16 2a', '24-24'],
 		});
+	});
+});
+
+// The layers of the clients in one file: the ids of the items, the buttons of an extension, and one layer for the side view
+suite('Layers of more clients', () => {
+	const block = (id: string, first: number, last: number, level = 0, parent?: string): SideModelBlock => ({
+		id, fn: 'f', level, ...(parent ? { parent } : {}), first, last, title: `Block ${id}`, summary: '', ins: [], outs: [], extra: [],
+	});
+	const layer = (client: string | undefined, extra: Partial<SideModel> = {}): SideModel => ({
+		file: 'a.cpp', fn: 'f', ...(client ? { client } : {}), blocks: [], notes: [], comments: [], details: [], ...extra,
+	});
+
+	test('An item with no id gets the next number after the largest id, and the sequence of the items stays', () => {
+		assert.deepStrictEqual(withIds([{ text: 'a' }, { id: 'n4', text: 'b' }, { text: 'c' }], 'n').map((x) => x.id), ['n5', 'n4', 'n6']);
+		// append: the new items get numbers after the old items. An id with a different prefix does not count
+		assert.deepStrictEqual(withIds<{ id?: string; text: string }>([{ text: 'a' }], 'c', [{ id: 'c2' }, { id: 'x9' }]).map((x) => x.id), ['c3']);
+		// a layer of an older version gets ids on its notes and its comments
+		const old = layer(undefined, { notes: [{ first: 1, last: 2, kind: 'info', text: 'x' }], comments: [{ line: 3, text: 'y' }, { line: 4, text: 'z' }] });
+		const next = withLayerIds(old);
+		assert.deepStrictEqual([next.notes.map((n) => n.id), next.comments.map((c) => c.id)], [['n1'], ['c1', 'c2']]);
+		assert.strictEqual(withLayerIds(next), next);
+		assert.deepStrictEqual([ownerOf(old), ownerOf(layer('my-ext'))], ['model', 'my-ext']);
+	});
+
+	test('The buttons of an item: a maximum of three, each with an id and a title, and different ids', () => {
+		const problems: string[] = [];
+		assert.strictEqual(resolveActions(undefined, 'Note 1', problems), undefined);
+		assert.deepStrictEqual(resolveActions([{ id: ' fix ', title: ' Fix it ' }, { id: 'skip', title: 'x'.repeat(50) }], 'Note 1', problems),
+			[{ id: 'fix', title: 'Fix it' }, { id: 'skip', title: `${'x'.repeat(39)}…` }]);
+		assert.strictEqual(resolveActions([], 'Note 1', problems), undefined);
+		assert.deepStrictEqual(problems, []);
+		resolveActions([{ id: 'a', title: 'A' }, { id: 'a', title: 'B' }], 'Note 2', problems);
+		resolveActions([{ id: 'a' }], 'Note 3', problems);
+		resolveActions([{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }, { id: 'c', title: 'C' }, { id: 'd', title: 'D' }], 'Note 4', problems);
+		assert.deepStrictEqual(problems, [
+			'Note 2: the actions must have different ids.',
+			'Note 3: "actions" must be a list of a maximum of 3 objects with "id" and "title".',
+			'Note 4: "actions" must be a list of a maximum of 3 objects with "id" and "title".',
+		]);
+	});
+
+	test('The layers of two clients in one file are one layer: the items get their client, the ids get its name, and the bars stand side by side', () => {
+		assert.strictEqual(mergeModelLayers([]), null);
+		const a = layer(undefined, {
+			blocks: [block('1', 10, 20), block('1a', 12, 14, 1, '1')],
+			notes: [{ id: 'n1', first: 12, last: 12, kind: 'warning', text: 'a', block: '1a' }],
+			comments: [{ id: 'c1', line: 30, text: 'c' }],
+		});
+		// one layer: the ids stay, and a layer with no client has no name
+		const one = mergeModelLayers([a])!;
+		assert.deepStrictEqual([one.client, one.clients, one.fn, one.blocks.map((b) => `${b.id} ${b.client} ${b.column}`), one.notes[0].id],
+			[undefined, ['model'], 'f', ['1 model 0', '1a model 1'], 'n1']);
+		const b = layer('my-ext', {
+			fn: 'g',
+			blocks: [block('1', 11, 13)],
+			notes: [{ id: 'n1', first: 11, last: 11, kind: 'info', text: 'b', actions: [{ id: 'fix', title: 'Fix' }] }],
+			details: [{ id: 'd1', line: 5, col: 0, endLine: 5, endCol: 3, code: 'x()', title: 'X', text: 'y' }],
+		});
+		const both = mergeModelLayers([a, b])!;
+		assert.deepStrictEqual([both.client, both.clients, both.fn], ['my-ext', ['model', 'my-ext'], undefined]);
+		// the blocks in the sequence of the lines. The bars of the second client come after the two levels of the first client
+		assert.deepStrictEqual(both.blocks.map((x) => `${x.id} ${x.parent ?? '-'} ${x.column}`), ['model:1 - 0', 'my-ext:1 - 2', 'model:1a model:1 1']);
+		assert.deepStrictEqual(both.notes.map((n) => `${n.id} ${n.client} ${n.block ?? '-'} ${n.blockFn ?? '-'} ${n.actions?.length ?? 0}`),
+			['my-ext:n1 my-ext - - 1', 'model:n1 model model:1a f 0']);
+		assert.deepStrictEqual([both.comments[0].id, both.details[0].id, both.details[0].client], ['model:c1', 'my-ext:d1', 'my-ext']);
 	});
 });

@@ -1,0 +1,23 @@
+{
+	"name": "dataflow-ui-client",
+	"displayName": "DataFlow UI Client",
+	"description": "A client of the API of DataFlow for the UI tests. It is not a part of the VSIX.",
+	"publisher": "dataflow-test",
+	"version": "0.0.1",
+	"private": true,
+	"engines": {
+		"vscode": "^1.120.0"
+	},
+	"main": "./extension.js",
+	"activationEvents": [
+		"onCommand:dataflowUiClient.show"
+	],
+	"contributes": {
+		"commands": [
+			{
+				"command": "dataflowUiClient.show",
+				"title": "DataFlow UI Client: Show Items"
+			}
+		]
+	}
+}

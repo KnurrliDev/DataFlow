@@ -1,7 +1,8 @@
 import type * as Api from '../../api/dataflow-api';
 import * as path from 'path';
 import { changedPart } from '../side/model';
-import type { SideGuide, SideGuideKind, SideGuideStep, SideStepDiff, SideStepRow } from '../side/protocol';
+import { resolveActions } from '../lenses/blocks';
+import type { SideGuide, SideGuideKind, SideGuideStep, SideItemAction, SideStepDiff, SideStepRow } from '../side/protocol';
 import { bandText, changedFunctions, HeatChange, HeatFunction, heatFact, HeatModel, hottestChanges, MAX_HOT_CHANGES } from '../lenses/heat';
 import type { DiffLine } from './git';
 import {
@@ -254,7 +255,7 @@ export function stepDiff(group: readonly WalkHunk[]): SideStepDiff {
 }
 
 // A step with the hunks of one file, from the first changed line of its hunks to the last changed line
-function walkStep(group: readonly WalkHunk[], fields: { title: string; text: string; checks?: string[]; kind?: SideGuideKind }): SideGuideStep {
+function walkStep(group: readonly WalkHunk[], fields: { title: string; text: string; checks?: string[]; kind?: SideGuideKind; actions?: SideItemAction[] }): SideGuideStep {
 	const file = group[0].file;
 	return {
 		title: fields.title,
@@ -266,6 +267,7 @@ function walkStep(group: readonly WalkHunk[], fields: { title: string; text: str
 		checks: fields.checks ?? [],
 		...(fields.kind ? { kind: fields.kind } : {}),
 		status: 'todo',
+		...(fields.actions ? { actions: fields.actions } : {}),
 		diff: stepDiff(group),
 	};
 }
@@ -338,6 +340,7 @@ export interface WalkStepInput {
 	hunks?: unknown;
 	checks?: unknown;
 	kind?: unknown;
+	actions?: unknown; // the buttons of an extension: [{ id, title }]
 }
 
 export interface WalkPlanInput {
@@ -367,7 +370,7 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 	const problems: string[] = [];
 	const indexOf = new Map(hunks.map((h, i) => [h.id, i]));
 	const used = new Set<string>();
-	const planned: { group: WalkHunk[]; raw: WalkStepInput }[] = [];
+	const planned: { group: WalkHunk[]; raw: WalkStepInput; actions?: SideItemAction[] }[] = [];
 	input.steps.forEach((raw: WalkStepInput, i) => {
 		const n = i + 1;
 		if (!raw || typeof raw !== 'object') {
@@ -404,8 +407,9 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 		if (raw.checks !== undefined && (!Array.isArray(raw.checks) || !raw.checks.every((c) => typeof c === 'string'))) {
 			problems.push(`Step ${n}: "checks" must be a list of texts.`);
 		}
+		const actions = resolveActions(raw.actions, `Step ${n}`, problems);
 		if (problems.length === before && group) {
-			planned.push({ group, raw });
+			planned.push({ group, raw, actions });
 			group.forEach((h) => used.add(h.id));
 		}
 	});
@@ -424,11 +428,12 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 		};
 	}
 	const steps = [
-		...planned.map(({ group, raw }) => walkStep(group, {
+		...planned.map(({ group, raw, actions }) => walkStep(group, {
 			title: clip((raw.title as string).trim(), MAX_STEP_TITLE),
 			text: clip((raw.text as string).trim(), MAX_STEP_TEXT),
 			checks: ((raw.checks as string[] | undefined) ?? []).filter(isText).slice(0, MAX_STEP_CHECKS).map((c) => clip(c.trim(), MAX_CHECK)),
 			kind: raw.kind as SideGuideKind | undefined,
+			actions,
 		})),
 		...restGroups.groups.map((g) => walkStep(g, {
 			title: groupTitle(g), text: `${groupText(g)} The plan of the model has no step for this change, so DataFlow added this step.`,

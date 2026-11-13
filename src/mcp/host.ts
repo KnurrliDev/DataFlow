@@ -4,8 +4,8 @@ import * as vscode from 'vscode';
 import { isInside } from '../cdb/project';
 import type { CallersModel, EngineClient, EngineFunction, FileResult, LogicModel, LogicOptions, StructureModel } from '../engine/client';
 import {
-	addDetail, functionLines, MAX_DETAILS, mergeComments, ModelBlockInput, ModelCommentInput, ModelDetailInput, ModelNoteInput, moveModelLayer, resolveComments,
-	resolveDetail, resolveNotes, snapBlocks, structureSummary, TextChange,
+	addDetail, functionLines, MAX_DETAILS, mergeComments, ModelBlockInput, ModelCommentInput, ModelDetailInput, ModelNoteInput, moveModelLayer, ownerOf,
+	resolveComments, resolveDetail, resolveNotes, snapBlocks, structureSummary, TextChange, withIds,
 } from '../lenses/blocks';
 import { callFunctionAt, ExternalCaller } from '../lenses/calls';
 import { findingText, LineText, toUtf16Column, toUtf8Column, variableAt } from '../lenses/flow';
@@ -90,6 +90,9 @@ export interface HostDeps {
 	scanCallGraph(): void;
 	// stops the scan of the call graph, as the button Stop does. false if no scan ran
 	stopCallGraph(): boolean;
+	// the host of an extension through the API: its notes, details and steps can have buttons. An MCP client gets no
+	// event for a click
+	isExtension?: boolean;
 }
 
 const CPP_LANGUAGES = new Set(['c', 'cpp', 'cuda-cpp']);
@@ -157,6 +160,10 @@ export function callGraphFacts(graph: CallGraphView | undefined): Api.CallGraphF
 		...(graph.state === 'scanning' ? { note: 'The scan runs. get_heat gives the callers and the frame paths after its end.' } : {}),
 	};
 }
+
+// True if a step of a plan has buttons
+const hasStepActions = (steps: unknown): boolean =>
+	Array.isArray(steps) && steps.some((s) => !!s && typeof s === 'object' && (s as { actions?: unknown }).actions !== undefined);
 
 // A position in the function for the engine: the start of its body
 function positionOf(fn: EngineFunction): { line: number; col: number } {
@@ -226,6 +233,9 @@ export class DataFlowMcpHost implements McpHost {
 				})),
 				notes: layer.notes.length, comments: layer.comments.length, details: layer.details.map((d) => `${d.id} ${d.title} (${d.line}-${d.endLine})`),
 			} : null,
+			...(file ? { otherClients: this.otherLayers(file).map((l) => ({
+				client: ownerOf(l), blocks: l.blocks.length, notes: l.notes.length, comments: l.comments.length, details: l.details.length,
+			})) } : {}),
 			review: state.guide ? guideFacts(state.guide) : null,
 			engine: state.engine,
 			project: { folders: this.roots(), compileDatabases: state.databases.map((d) => d.makefile ?? d.path) },
@@ -620,15 +630,18 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	// Notes on ranges or on blocks. append keeps the old notes of the file
+	// Notes on ranges or on blocks. append keeps the old notes of the file. Each note gets an id after the ids of the old
+	// notes, so a client can remove it
 	async highlight(file: string | undefined, ranges: ModelNoteInput[], append = false): Promise<Api.HighlightResult> {
+		this.checkActions(Array.isArray(ranges) && ranges.some((r) => !!r && typeof r === 'object' && r.actions !== undefined));
 		const doc = await this.document(file);
 		const f = doc.uri.fsPath;
 		const old = this.layerOf(f);
-		const { notes, problems } = resolveNotes(ranges, old?.blocks ?? [], [1, doc.lineCount]);
-		if (problems.length > 0) {
-			throw new Error(`The view did not change.\n${problems.join('\n')}`);
+		const resolved = resolveNotes(ranges, old?.blocks ?? [], [1, doc.lineCount]);
+		if (resolved.problems.length > 0) {
+			throw new Error(`The view did not change.\n${resolved.problems.join('\n')}`);
 		}
+		const notes = withIds(resolved.notes, 'n', append ? old?.notes ?? [] : []);
 		const all = append ? [...(old?.notes ?? []), ...notes].sort((a, b) => a.first - b.first || a.last - b.last) : notes;
 		this.setLayer({ file: f, fn: old?.fn, client: this.deps.client(), blocks: old?.blocks ?? [], notes: all, comments: old?.comments ?? [], details: old?.details ?? [] });
 		this.showLayers();
@@ -637,32 +650,55 @@ export class DataFlowMcpHost implements McpHost {
 			file: f,
 			shown: notes.length,
 			notesInFile: all.length,
-			notes: notes.map((n) => ({ lines: [n.first, n.last], kind: n.kind, ...(n.block ? { block: n.block, function: n.blockFn } : {}) })),
+			notes: notes.map((n) => ({ id: n.id!, lines: [n.first, n.last], kind: n.kind, ...(n.block ? { block: n.block, function: n.blockFn } : {}) })),
 		};
 	}
 
 	// Comments on single lines. append keeps the old comments of the file: a new comment on a line replaces only the old
-	// comment of that line
+	// comment of that line. Each comment gets an id after the ids of the old comments
 	async comment(file: string | undefined, input: ModelCommentInput[], append: boolean): Promise<Api.CommentLinesResult> {
 		const doc = await this.document(file);
 		const f = doc.uri.fsPath;
 		const old = this.layerOf(f);
-		const { comments, problems } = resolveComments(input, [1, doc.lineCount]);
-		if (problems.length > 0) {
-			throw new Error(`The view did not change.\n${problems.join('\n')}`);
+		const resolved = resolveComments(input, [1, doc.lineCount]);
+		if (resolved.problems.length > 0) {
+			throw new Error(`The view did not change.\n${resolved.problems.join('\n')}`);
 		}
+		const comments = withIds(resolved.comments, 'c', append ? old?.comments ?? [] : []);
 		const all = append ? mergeComments(old?.comments ?? [], comments) : comments;
 		this.setLayer({
 			file: f, fn: old?.fn, client: this.deps.client(), blocks: old?.blocks ?? [], notes: old?.notes ?? [], comments: all, details: old?.details ?? [],
 		});
 		this.showLayers();
 		await this.reveal(doc, new vscode.Position(Math.max(0, comments[0].line - 1), 0));
-		return { file: f, shown: comments.length, commentsInFile: all.length, lines: comments.map((c) => c.line) };
+		return { file: f, shown: comments.length, commentsInFile: all.length, lines: comments.map((c) => c.line), ids: comments.map((c) => c.id!) };
+	}
+
+	// Removes the notes, the comments and the details of the client in a file by their ids
+	async remove(file: string | undefined, ids: unknown): Promise<Api.RemoveResult> {
+		if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => typeof id === 'string' && id.trim().length > 0)) {
+			throw new Error('Give "ids": the ids of notes, comments and details, for example ["n1", "c2", "d1"].');
+		}
+		const doc = await this.document(file);
+		const f = doc.uri.fsPath;
+		const old = this.layerOf(f);
+		const wanted = new Set(ids.map((id: string) => id.trim()));
+		const has = (x: { id?: string }) => !!x.id && wanted.has(x.id);
+		const removed = old ? [...old.notes, ...old.comments, ...old.details].filter(has).map((x) => x.id!) : [];
+		if (old && removed.length > 0) {
+			this.setLayer({ ...old, notes: old.notes.filter((n) => !has(n)), comments: old.comments.filter((c) => !has(c)), details: old.details.filter((d) => !has(d)) });
+		}
+		const layer = this.layerOf(f);
+		return {
+			file: f, removed, unknown: [...wanted].filter((id) => !removed.includes(id)),
+			notesInFile: layer?.notes.length ?? 0, commentsInFile: layer?.comments.length ?? 0, detailsInFile: layer?.details.length ?? 0,
+		};
 	}
 
 	// A detail on code: an expression on a line, a line, or the selection of the user. The side view shows a symbol at the
 	// end of the line, and the symbol shows the text in a card. A detail on the same code replaces the old detail
 	async detail(file: string | undefined, input: ModelDetailInput): Promise<Api.AddDetailResult> {
+		this.checkActions(input.actions !== undefined);
 		const doc = await this.document(file);
 		const f = doc.uri.fsPath;
 		const old = this.layerOf(f);
@@ -684,17 +720,26 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
+	// Removes the layers of the client: in all files, or in one file. The layers of the other clients stay
 	async clear(file?: string): Promise<Api.ClearResult> {
 		const { store } = this.deps;
+		const owner = this.owner();
 		if (!file) {
-			const removed = store.state.modelLayers.length;
-			store.update({ modelLayers: [] });
+			const rest = store.state.modelLayers.filter((l) => ownerOf(l) !== owner);
+			const removed = store.state.modelLayers.length - rest.length;
+			if (removed > 0) {
+				store.update({ modelLayers: rest });
+			}
 			return { removed };
 		}
 		const doc = await this.document(file);
-		const had = !!this.layerOf(doc.uri.fsPath);
-		this.removeLayer(doc.uri.fsPath);
-		return { removed: had ? 1 : 0 };
+		const key = fileKey(doc.uri.fsPath);
+		const rest = store.state.modelLayers.filter((l) => fileKey(l.file) !== key || ownerOf(l) !== owner);
+		const removed = store.state.modelLayers.length - rest.length;
+		if (removed > 0) {
+			store.update({ modelLayers: rest });
+		}
+		return { removed };
 	}
 
 	//-------------------
@@ -724,6 +769,7 @@ export class DataFlowMcpHost implements McpHost {
 
 	// Shows the plan of a guided review in the side view, at its first step
 	async showReviewPlan(plan: GuidePlanInput): Promise<Api.ReviewPlanResult> {
+		this.checkActions(hasStepActions(plan.steps));
 		const { store, side } = this.deps;
 		// the files of the steps: a path relative to the repository or to a folder of the project, or an absolute path
 		const files = new Map<string, { file: string; lineCount: number; problem?: string }>();
@@ -788,6 +834,7 @@ export class DataFlowMcpHost implements McpHost {
 
 	// Shows the plan of a diff walk in the side view, at its first step
 	async showDiffWalk(plan: WalkPlanInput): Promise<Api.DiffWalkResult> {
+		this.checkActions(hasStepActions(plan.steps));
 		const { store, side } = this.deps;
 		const walk = this.lastWalk;
 		if (!walk) {
@@ -997,25 +1044,29 @@ export class DataFlowMcpHost implements McpHost {
 		return undefined;
 	}
 
-	// Moves the lines of the blocks and the notes of the model in a file with the changes of an edit. Returns false if
-	// the layer went away, because a change replaced all its lines
+	// Moves the lines of the blocks and the notes of the layers of all clients in a file with the changes of an edit.
+	// Returns false if a layer went away, because a change replaced all its lines
 	moveLayer(file: string, changes: readonly TextChange[]): boolean {
-		const layer = this.layerOf(file);
-		if (!layer) {
-			return true;
+		const { store } = this.deps;
+		const key = fileKey(file);
+		let isAllKept = true;
+		let isChanged = false;
+		const layers = store.state.modelLayers.flatMap((l) => {
+			if (fileKey(l.file) !== key) {
+				return [l];
+			}
+			const moved = moveModelLayer(l, changes);
+			isChanged = isChanged || moved !== l;
+			isAllKept = isAllKept && !!moved;
+			return moved ? [moved] : [];
+		});
+		if (isChanged) {
+			store.update({ modelLayers: layers });
 		}
-		const moved = moveModelLayer(layer, changes);
-		if (!moved) {
-			this.removeLayer(file);
-			return false;
-		}
-		if (moved !== layer) {
-			this.setLayer(moved);
-		}
-		return true;
+		return isAllKept;
 	}
 
-	// Removes the layers of the model in a file
+	// Removes the layers of all clients in a file
 	removeLayer(file: string): void {
 		const { store } = this.deps;
 		const rest = store.state.modelLayers.filter((l) => fileKey(l.file) !== fileKey(file));
@@ -1045,8 +1096,28 @@ export class DataFlowMcpHost implements McpHost {
 		return { line: range.start.line + 1, col: range.start.character, endLine: range.end.line + 1, endCol: range.end.character };
 	}
 
+	// The owner of the layers of the host: its client, else the model
+	private owner(): string {
+		return ownerOf({ client: this.deps.client() });
+	}
+
+	// The layer of the client of the host in a file
 	private layerOf(file: string): SideModel | undefined {
-		return this.deps.store.state.modelLayers.find((l) => fileKey(l.file) === fileKey(file));
+		const owner = this.owner();
+		return this.deps.store.state.modelLayers.find((l) => fileKey(l.file) === fileKey(file) && ownerOf(l) === owner);
+	}
+
+	// The layers of the other clients in a file
+	private otherLayers(file: string): SideModel[] {
+		const owner = this.owner();
+		return this.deps.store.state.modelLayers.filter((l) => fileKey(l.file) === fileKey(file) && ownerOf(l) !== owner);
+	}
+
+	// Buttons need the API for extensions: an MCP client gets no event for a click
+	private checkActions(hasActions: boolean): void {
+		if (hasActions && !this.deps.isExtension) {
+			throw new Error('"actions" need the API for extensions. An MCP client gets no event for a click. The view did not change.');
+		}
 	}
 
 	// A view tool shows the layers of the model again, if the user hid them with the switch Model, because the user asked
@@ -1057,11 +1128,20 @@ export class DataFlowMcpHost implements McpHost {
 		}
 	}
 
+	// Replaces the layer of the client of the host in the file of the layer. An empty layer goes away. The layers of the
+	// other clients stay
 	private setLayer(layer: SideModel): void {
 		const { store } = this.deps;
-		const others = store.state.modelLayers.filter((l) => fileKey(l.file) !== fileKey(layer.file));
+		const owner = this.owner();
+		const layers = store.state.modelLayers;
+		const at = layers.findIndex((l) => fileKey(l.file) === fileKey(layer.file) && ownerOf(l) === owner);
 		const isEmpty = layer.blocks.length === 0 && layer.notes.length === 0 && layer.comments.length === 0 && layer.details.length === 0;
-		store.update({ modelLayers: isEmpty ? others : [...others, layer] });
+		const next = { ...layer, client: this.deps.client() };
+		// the layer keeps its place, so the clients of a file keep their sequence in the side view
+		const out = isEmpty ? layers.filter((_, i) => i !== at) : at < 0 ? [...layers, next] : layers.map((l, i) => (i === at ? next : l));
+		if (out.length !== layers.length || !isEmpty) {
+			store.update({ modelLayers: out });
+		}
 	}
 
 	private ready(): EngineClient {

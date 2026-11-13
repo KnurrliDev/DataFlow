@@ -3,7 +3,7 @@ import type { StructureAccess, StructureBranch, StructureModel, StructureStateme
 import { CodePlace, findCode, textBetween } from '../side/details';
 import { functionTitle, withBrackets } from '../side/names';
 import type {
-	SideCommentColor, SideModel, SideModelBlock, SideModelComment, SideModelDetail, SideModelExtra, SideModelNote, SideNoteKind,
+	SideCommentColor, SideItemAction, SideModel, SideModelBlock, SideModelComment, SideModelDetail, SideModelExtra, SideModelNote, SideNoteKind,
 } from '../side/protocol';
 
 // The logical blocks of a language model. A model groups the statements of a function and gives each group a name and a
@@ -24,6 +24,7 @@ export interface ModelNoteInput {
 	function?: string; // the function of the block, if more functions have a block with the id
 	kind?: string;
 	note: string;
+	actions?: unknown; // the buttons of an extension: [{ id, title }]
 }
 
 export interface ModelCommentInput {
@@ -37,6 +38,7 @@ export interface ModelDetailInput {
 	expression?: string; // the code. With no expression, the line
 	title?: string;
 	text: string;
+	actions?: unknown; // the buttons of an extension: [{ id, title }]
 }
 
 export interface BlockData {
@@ -64,6 +66,86 @@ export const COMMENT_COLORS: readonly SideCommentColor[] = ['blue', 'green', 'pu
 export const MAX_DETAILS = 300;
 export const MAX_DETAIL_LINES = 40;
 export const MAX_DETAIL_TEXT = 4000;
+// The buttons of an item of an extension, and the length of their ids and titles
+export const MAX_ACTIONS = 3;
+const MAX_ACTION_ID = 64;
+const MAX_ACTION_TITLE = 40;
+
+// The buttons of an item: a list of a maximum of MAX_ACTIONS objects with an id and a title. The ids of one item are
+// different. A problem goes to problems with the name of the item. Undefined for no buttons
+export function resolveActions(input: unknown, name: string, problems: string[]): SideItemAction[] | undefined {
+	if (input === undefined || input === null) {
+		return undefined;
+	}
+	const isAction = (a: unknown): a is { id: string; title: string } => !!a && typeof a === 'object'
+		&& typeof (a as { id?: unknown }).id === 'string' && !!(a as { id: string }).id.trim()
+		&& typeof (a as { title?: unknown }).title === 'string' && !!(a as { title: string }).title.trim();
+	if (!Array.isArray(input) || input.length > MAX_ACTIONS || !input.every(isAction)) {
+		problems.push(`${name}: "actions" must be a list of a maximum of ${MAX_ACTIONS} objects with "id" and "title".`);
+		return undefined;
+	}
+	const out = input.map((a) => ({ id: clip(a.id.trim(), MAX_ACTION_ID), title: clip(a.title.trim(), MAX_ACTION_TITLE) }));
+	if (new Set(out.map((a) => a.id)).size !== out.length) {
+		problems.push(`${name}: the actions must have different ids.`);
+		return undefined;
+	}
+	return out.length > 0 ? out : undefined;
+}
+
+// The items with ids: an item with no id gets the next number after the largest id with the prefix, for example n3
+// after n2. The order stays
+export function withIds<T extends { id?: string }>(items: readonly T[], prefix: string, after: readonly { id?: string }[] = []): T[] {
+	const numberOf = (id?: string) => (id?.startsWith(prefix) ? Number(id.slice(prefix.length)) || 0 : 0);
+	let last = Math.max(0, ...after.map((x) => numberOf(x.id)), ...items.map((x) => numberOf(x.id)));
+	return items.map((x) => (x.id ? x : { ...x, id: `${prefix}${++last}` }));
+}
+
+// A layer with ids on all its notes and comments, for example a layer of an older version
+export function withLayerIds(layer: SideModel): SideModel {
+	const notes = layer.notes.some((n) => !n.id) ? withIds(layer.notes, 'n') : layer.notes;
+	const comments = layer.comments.some((c) => !c.id) ? withIds(layer.comments, 'c') : layer.comments;
+	return notes === layer.notes && comments === layer.comments ? layer : { ...layer, notes, comments };
+}
+
+// The owner of a layer: its client, else the model
+export const ownerOf = (layer: { client?: string }): string => layer.client ?? 'model';
+
+// The layers of the clients in one file as one layer for the side view, in the sequence of the layers. Each item gets
+// its client. With two clients or more, the ids get the name of their client, for example claude-code:2a. The bars of
+// the blocks of each client go into the columns after the columns of the clients before it, so they stand side by side
+export function mergeModelLayers(layers: readonly SideModel[]): SideModel | null {
+	if (layers.length === 0) {
+		return null;
+	}
+	const clients = layers.map(ownerOf);
+	// the names of the clients for the user. A layer with no client has no name
+	const names = layers.flatMap((l) => (l.client ? [l.client] : []));
+	const isMany = layers.length > 1;
+	const out: SideModel = {
+		file: layers[0].file, ...(names.length > 0 ? { client: names.join(', ') } : {}), clients, blocks: [], notes: [], comments: [], details: [],
+		...(layers.length === 1 && layers[0].fn ? { fn: layers[0].fn } : {}),
+	};
+	let levels = 0;
+	layers.forEach((layer, i) => {
+		const client = clients[i];
+		const id = (x: string) => (isMany ? `${client}:${x}` : x);
+		out.blocks.push(...layer.blocks.map((b) => ({
+			...b, id: id(b.id), column: b.level + levels, client, ...(b.parent ? { parent: id(b.parent) } : {}),
+		})));
+		out.notes.push(...layer.notes.map((n) => ({
+			...n, client, ...(n.id ? { id: id(n.id) } : {}),
+			...(n.block ? { block: id(n.block), blockFn: n.blockFn ?? layer.fn } : {}),
+		})));
+		out.comments.push(...layer.comments.map((c) => ({ ...c, client, ...(c.id ? { id: id(c.id) } : {}) })));
+		out.details.push(...layer.details.map((d) => ({ ...d, client, id: id(d.id) })));
+		levels += layer.blocks.reduce((n, b) => Math.max(n, b.level + 1), 0);
+	});
+	out.blocks.sort((a, b) => a.first - b.first || a.level - b.level);
+	out.notes.sort((a, b) => a.first - b.first || a.last - b.last);
+	out.comments.sort((a, b) => a.line - b.line);
+	out.details.sort((a, b) => a.line - b.line || a.col - b.col);
+	return out;
+}
 
 // A unit of the statements: a statement, or a branch of an if chain or of a switch
 interface Unit {
@@ -333,12 +415,18 @@ export function resolveNotes(input: ModelNoteInput[], blocks: SideModelBlock[], 
 			return;
 		}
 		const kind = NOTE_KINDS[String(n.kind ?? 'info').toLowerCase()] ?? 'info';
+		const before = problems.length;
+		const actions = resolveActions(n.actions, name, problems);
+		if (problems.length > before) {
+			return;
+		}
 		notes.push({
 			first: Math.max(lines[0], bounds[0]),
 			last: Math.min(lines[1], bounds[1]),
 			kind,
 			text: clip(n.note.trim(), MAX_NOTE),
 			...(block ? { block: block.id, blockFn: block.fn } : {}),
+			...(actions ? { actions } : {}),
 		});
 	});
 	return { notes, problems };
@@ -472,7 +560,12 @@ export function resolveDetail(input: ModelDetailInput, textOf: (line: number) =>
 		return { problem: 'The code of the detail is empty.' };
 	}
 	const title = typeof input.title === 'string' && input.title.trim() ? input.title.trim() : code.replace(/\s+/g, ' ').trim();
-	return { detail: { ...place, code, title: clip(title, MAX_TITLE), text: clip(input.text.trim(), MAX_DETAIL_TEXT) } };
+	const problems: string[] = [];
+	const actions = resolveActions(input.actions, 'The detail', problems);
+	if (problems.length > 0) {
+		return { problem: problems[0] };
+	}
+	return { detail: { ...place, code, title: clip(title, MAX_TITLE), text: clip(input.text.trim(), MAX_DETAIL_TEXT), ...(actions ? { actions } : {}) } };
 }
 
 // The details of a layer with one more detail. A detail on the same code replaces the old detail. A new detail gets

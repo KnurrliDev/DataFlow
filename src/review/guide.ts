@@ -1,6 +1,6 @@
 import type * as Api from '../../api/dataflow-api';
 import * as path from 'path';
-import type { TextChange } from '../lenses/blocks';
+import { resolveActions, type TextChange } from '../lenses/blocks';
 import { bandText, changedFunctions, HeatChange, heatFact, HeatModel, hottestChanges, MAX_HOT_CHANGES } from '../lenses/heat';
 import type { SideGuide, SideGuideKind, SideGuideStatus, SideGuideStep, SideStepDiff } from '../side/protocol';
 import type { DiffLine } from './git';
@@ -120,6 +120,7 @@ export interface GuideStepInput {
 	text?: unknown;
 	checks?: unknown;
 	kind?: unknown;
+	actions?: unknown; // the buttons of an extension: [{ id, title }]
 }
 
 export interface GuidePlanInput {
@@ -181,6 +182,7 @@ export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup,
 		if (raw.checks !== undefined && (!Array.isArray(raw.checks) || !raw.checks.every((c) => typeof c === 'string'))) {
 			problems.push(`Step ${n}: "checks" must be a list of texts.`);
 		}
+		const actions = resolveActions(raw.actions, `Step ${n}`, problems);
 		if (problems.length > 0 || !found || found.problem || !isPair) {
 			return;
 		}
@@ -195,6 +197,7 @@ export function resolveGuidePlan(input: GuidePlanInput, lookup: GuideFileLookup,
 			checks,
 			...(raw.kind ? { kind: raw.kind as SideGuideKind } : {}),
 			status: 'todo',
+			...(actions ? { actions } : {}),
 		});
 	});
 	if (problems.length > 0) {

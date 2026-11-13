@@ -45,10 +45,28 @@ export class ApiEvents implements vscode.Disposable {
 	private readonly view = new vscode.EventEmitter<Api.ViewEvent>();
 	private readonly guide = new vscode.EventEmitter<Api.GuideFacts | null>();
 	private readonly callGraph = new vscode.EventEmitter<Api.CallGraphFacts>();
+	private readonly action = new vscode.EventEmitter<{ owner: string; event: Api.ActionEvent }>();
+	private readonly clients = new Set<string>(); // the clients with an API object
 	readonly onDidChangeEngineState = this.engine.event;
 	readonly onDidChangeView = this.view.event;
 	readonly onDidChangeGuide = this.guide.event;
 	readonly onDidChangeCallGraph = this.callGraph.event;
+
+	// The clicks on the buttons of one client
+	actionsOf(client: string): vscode.Event<Api.ActionEvent> {
+		this.clients.add(client);
+		return (listener, thisArgs?, disposables?) =>
+			this.action.event((a) => (a.owner === client ? listener.call(thisArgs, a.event) : undefined), undefined, disposables);
+	}
+
+	// Sends a click on a button to the API objects of its owner. false if the owner has no API object
+	invokeAction(owner: string, event: Api.ActionEvent): boolean {
+		if (!this.clients.has(owner)) {
+			return false;
+		}
+		this.action.fire({ owner, event });
+		return true;
+	}
 
 	private lastEngine: string;
 	// the function at the cursor comes with each update of the cursor, so a new object starts the check of the view
@@ -72,7 +90,7 @@ export class ApiEvents implements vscode.Disposable {
 
 	dispose(): void {
 		this.subscription.dispose();
-		[this.engine, this.view, this.guide, this.callGraph].forEach((e) => e.dispose());
+		[this.engine, this.view, this.guide, this.callGraph, this.action].forEach((e) => e.dispose());
 	}
 
 	private onState(state: DataFlowState): void {
@@ -123,7 +141,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 	}
 	const name = options?.client;
 	const client = typeof name === 'string' && name.trim().length > 0 ? name.trim() : DEFAULT_CLIENT;
-	const tools = createTools(new DataFlowMcpHost({ ...deps.hostDeps, client: () => client }));
+	const tools = createTools(new DataFlowMcpHost({ ...deps.hostDeps, client: () => client, isExtension: true }));
 	const byName = new Map(tools.map((t) => [t.name, t]));
 	deps.log(`The extension "${client}" uses the API of DataFlow.`);
 
@@ -157,6 +175,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		onDidChangeView: events.onDidChangeView,
 		onDidChangeGuide: events.onDidChangeGuide,
 		onDidChangeCallGraph: events.onDidChangeCallGraph,
+		onDidInvokeAction: events.actionsOf(client),
 		callTool: (tool, args) => call<unknown>(tool, args),
 
 		getView: () => call('get_view'),
@@ -184,6 +203,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		commentLines: (args) => call('comment_lines', args),
 		addDetail: (args) => call('add_detail', args),
 		clear: (args) => call('clear', args),
+		remove: (args) => call('remove', args),
 		setLens: (args) => call('set_lens', args),
 		clearFlow: () => call('clear_flow'),
 		startRipple: () => call('start_ripple'),

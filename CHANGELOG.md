@@ -13,6 +13,10 @@
 - Heat: a frame path of more than 8 calls gives a reason with no points, and a notice tells it. Before, such a function had no frame path.
 - Heat: the tab Heat and `get_heat` tell the test functions that reach a function. They give no points. The new setting `dataflow.heat.testFolders` gives the folders of the tests.
 - The new read tool `get_callers` gives the callers of a function in all files of the project up to a depth, with the lines of their calls, and the frame paths of the function. The API gets `getCallers`, and the engine has the new request `dataflow/callers`.
+- Each client has its own layers in each file. A client is an MCP client, or an extension with the API. The view tools of a client change only its layers, and `clear` removes only its layers. Before, a client replaced the notes and the comments of all clients in the file.
+- The side view shows the layers of all clients. The bars of the blocks of each client stand side by side in the color of the client. The tab Model shows one group for each client, and the card of a detail names its client. `get_view` gives the items of the other clients in `otherClients`.
+- Each note and each comment gets an id, as each detail has one: `n1`, `c1` and so on. `highlight`, `comment_lines` and `add_detail` give the ids. The new view tool `remove` removes notes, comments and details by their ids, and the API gets `remove`. The layers of 0.5.0 get their ids when they come back.
+- API: an extension can put buttons on its notes, its details and the steps of its guides with `actions`. A click sends `onDidInvokeAction` only to that extension. The MCP server refuses `actions`, because an MCP client gets no event for a click.
 
 ## 0.5.0
 

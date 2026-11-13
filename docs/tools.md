@@ -117,7 +117,15 @@ A badge **MODEL** marks each title, summary, note and detail of the model, and a
 
 To hide the layers of the model in the code, click **Model** in the toolbar of the side view. To show them again, click it again. The command **DataFlow: Show or Hide Model Layers** does the same. The layers stay, and the tab Model still lists them. A new call of a view tool shows the layers again.
 
-To remove the blocks, the notes, the comments and the details, click **Remove model layers** in the tab Model, or run **DataFlow: Remove Model Layers**.
+To remove the blocks, the notes, the comments and the details of all clients in the file, click **Remove model layers** in the tab Model, or run **DataFlow: Remove Model Layers**.
+
+Each client has its own layers. A client is an MCP client, for example Claude Code, or an extension that uses the [API for extensions](api.md). The view tools of a client change only the layers of that client. If two clients or more have layers in a file:
+
+- The bars of the blocks of each client stand side by side. The bars of the first client have the color of the model. The bars of the next clients have the chart colors of your color theme: blue, green, orange and yellow.
+- In the code, the ids of the blocks start with the name of their client, for example `claude-code:2a`.
+- The tab Model shows one group for each client. The card of a detail shows the name of its client.
+
+An extension can also put buttons on its notes, its details and the steps of its guide. The buttons show in the bar MODEL, in the tab Model, in the card of a detail and in the tab Guide. A click on a button goes to the extension. If the extension is not active, the status bar tells you.
 
 During an edit, the layers move with their code:
 
@@ -247,7 +255,8 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`highlight`](#highlight) | view | Colors ranges of lines or blocks, with a note for each range |
 | [`comment_lines`](#comment_lines) | view | Adds a short comment to single lines, in the color of the comments or in a color of the model |
 | [`add_detail`](#add_detail) | view | Adds a detail to an expression, a line or the selection of the user: an explanation or examples in a card on the code |
-| [`clear`](#clear) | view | Removes the blocks, the notes, the comments and the details |
+| [`clear`](#clear) | view | Removes the blocks, the notes, the comments and the details of the client. The layers of other clients stay |
+| [`remove`](#remove) | view | Removes notes, comments and details of the client by their ids |
 | [`set_lens`](#set_lens) | view | Turns a lens on or off, as its switch does |
 | [`clear_flow`](#clear_flow) | view | Removes the trace of Flow Lens |
 | [`start_ripple`](#start_ripple) | view | Runs a review of Change Ripple, and gives its data |
@@ -270,6 +279,8 @@ Lines start at 1. Many tools use these parameters:
 ### get_view
 
 Gives what the user looks at in VS Code: the active C++ file, the function and the line at the cursor, and the selection. The selection can also be a selection in the side view. The result also gives the lenses of the side view and the layers of the model. The model calls this tool first when you write "this function", "here" or "the selection".
+
+`model` gives the layers of the client in the file. `otherClients` gives the number of blocks, notes, comments and details of each other client in the file.
 
 Parameters: none.
 
@@ -528,7 +539,7 @@ Colors lines or blocks in the side view, and shows a note at the first line of e
 | --- | --- | --- |
 | `file` | text | See the common parameters. |
 | `ranges` | list | Necessary. The ranges with their notes, with a minimum of one range. |
-| `append` | true or false | `true` keeps the old notes of the file. The default is `false`: a new call replaces the notes of the file. |
+| `append` | true or false | `true` keeps the old notes of the client in the file. The default is `false`: a new call replaces the notes of the client in the file. |
 
 Each range has these fields:
 
@@ -540,6 +551,10 @@ Each range has these fields:
 | `kind` | text | Necessary. The color: `problem` (red), `warning` (orange) or `info` (pink). |
 | `note` | text | Necessary. A short note. DataFlow cuts a note after 300 characters. |
 
+Each note gets an id: `n1`, `n2` and so on. The result gives the id of each new note. With `append`, the new notes get the numbers after the old notes. `remove` removes notes by their ids.
+
+The API for extensions adds the field `actions`: buttons on the note. An MCP client gets an error for `actions`, because it gets no event for a click.
+
 Example request: "Mark the lines of process() that can fail, and tell me why."
 
 ### comment_lines
@@ -550,7 +565,7 @@ Shows a short comment after the code of single lines, for example to explain a l
 | --- | --- | --- |
 | `file` | text | See the common parameters. |
 | `comments` | list | Necessary. One comment for each line, from 1 to 2000 comments. |
-| `append` | true or false | `true` keeps the old comments of the file. A new comment on a line then replaces the old comment of that line. The default is `false`: a new call replaces the comments of the file. |
+| `append` | true or false | `true` keeps the old comments of the client in the file. A new comment on a line then replaces the old comment of that line. The default is `false`: a new call replaces the comments of the client in the file. |
 
 Each comment has these fields:
 
@@ -559,6 +574,8 @@ Each comment has these fields:
 | `line` | integer | Necessary. The line. |
 | `text` | text | Necessary. A short comment in one line of text. DataFlow cuts a comment after 200 characters. |
 | `color` | text | `blue`, `green`, `purple`, `yellow`, `orange`, `red` or `gray`, for example one color for each topic. The default is the color `dataflow.modelComment`. |
+
+Each comment gets an id: `c1`, `c2` and so on. The result gives the ids of the new comments in `ids`, in the sequence of their lines.
 
 Example request: "Add a short comment to each line of process() that is hard to read. Use one color for each topic."
 
@@ -574,13 +591,13 @@ Adds a detail to code in the side view: a longer explanation or examples, for ex
 | `title` | text | A short title, for example "Examples of the scale". DataFlow cuts a title after 80 characters. The default is the code. |
 | `text` | text | Necessary. The explanation or the examples, with a maximum of 4000 characters. |
 
-The text can use a small part of Markdown: paragraphs, lists, `code`, code blocks, **bold** and *italic*. The code of a detail can have a maximum of 40 lines. A file can have a maximum of 300 details. A detail on the same code replaces the old detail. The details of a file stay until `clear`.
+The text can use a small part of Markdown: paragraphs, lists, `code`, code blocks, **bold** and *italic*. The code of a detail can have a maximum of 40 lines. A file can have a maximum of 300 details. A detail on the same code replaces the old detail. The result gives the id of the detail: `d1`, `d2` and so on. The details of a file stay until `clear` or `remove`. The API for extensions adds the field `actions`: buttons on the detail.
 
 Example request: select an expression, then ask "Give examples for the selected expression."
 
 ### clear
 
-Removes the blocks, the notes, the comments and the details of the model from the side view.
+Removes the blocks, the notes, the comments and the details of the client from the side view. The layers of other clients stay.
 
 | Parameter | Type | Function |
 | --- | --- | --- |
@@ -589,6 +606,19 @@ Removes the blocks, the notes, the comments and the details of the model from th
 Example request: "Remove your blocks and notes from the side view."
 
 The guide of a guided review or of a diff walk stays. A new plan replaces it. **Close review**, **Close walk** and `close_guide` remove it.
+
+### remove
+
+Removes some notes, comments and details of the client from a file by their ids. The other items stay.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `file` | text | See the common parameters. |
+| `ids` | list | Necessary. The ids from `highlight` (`n1`, `n2` and so on), from `comment_lines` (`c1`, `c2` and so on) and from `add_detail` (`d1`, `d2` and so on), with a minimum of one id. |
+
+The result gives the removed ids, the ids that the layer of the client does not have, and the number of notes, comments and details of the client that stay in the file.
+
+Example request: "Remove the note on the solver, and keep the other notes."
 
 ### set_lens
 
@@ -681,6 +711,8 @@ Each step has these fields:
 | `kind` | text | `change` (changed lines), `ripple` (code that a change reaches), `context` (code that explains a change), `risk` (a possible problem) or `test` (the tests of the change). |
 
 If a step has a problem, for example lines that are not in the file, the view does not change, and the model gets each problem.
+
+The API for extensions adds the field `actions` to a step of `show_review_plan` and of `show_diff_walk`: buttons on the step in the tab Guide.
 
 Example request: "Make a review plan for these files."
 

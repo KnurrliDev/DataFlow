@@ -2774,6 +2774,18 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			case 'heatStop':
 				stopCallGraph();
 				break;
+			case 'clientAction': {
+				// a click on a button of an extension goes to its API objects
+				const file = action.kind === 'step' ? store.state.guide?.steps[action.step ?? -1]?.file : side.file;
+				const event = {
+					kind: action.kind, action: action.action, ...(action.item ? { item: action.item } : {}), ...(file ? { file } : {}),
+					...(action.line !== undefined ? { line: action.line } : {}), ...(action.step !== undefined ? { step: action.step + 1 } : {}),
+				};
+				if (!apiEvents.invokeAction(action.owner, event)) {
+					vscode.window.setStatusBarMessage(`DataFlow: The extension ${action.owner} is not active.`, 5000);
+				}
+				break;
+			}
 		}
 	};
 

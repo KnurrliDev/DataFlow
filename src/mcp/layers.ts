@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import * as vscode from 'vscode';
-import { restoreModelLayer, storeModelLayer, StoredModelLayer } from '../lenses/blocks';
+import { restoreModelLayer, storeModelLayer, StoredModelLayer, withLayerIds } from '../lenses/blocks';
 import { fileKey } from '../lenses/member';
 import { restoreGuide, storeGuide, StoredGuide } from '../review/guide';
 import type { SideGuide, SideModel } from '../side/protocol';
@@ -77,8 +77,9 @@ export class LayerKeeper implements vscode.Disposable {
 		for (const s of stored) {
 			const lines = this.linesOf(s.layer.file);
 			const layer = lines && restoreModelLayer(s, lines.text, lines.count);
+			// a layer of an older version gets the ids of its notes and comments
 			if (layer) {
-				layers.push(layer);
+				layers.push(withLayerIds(layer));
 			}
 		}
 		if (layers.length > 0) {

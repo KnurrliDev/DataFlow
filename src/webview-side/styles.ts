@@ -616,16 +616,31 @@ button:focus-visible, .scroller:focus-visible { outline: 1px solid var(--vscode-
 
 /* The layers of a language model: a bar beside the line numbers of each block (one more bar for each level of child
    blocks), the title of a block, the notes and the comments at the end of the lines, a color on each highlighted range,
-   and the details column. The text of the model has a badge, and a comment has a star. The step between two bars is
-   BAR_STEP of CodeView.tsx. */
-.mbar { position: absolute; top: 0; bottom: 0; width: 3px; background: var(--vscode-dataflow-model); pointer-events: none; }
+   and the details column. The text of the model has a badge, and a comment has a star. CodeView.tsx sets the left
+   position of a bar from its column and BAR_STEP. The bars of the second client and of the clients after it have the
+   chart colors of the theme. */
+.mbar { --bar: var(--vscode-dataflow-model); position: absolute; top: 0; bottom: 0; width: 3px; background: var(--bar); pointer-events: none; }
 .mbar.first { top: 2px; border-top-left-radius: 2px; border-top-right-radius: 2px; }
 .mbar.last { bottom: 2px; border-bottom-left-radius: 2px; border-bottom-right-radius: 2px; }
-.mbar.lv-0 { left: 1px; }
-.mbar.lv-1 { left: 6px; background: color-mix(in srgb, var(--vscode-dataflow-model) 55%, transparent); }
-.mbar.lv-2 { left: 11px; background: color-mix(in srgb, var(--vscode-dataflow-model) 45%, transparent); }
-.mbar.lv-3 { left: 16px; background: color-mix(in srgb, var(--vscode-dataflow-model) 38%, transparent); }
-.mbar.lv-4 { left: 21px; background: color-mix(in srgb, var(--vscode-dataflow-model) 32%, transparent); }
+.mbar.lv-1 { background: color-mix(in srgb, var(--bar) 55%, transparent); }
+.mbar.lv-2 { background: color-mix(in srgb, var(--bar) 45%, transparent); }
+.mbar.lv-3 { background: color-mix(in srgb, var(--bar) 38%, transparent); }
+.mbar.lv-4 { background: color-mix(in srgb, var(--bar) 32%, transparent); }
+.mbar.cl-1 { --bar: var(--vscode-charts-blue); }
+.mbar.cl-2 { --bar: var(--vscode-charts-green); }
+.mbar.cl-3 { --bar: var(--vscode-charts-orange); }
+.mbar.cl-4 { --bar: var(--vscode-charts-yellow); }
+/* the buttons of an extension on a note, a detail or a step, and the name of the client of an item in the tab Model */
+.item-actions { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-left: 6px; font-style: normal; }
+.modelbar .item-actions { flex: none; margin-left: 0; }
+.detail-card .item-actions, .mdetail-item .item-actions { display: flex; margin: 6px 0 0; }
+.rg-body .item-actions { display: flex; margin: 0; }
+.mnote-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.mnote-row > .mnote { flex: 1 1 auto; min-width: 0; }
+.mclient { display: inline-block; margin-right: 5px; padding: 0 5px; border-radius: 4px; font-size: 0.8em; font-weight: 600;
+  color: var(--vscode-descriptionForeground); background: color-mix(in srgb, var(--vscode-descriptionForeground) 14%, transparent); }
+.mgroup { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding-top: 6px; border-top: 1px solid var(--vscode-panel-border, transparent); }
+.mgroup-title .mclient { font-size: 0.85em; }
 /* the colors that a model can select for a comment: the chart colors of the theme */
 .mc-blue { --mc: var(--vscode-charts-blue); }
 .mc-green { --mc: var(--vscode-charts-green); }

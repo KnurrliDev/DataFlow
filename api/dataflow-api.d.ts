@@ -48,6 +48,8 @@ export interface DataFlowApi {
 	readonly onDidChangeGuide: vscode.Event<GuideFacts | null>;
 	// The scan of the call graph starts, makes progress, stops or ends. At its end, the heat of the functions can change
 	readonly onDidChangeCallGraph: vscode.Event<CallGraphFacts>;
+	// The user clicked a button of your extension on a note, a detail or a step of a guide
+	readonly onDidInvokeAction: vscode.Event<ActionEvent>;
 
 	// Runs a tool of the MCP server, and gives its result. The typed methods below run the same tools
 	callTool(name: string, args?: Record<string, unknown>): Promise<unknown>;
@@ -79,6 +81,7 @@ export interface DataFlowApi {
 	commentLines(args: CommentLinesArgs): Promise<CommentLinesResult>; // comment_lines
 	addDetail(args: AddDetailArgs): Promise<AddDetailResult>; // add_detail
 	clear(args?: FileArgs): Promise<ClearResult>; // clear
+	remove(args: RemoveArgs): Promise<RemoveResult>; // remove
 	setLens(args: SetLensArgs): Promise<SetLensResult>; // set_lens
 	clearFlow(): Promise<ClearedResult>; // clear_flow
 	startRipple(): Promise<RippleFacts>; // start_ripple
@@ -107,6 +110,17 @@ export interface EngineStateEvent {
 	state: EngineState;
 	compileDatabases: string[];
 	error?: string; // the reason of the state failed, or of the state stopped with no compile database
+}
+
+// A click on a button of your extension. action: the id of the button. item: the id of the note or the detail. step: the
+// number of the step, from 1. file and line: the place of the note, of the detail or of the step
+export interface ActionEvent {
+	kind: 'note' | 'detail' | 'step';
+	action: string;
+	item?: string;
+	file?: string;
+	line?: number;
+	step?: number;
 }
 
 export interface ViewEvent {
@@ -185,12 +199,20 @@ export interface ShowBlocksArgs extends FunctionArgs {
 
 export type NoteKind = 'problem' | 'warning' | 'info';
 
+// A button on a note, a detail or a step. A click sends onDidInvokeAction with the id. An item has a maximum of 3 buttons.
+// The id has a maximum of 64 characters, and the title 40. Only an extension can give buttons
+export interface ItemAction {
+	id: string;
+	title: string;
+}
+
 export interface NoteInput {
 	lines?: [number, number];
 	block?: string; // the id of a block, instead of lines
 	function?: string; // the function of the block, if more functions have a block with the id
 	kind: NoteKind;
 	note: string; // maximum 300 characters
+	actions?: ItemAction[];
 }
 
 export interface HighlightArgs extends FileArgs {
@@ -211,6 +233,12 @@ export interface AddDetailArgs extends FileArgs {
 	expression?: string;
 	title?: string; // maximum 80 characters
 	text: string; // a small part of Markdown. Maximum 4000 characters
+	actions?: ItemAction[];
+}
+
+// The ids of notes, comments and details of your extension in a file
+export interface RemoveArgs extends FileArgs {
+	ids: string[];
 }
 
 export interface SetLensArgs {
@@ -228,13 +256,13 @@ export type GuideStatus = 'todo' | 'ok' | 'issue' | 'question';
 export interface ReviewPlanArgs {
 	title?: string;
 	summary?: string;
-	steps: { title: string; file?: string; lines: [number, number]; text: string; checks?: string[]; kind?: GuideKind }[];
+	steps: { title: string; file?: string; lines: [number, number]; text: string; checks?: string[]; kind?: GuideKind; actions?: ItemAction[] }[];
 }
 
 export interface DiffWalkArgs {
 	title?: string;
 	summary?: string;
-	steps: { title: string; hunks: string[]; text: string; checks?: string[]; kind?: GuideKind }[]; // hunks: the ids of getDiff
+	steps: { title: string; hunks: string[]; text: string; checks?: string[]; kind?: GuideKind; actions?: ItemAction[] }[]; // hunks: the ids of getDiff
 	// true (default): a step at the end for each hunk that no step names. false: only the hunks of the steps
 	allHunks?: boolean;
 }
@@ -264,7 +292,8 @@ export interface ViewFacts {
 	function: { name: string; macroCall?: string; lines: [number, number] } | null;
 	otherFiles: string[]; // the other C++ files on the screen
 	sideView: { isOpen: boolean; file: string | null; lenses: string[]; modelLayersShown: boolean };
-	model: { functions: { function: string; blocks: string[] }[]; notes: number; comments: number; details: string[] } | null;
+	model: { functions: { function: string; blocks: string[] }[]; notes: number; comments: number; details: string[] } | null; // your layer
+	otherClients?: { client: string; blocks: number; notes: number; comments: number; details: number }[]; // the layers of the other clients
 	review: GuideFacts | null; // the guided review or the diff walk
 	engine: EngineState;
 	project: { folders: string[]; compileDatabases: string[] };
@@ -680,7 +709,7 @@ export interface HighlightResult {
 	file: string;
 	shown: number;
 	notesInFile: number;
-	notes: { lines: [number, number]; kind: NoteKind; block?: string; function?: string }[];
+	notes: { id: string; lines: [number, number]; kind: NoteKind; block?: string; function?: string }[];
 }
 
 export interface CommentLinesResult {
@@ -688,6 +717,7 @@ export interface CommentLinesResult {
 	shown: number;
 	commentsInFile: number;
 	lines: number[];
+	ids: string[]; // the ids of the new comments, in the sequence of their lines
 }
 
 export interface AddDetailResult {
@@ -701,7 +731,16 @@ export interface AddDetailResult {
 }
 
 export interface ClearResult {
-	removed: number;
+	removed: number; // the layers of your client that went away
+}
+
+export interface RemoveResult {
+	file: string;
+	removed: string[];
+	unknown: string[]; // the ids that the layer of your client does not have
+	notesInFile: number;
+	commentsInFile: number;
+	detailsInFile: number;
 }
 
 export interface ClearedResult {

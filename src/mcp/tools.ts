@@ -33,6 +33,7 @@ export interface McpHost {
 	comment(file: string | undefined, comments: ModelCommentInput[], append: boolean): Promise<Api.CommentLinesResult>;
 	detail(file: string | undefined, detail: ModelDetailInput): Promise<Api.AddDetailResult>;
 	clear(file?: string): Promise<Api.ClearResult>;
+	remove(file: string | undefined, ids: unknown): Promise<Api.RemoveResult>;
 	review(paths: unknown): Promise<Api.ReviewFacts>;
 	showReviewPlan(plan: GuidePlanInput): Promise<Api.ReviewPlanResult>;
 	reviewStep(step: number, note: unknown, status: string | undefined): Promise<Api.ReviewStepResult>;
@@ -334,7 +335,8 @@ export function createTools(host: McpHost): McpTool[] {
 			['line'], false, (a) => host.showLine(a.text('file'), a.requiredLine('line'))),
 		tool('highlight', 'Highlight code',
 			'Colors lines or blocks in the DataFlow side view and shows a note at the first line of each range. Give "lines" or the id of a block from show_blocks. '
-			+ 'If more functions have a block with the id, also give "function". A new call replaces the notes of the file, except with "append".',
+			+ 'If more functions have a block with the id, also give "function". A new call replaces your notes of the file, except with "append". '
+			+ 'Each note gets an id, for example n3, for remove. The notes of other clients stay.',
 			{
 				file: FILE,
 				ranges: {
@@ -356,7 +358,8 @@ export function createTools(host: McpHost): McpTool[] {
 		tool('comment_lines', 'Comment lines',
 			'Shows a short comment after the code of single lines in the DataFlow side view, for example to explain a line that is hard to read. '
 			+ 'A comment has the color of the comments of the model, or a color that you select, for example one color for each topic. A comment does not color its line. '
-			+ 'A new call replaces the comments of the file. With "append", the old comments stay, and a new comment on a line replaces the old comment of that line.',
+			+ 'A new call replaces your comments of the file. With "append", the old comments stay, and a new comment on a line replaces the old comment of that line. '
+			+ 'Each comment gets an id, for example c2, for remove.',
 			{
 				file: FILE,
 				comments: {
@@ -383,11 +386,21 @@ export function createTools(host: McpHost): McpTool[] {
 				title: { type: 'string', description: 'A short title, for example "Examples of the scale". Maximum 80 characters. Default: the code.' },
 				text: { type: 'string', description: 'The explanation or the examples. Maximum 4000 characters.' },
 			},
-			['text'], false, (a) => host.detail(a.text('file'), { line: a.line('line'), expression: a.text('expression'), title: a.text('title'), text: a.requiredText('text') })),
+			['text'], false, (a) => host.detail(a.text('file'), {
+				line: a.line('line'), expression: a.text('expression'), title: a.text('title'), text: a.requiredText('text'), actions: a.raw('actions'),
+			})),
 		tool('clear', 'Remove the model layers',
-			'Removes the blocks, the notes, the comments and the details of the model from the DataFlow side view. '
+			'Removes your blocks, notes, comments and details from the DataFlow side view. The layers of other clients stay. '
 			+ 'The guided review and the diff walk stay: close_guide closes them.',
 			{ file: { ...FILE, description: 'The file. Default: all files.' } }, [], false, (a) => host.clear(a.text('file'))),
+		tool('remove', 'Remove notes, comments and details',
+			'Removes some of your notes, comments and details from a file of the DataFlow side view by their ids: the ids of highlight (n1, n2, ...), '
+			+ 'of comment_lines (c1, c2, ...) and of add_detail (d1, d2, ...). The other items stay. The result gives the removed ids and the unknown ids.',
+			{
+				file: FILE,
+				ids: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'The ids, for example ["n2", "c1", "d3"].' },
+			},
+			['ids'], false, (a) => host.remove(a.text('file'), a.raw('ids'))),
 		tool('set_lens', 'Turn a lens on or off',
 			'Turns a lens of the DataFlow side view on or off, as its switch in the toolbar does. The lenses are flow (Flow Lens), logic (Logic Map), cost (Hidden C++), '
 			+ 'includes (Include Hierarchy), calls (Call Hierarchy), threads (Threads and races), heat (Heat) and review (Change Ripple). '

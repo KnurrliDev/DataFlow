@@ -57,7 +57,7 @@ To open the second window without the debugger, run `open-editor.bat` in the roo
 
 1. Type `npm test`. This command runs the unit tests and the tests on the fixture projects.
 2. Type `npm run test:engine`. This command runs the protocol tests of the engine.
-3. Type `npm run compile`, then `npm run test:ui`. This command runs the tests of the side view. Each script of `spikes/ui/` starts the copy of VS Code and does work in the side view. It reads the elements of the webview through the remote debugging protocol. The tests take about 4 minutes.
+3. Type `npm run compile`, then `npm run test:ui`. This command runs the tests of the side view. Each script of `spikes/ui/` starts the copy of VS Code and does work in the side view. It reads the elements of the webview through the remote debugging protocol. The tests take about 5 minutes. The script `side-clients-snapshot.mjs` also loads the small extension of `spikes/ui/client-extension/`. That extension uses the API for extensions as a second client of the side view.
 
 Do not use the mouse or the keyboard during the tests of the side view, because the scripts use the command palette.
 

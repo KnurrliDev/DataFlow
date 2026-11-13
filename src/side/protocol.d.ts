@@ -625,10 +625,19 @@ export interface SideStory {
 // The layers of a language model in a file: the logical blocks of a function and the notes on lines. The model sends them
 // through the MCP server of DataFlow. The titles, the summaries and the notes come from the model. The lines and the data
 // of each block come from the engine. Lines start at 1.
+// A button of a client on an item: a note, a detail or a step. A click sends the id to the extension of the client
+export interface SideItemAction {
+	id: string;
+	title: string;
+}
+
+// The layer of one client in one file. The side view gets the layers of all clients of its file as one layer: then each
+// item has its client, and with two clients or more, the ids have the name of their client
 export interface SideModel {
 	file: string;
 	fn?: string; // the function of the last call of show_blocks. In a layer of an older version, the function of all blocks
-	client?: string; // the name of the MCP client, for example claude-code
+	client?: string; // the owner: the name of the MCP client, for example claude-code, or of an extension. Else the model
+	clients?: string[]; // the layer of the side view: the owners of the layers, in sequence
 	blocks: SideModelBlock[]; // in the sequence of the lines, each block before its children
 	notes: SideModelNote[];
 	comments: SideModelComment[]; // in the sequence of the lines, one comment on a line at most
@@ -648,6 +657,8 @@ export interface SideModelBlock {
 	outs: string[]; // written in the block and used after it, or visible to the caller
 	extra: SideModelExtra[];
 	from?: [number, number]; // the lines of the model, if DataFlow moved them to whole statements
+	client?: string; // the layer of the side view: the owner
+	column?: number; // the layer of the side view: the column of the bar, after the columns of the clients before it
 }
 
 export interface SideModelExtra {
@@ -659,12 +670,15 @@ export interface SideModelExtra {
 export type SideNoteKind = 'problem' | 'warning' | 'info';
 
 export interface SideModelNote {
+	id?: string; // n1, n2, ... A layer of an older version gets them when it comes back
 	first: number;
 	last: number;
 	kind: SideNoteKind;
 	text: string;
 	block?: string; // the id of the block of the note
 	blockFn?: string; // the function of that block
+	actions?: SideItemAction[];
+	client?: string; // the layer of the side view: the owner
 }
 
 // The colors that a model can select for a comment. They are the chart colors of the theme. With no color, a comment
@@ -673,9 +687,11 @@ export type SideCommentColor = 'blue' | 'green' | 'purple' | 'yellow' | 'orange'
 
 // A comment of a model on one line. It shows after the code, and it does not color the line
 export interface SideModelComment {
+	id?: string; // c1, c2, ...
 	line: number;
 	text: string;
 	color?: SideCommentColor;
+	client?: string; // the layer of the side view: the owner
 }
 
 // A detail of a model on a part of the code: a longer explanation or examples. The first line of the code gets a symbol
@@ -690,6 +706,8 @@ export interface SideModelDetail {
 	code: string; // the code, so the side view finds it again after an edit of its line
 	title: string;
 	text: string; // a small part of Markdown, see side/details.ts
+	actions?: SideItemAction[];
+	client?: string; // the layer of the side view: the owner
 }
 
 // The MCP server of DataFlow in the status line and in the details column
@@ -733,6 +751,7 @@ export interface SideGuideStep {
 	kind?: SideGuideKind;
 	status: SideGuideStatus;
 	note?: string; // a note of the model on the step, for example the answer to a question of the user
+	actions?: SideItemAction[]; // the buttons of the extension of the guide
 	diff?: SideStepDiff; // a diff walk: the diff of the step
 	heat?: SideStepHeat; // the hottest function in the lines of the step, while the lens Heat shows
 }
@@ -829,6 +848,9 @@ export type SideAction =
 	| { type: 'guideCopy' } // puts the summary of the guide on the clipboard
 	| { type: 'guideClose' } // removes the guide
 	| { type: 'heatScan' } // starts the scan of the call graph, or continues a scan that stopped
+	// a click on a button of a client: owner, the client of the item; action, the id of the button; item, the id of the
+	// note or the detail; step, the index of the step of the guide
+	| { type: 'clientAction'; owner: string; kind: 'note' | 'detail' | 'step'; action: string; item?: string; line?: number; step?: number }
 	| { type: 'heatStop' }; // stops the scan of the call graph
 
 export type FromSide =

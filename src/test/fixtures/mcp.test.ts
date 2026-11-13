@@ -129,7 +129,7 @@ suite('MCP server on the fixture', () => {
 		const list = await rpc('tools/list');
 		assert.deepStrictEqual(list.result.tools.map((t: { name: string }) => t.name), [
 			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_callers', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'get_heat', 'get_call_graph', 'get_logic', 'get_ripple',
-			'show_blocks', 'show_flow', 'show_logic_path', 'show_line', 'highlight', 'comment_lines', 'add_detail', 'clear', 'set_lens', 'clear_flow', 'start_ripple', 'clear_ripple',
+			'show_blocks', 'show_flow', 'show_logic_path', 'show_line', 'highlight', 'comment_lines', 'add_detail', 'clear', 'remove', 'set_lens', 'clear_flow', 'start_ripple', 'clear_ripple',
 			'scan_call_graph', 'stop_call_graph', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step', 'close_guide',
 		]);
 		// only close_guide removes data of the user: the marks and the notes of the steps
@@ -468,8 +468,15 @@ suite('MCP server on the fixture', () => {
 			() => JSON.stringify(api.side.modelLayer?.blocks[0] ?? null));
 		assert.deepStrictEqual(linesOf(api.side.modelLayer!), moved(0));
 		const read = lineOf('if (charge.is_dirty && !home_battery_ctl.charging_future)');
-		assert.ok(!(await tool('highlight', { ranges: [{ lines: [read, read], kind: 'info', note: 'a note' }] })).isError);
+		const note = await tool('highlight', { ranges: [{ lines: [read, read], kind: 'info', note: 'a note' }] });
+		assert.deepStrictEqual(note.data.notes.map((n: { id: string }) => n.id), ['n1']);
 		await waitFor(() => api.side.modelLayer?.notes.length === 1, 10000, () => JSON.stringify(api.side.modelLayer));
+		// an MCP client gets no event for a click, so it cannot add buttons. remove takes a note away by its id
+		const refused = await tool('highlight', { append: true, ranges: [{ lines: [read, read], kind: 'info', note: 'b', actions: [{ id: 'a', title: 'A' }] }] });
+		assert.ok(refused.isError && /"actions" need the API for extensions/.test(refused.text), refused.text);
+		const removed = await tool('remove', { ids: ['n1', 'n2'] });
+		assert.deepStrictEqual([removed.data.removed, removed.data.unknown, removed.data.notesInFile], [['n1'], ['n2'], 0]);
+		await waitFor(() => api.side.modelLayer?.notes.length === 0, 10000, () => JSON.stringify(api.side.modelLayer));
 		assert.strictEqual((await tool('clear')).data.removed, 1);
 		await waitFor(() => api.side.modelLayer === null, 10000, () => JSON.stringify(api.side.modelLayer));
 	});

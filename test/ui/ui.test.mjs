@@ -138,6 +138,34 @@ test('Model layers: five levels of blocks, comments in colors, the bar MODEL, a 
 	assert.deepEqual([r.tabInProcess?.fn, r.tabInProcess?.blocks], ['process()', 7], JSON.stringify(r.tabInProcess));
 });
 
+test('Layers of two clients: the bars in the colors of the clients, the groups of the tab Model, and the buttons and the clicks of an extension', { timeout: 600000 }, async () => {
+	const r = await run('side-clients-snapshot.mjs');
+	assert.deepEqual(r.ids, { notes: ['n1'], detail: 'd1' });
+	// the bars of the MCP client have the color of the model. The bars of the extension come after them in a chart color.
+	// The bars are in the sequence of the blocks, so the test sorts them by their position
+	const byLeft = (bars) => bars.map((b) => [b.cls, b.left]).sort((a, b) => parseFloat(a[1]) - parseFloat(b[1]));
+	assert.deepEqual(byLeft(r.bars), [['mbar lv-0', '1px'], ['mbar lv-1', '6px'], ['mbar lv-0 cl-1', '11px'], ['mbar lv-1 cl-1', '16px']]);
+	assert.equal(r.bars.find((b) => b.cls === 'mbar lv-0').color, r.want.model);
+	assert.equal(r.bars.find((b) => b.cls === 'mbar lv-0 cl-1').color, r.want.blue);
+	assert.deepEqual(r.modelBar, { note: 'Waits for the solver', buttons: ['Fix it', 'Skip'] });
+	assert.equal(r.noteTag, 'Note of ui-client: Waits for the solver');
+	assert.deepEqual(r.groups, [
+		{ client: 'ui-test', blocks: ['1', '1a'], buttons: [] },
+		{ client: 'ui-client', blocks: ['1', '1a'], buttons: ['Fix it', 'Skip', 'Open the plan'] },
+	]);
+	assert.deepEqual(r.card, { client: 'ui-client', buttons: ['Open the plan'] });
+	assert.deepEqual(r.step, ['Run the check']);
+	// each click goes to the extension with the id of the button, the id of the item, the file and the line
+	assert.deepEqual(r.clicks, [
+		{ kind: 'note', action: 'fix', item: 'n1', file: 'battery.cpp', line: r.lines.note },
+		{ kind: 'detail', action: 'open', item: 'd1', file: 'battery.cpp', line: r.lines.detail },
+		{ kind: 'step', action: 'run', file: 'battery.cpp', line: r.lines.note, step: 1 },
+	]);
+	// clear of the MCP client removes only its layer, and the bars of the extension go to the first columns
+	assert.equal(r.cleared, 1);
+	assert.deepEqual(byLeft(r.barsAfterClear), [['mbar lv-0', '1px'], ['mbar lv-1', '6px']]);
+});
+
 test('Guided review: the files of a folder, a plan of the model, the marks, the notes, a command and the guide after a reload', { timeout: 600000 }, async () => {
 	const r = await run('side-guide-snapshot.mjs');
 	assert.ok(r.prompts.includes('guided-review'), JSON.stringify(r.prompts));

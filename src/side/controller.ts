@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { EngineClient, FileResult } from '../engine/client';
+import { mergeModelLayers } from '../lenses/blocks';
 import { toUtf16Column, toUtf8Column } from '../lenses/flow';
 import type { ReviewState } from '../lenses/ripple';
 import { guideSummary, withCurrent, withStatus } from '../review/guide';
@@ -563,6 +564,7 @@ export class SideViewController implements vscode.Disposable {
 			case 'clearModel':
 			case 'heatScan':
 			case 'heatStop':
+			case 'clientAction':
 				this.onAction(message, this.editorForSync());
 				break;
 			case 'showStory':
@@ -1090,13 +1092,13 @@ export class SideViewController implements vscode.Disposable {
 		this.post({ type: 'threads', threads: this.lastThreads });
 	}
 
-	// The layers of a language model in the file of the side view. An edit moves the lines of a layer at once, but the
-	// side view shows the text of the last parse. So a layer that an edit moved waits for the rows of the new text
+	// The layers of the clients in the file of the side view, as one layer. An edit moves the lines of a layer at once,
+	// but the side view shows the text of the last parse. So a layer that an edit moved waits for the rows of the new text
 	private postModel(): void {
 		const layers = this.store.state.modelLayers;
 		this.lastModelLayers = layers;
 		const model = this.model;
-		const layer = (model && layers.find((l) => fileKey(l.file) === fileKey(model.file))) || null;
+		const layer = model ? mergeModelLayers(layers.filter((l) => fileKey(l.file) === fileKey(model.file))) : null;
 		const isMoved = !!layer && !!this.lastModel && fileKey(this.lastModel.file) === fileKey(layer.file);
 		if (isMoved && model && model.version !== undefined && model.version >= 0 && model.version < model.doc.version) {
 			this.pendingModel = layer!;

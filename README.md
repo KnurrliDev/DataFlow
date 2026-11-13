@@ -25,7 +25,7 @@ Ctrl+click on a name in the side view goes to its definition, and Alt+Left goes 
 
 DataFlow also has an MCP server. A language model reads the facts of the engine through the tools of the server. Then the model shows logical blocks, notes, comments and details in the side view. The engine gives the lines and the data, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other. In a diff walk, the side view goes through the changes of a diff with you, for example the changes that the model made.
 
-Other VS Code extensions can use the same tools through the API of DataFlow, with events for the cursor, the engine, the guide and the scan of the call graph. [Use the API for extensions](docs/api.md)
+Other VS Code extensions can use the same tools through the API of DataFlow, with events for the cursor, the engine, the guide and the scan of the call graph. Each extension and each MCP client has its own layers in the side view, and an extension can put buttons on its notes, details and steps. [Use the API for extensions](docs/api.md)
 
 DataFlow works on Windows 64-bit with VS Code 1.120 or later. Your project needs a compile database, for example the `compile_commands.json` file of CMake or a qmake build folder. For an Unreal Engine 5 project, DataFlow makes the compile database with UnrealBuildTool.
 
@@ -132,7 +132,7 @@ The view tools of the MCP server put the words of the model into the side view. 
 
 ![A card with examples for the expression FINISHED(...).](docs/images/model-detail.png)
 
-`show_flow` starts Flow Lens on a variable, as a click does. The screenshot at the top shows such a trace. `show_logic_path` shows a path of Logic Map for the options that the model selects, and `show_line` moves the cursor to a line. `set_lens` turns a lens on or off, and `start_ripple` runs Change Ripple. `clear` removes the layers of the model. The read tools give the data of the lenses to the model: `get_view`, `list_functions`, `get_structure`, `get_flow`, `get_calls`, `get_callers`, `get_threads`, `get_hidden`, `get_includes`, `get_outline`, `get_heat`, `get_call_graph`, `get_logic` and `get_ripple`.
+`show_flow` starts Flow Lens on a variable, as a click does. The screenshot at the top shows such a trace. `show_logic_path` shows a path of Logic Map for the options that the model selects, and `show_line` moves the cursor to a line. `set_lens` turns a lens on or off, and `start_ripple` runs Change Ripple. `clear` removes the layers of the client, and `remove` removes single notes, comments and details by their ids. The read tools give the data of the lenses to the model: `get_view`, `list_functions`, `get_structure`, `get_flow`, `get_calls`, `get_callers`, `get_threads`, `get_hidden`, `get_includes`, `get_outline`, `get_heat`, `get_call_graph`, `get_logic` and `get_ripple`.
 
 ### Guided review
 

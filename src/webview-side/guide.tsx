@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { lexSpans, pairedSpans } from '../side/model';
 import type { FromSide, SideDiffRow, SideGuide, SideGuideStatus, SideGuideStep, SideRow, SideSettings, SideStepDiff, SideStepRow } from '../side/protocol';
 import { Flames, scoreTitle } from './heat';
-import { Markdown } from './model';
+import { ItemActions, Markdown } from './model';
 import { commonIndent, digits, onRowClick, rowCode } from './ripple';
 import { vscode } from './vscode';
 import type { Wrap } from './wraps';
@@ -233,6 +233,7 @@ export function GuideDetails({ guide, file, rows, settings }: {
 											<Markdown text={s.note} />
 										</div>
 									)}
+									<ItemActions actions={s.actions} owner={guide.client} kind="step" step={i} line={s.first} />
 									<div class="rg-actions">
 										<StatusButtons step={s} index={i} />
 										<span class="rg-gap" />
