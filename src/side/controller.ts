@@ -4,7 +4,7 @@ import { EngineClient, FileResult } from '../engine/client';
 import { toUtf16Column, toUtf8Column } from '../lenses/flow';
 import type { ReviewState } from '../lenses/ripple';
 import { guideSummary, withCurrent, withStatus } from '../review/guide';
-import { CostLayerState, HeatLayerState, LogicPathState, RippleLayerState, StateStore, TraceState } from '../state/store';
+import { CallGraphView, CostLayerState, HeatLayerState, LogicPathState, RippleLayerState, StateStore, TraceState } from '../state/store';
 import { buildSideCost } from './costLayer';
 import { DefinitionPlace, otherPlaces, PlaceHistory, SidePlace } from './definition';
 import { buildSideFlow, buildSideMemberFlow } from './flowLayer';
@@ -14,7 +14,7 @@ import {
 	BRACKET_LEVELS, BRACKET_STYLE, LEXICAL_KEYS, plainRows, SEMANTIC_MODIFIERS, SEMANTIC_TYPES, semanticStyleIndex, shiftSpans, toRows,
 } from './model';
 import type {
-	FromSide, SideAction, SideBrackets, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideHeat, SideIncluders,
+	FromSide, SideAction, SideBrackets, SideCallGraph, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideHeat, SideIncluders,
 	SideIncludes, SideLogic, SideModel, SideOutline, SideRipple, SideThreads, SideRow, SideSettings, SideStory, SideStyle, SideViewState, SideWhy, ToSide,
 } from './protocol';
 import { buildSideRipple, buildSideStory, fileKey, lineRanges, storyLines } from './storyLayer';
@@ -123,6 +123,7 @@ export class SideViewController implements vscode.Disposable {
 	private lastCostLayer?: CostLayerState;
 	private lastCost: SideCost | null = null;
 	private lastHeatLayer?: HeatLayerState;
+	private lastCallGraph?: CallGraphView;
 	private lastHeat: SideHeat | null = null;
 	private lastIncludes: SideIncludes | null = null;
 	private lastIncludesLayer?: SideIncludes;
@@ -236,7 +237,7 @@ export class SideViewController implements vscode.Disposable {
 				if (state.costLayer !== this.lastCostLayer) {
 					this.postCost();
 				}
-				if (state.heatLayer !== this.lastHeatLayer) {
+				if (state.heatLayer !== this.lastHeatLayer || state.callGraph !== this.lastCallGraph) {
 					this.postHeat();
 				}
 				if (state.includesLayer !== this.lastIncludesLayer) {
@@ -548,6 +549,8 @@ export class SideViewController implements vscode.Disposable {
 			case 'parseMemberFile':
 			case 'parseMemberFiles':
 			case 'clearModel':
+			case 'heatScan':
+			case 'heatStop':
 				this.onAction(message, this.editorForSync());
 				break;
 			case 'showStory':
@@ -1175,13 +1178,21 @@ export class SideViewController implements vscode.Disposable {
 		this.post({ type: 'cost', cost: this.lastCost });
 	}
 
-	// The heat of the functions of the file of the side view. The heat of a different file shows nothing.
+	// The heat of the functions of the file of the side view, with the scan of the call graph. The heat of a different
+	// file shows nothing.
 	private postHeat(): void {
-		const { heatLayer } = this.store.state;
+		const { heatLayer, callGraph } = this.store.state;
 		this.lastHeatLayer = heatLayer;
+		this.lastCallGraph = callGraph;
+		const result = callGraph?.result;
+		const graph: SideCallGraph | undefined = callGraph && {
+			state: callGraph.state, done: callGraph.done, total: callGraph.total, ...(callGraph.error ? { error: callGraph.error } : {}),
+			...(result ? { units: result.units, functions: result.functions, failed: result.failed.length } : {}),
+			frames: result?.frames ?? [],
+		};
 		this.lastHeat = heatLayer && this.model && heatLayer.file === this.model.file ? {
 			file: heatLayer.file, isLoading: heatLayer.isLoading, functions: heatLayer.model?.functions ?? [],
-			notices: heatLayer.model?.notices ?? [], ...(heatLayer.error ? { error: heatLayer.error } : {}),
+			notices: heatLayer.model?.notices ?? [], ...(heatLayer.error ? { error: heatLayer.error } : {}), ...(graph ? { graph } : {}),
 		} : null;
 		this.post({ type: 'heat', heat: this.lastHeat });
 	}

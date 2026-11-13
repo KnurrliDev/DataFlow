@@ -64,6 +64,7 @@
 #include <clang/Tooling/Inclusions/StandardLibrary.h>
 #include <clang/Tooling/JSONCompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
+#include <clang/UnifiedSymbolResolution/USRGeneration.h>
 #include <llvm/ADT/BitVector.h>
 #include <llvm/ADT/StringExtras.h>
 #include <llvm/Option/ArgList.h>
@@ -76,6 +77,7 @@
 #include <llvm/Support/Path.h>
 #include <llvm/Support/VirtualFileSystem.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/xxhash.h>
 
 namespace DataFlow {
 

@@ -1,8 +1,8 @@
-import type { SideHeat, SideHeatFunction } from '../side/protocol';
+import type { SideCallGraph, SideHeat, SideHeatFunction } from '../side/protocol';
 import { vscode } from './vscode';
 
 // The lens Heat: the flames of each function in the code, and the tab Heat with the reasons of the score of the
-// function at the cursor and the functions of the file, the hottest first
+// function at the cursor, the functions of the file, the hottest first, and the scan of the call graph
 
 const GROUP_NAMES = { reach: 'Reach', risk: 'Risk', history: 'History' } as const;
 const GROUP_MAX = { reach: 60, risk: 25, history: 15 } as const;
@@ -32,6 +32,7 @@ function HeatFunctionView({ fn }: { fn: SideHeatFunction }) {
 		<section class={`heat-current b-${fn.band}`}>
 			<div class="flow-title"><strong class="mono">{fn.qualifiedName || fn.name}</strong></div>
 			<div class="heat-score-line"><Flames count={fn.flames} /><span>{heatTitle(fn)}</span></div>
+			{fn.isSiloed && <p class="sub heat-siloed">The reach is less than 10, thus the risk and the history count half.</p>}
 			{(['reach', 'risk', 'history'] as const).map((group) => {
 				const reasons = fn.reasons.filter((r) => r.group === group);
 				return (
@@ -46,6 +47,61 @@ function HeatFunctionView({ fn }: { fn: SideHeatFunction }) {
 				);
 			})}
 		</section>
+	);
+}
+
+// The scan of the call graph: the progress with the button Stop, or a stopped or failed scan with a button that starts
+// it again
+function CallGraphScan({ graph }: { graph: SideCallGraph }) {
+	if (graph.state === 'scanning') {
+		const percent = graph.total > 0 ? Math.round((100 * graph.done) / graph.total) : 0;
+		return (
+			<div class="heat-scan" role="status">
+				<div class="heat-scan-line">
+					<span class="spinner" aria-hidden="true" />
+					<span class="heat-scan-text">{graph.total > 0 ? `Scan of the call graph: ${graph.done} of ${graph.total} source files` : 'The scan of the call graph starts.'}</span>
+					<button type="button" class="link" onClick={() => vscode.postMessage({ type: 'heatStop' })}>Stop</button>
+				</div>
+				<span class="heat-track" aria-hidden="true"><i style={{ width: `${percent}%` }} /></span>
+			</div>
+		);
+	}
+	if (graph.state === 'stopped' || graph.state === 'failed') {
+		return (
+			<div class="heat-scan">
+				<div class="heat-scan-line">
+					<span class="heat-scan-text">{graph.state === 'failed'
+						? `The scan of the call graph failed: ${graph.error ?? 'no reason'}`
+						: graph.total > 0 ? `The scan of the call graph stopped at ${graph.done} of ${graph.total} source files.` : 'The scan of the call graph stopped.'}</span>
+					<button type="button" class="link" onClick={() => vscode.postMessage({ type: 'heatScan' })}>{graph.state === 'stopped' ? 'Continue' : 'Scan again'}</button>
+				</div>
+			</div>
+		);
+	}
+	return null;
+}
+
+// The data of the last complete scan: the size of the call graph and the frame functions with their reasons
+function CallGraphFrames({ graph }: { graph: SideCallGraph }) {
+	if (graph.units === undefined) {
+		return null;
+	}
+	return (
+		<details class="heat-graph">
+			<summary>Call graph: {graph.functions} functions in {graph.units} source files</summary>
+			{(graph.failed ?? 0) > 0 && <p class="sub">The scan could not parse {graph.failed} source files. The output channel DataFlow shows them.</p>}
+			<div class="heat-group-title">Frame functions</div>
+			{graph.frames.length === 0 ? <p class="sub">The call graph has no frame functions. The setting dataflow.heat.frameFunctions can add them.</p> : (
+				<ul class="heat-frames">
+					{graph.frames.map((f) => (
+						<li>
+							<button type="button" class="link mono" title={`${f.file}:${f.line}`} onClick={() => vscode.postMessage({ type: 'openPlace', file: f.file, line: f.line })}>{f.name}</button>
+							<span class="sub">{f.reason}</span>
+						</li>
+					))}
+				</ul>
+			)}
+		</details>
 	);
 }
 
@@ -64,6 +120,7 @@ export function HeatDetails({ heat, cursor }: { heat: SideHeat | null; cursor?: 
 			{heat.isLoading && (
 				<div class="heat-busy" role="status"><span class="spinner" aria-hidden="true" />The heat of the functions is not ready yet.</div>
 			)}
+			{heat.graph && <CallGraphScan graph={heat.graph} />}
 			{heat.error && <p class="problem">{heat.error}</p>}
 			{current && <HeatFunctionView fn={current} />}
 			{sorted.length > 0 && (
@@ -83,6 +140,7 @@ export function HeatDetails({ heat, cursor }: { heat: SideHeat | null; cursor?: 
 			)}
 			{!heat.isLoading && !heat.error && sorted.length === 0 && <p class="sub">The file has no function definitions.</p>}
 			{heat.notices.map((n) => <p class="sub">{n}</p>)}
+			{heat.graph && <CallGraphFrames graph={heat.graph} />}
 		</div>
 	);
 }

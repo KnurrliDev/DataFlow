@@ -795,6 +795,29 @@ try {
 			await s.shot('diff-walk', await s.sideBox());
 		});
 	}
+
+	// Heat on the review fixture, with main() as a frame function of the setting: the flames, the strips, and the reasons
+	// of process() in the tab Heat after the scan of the call graph
+	if (isWanted('heat')) {
+		const review = path.join(repo, 'build', 'fixtures', 'battery-review');
+		const reviewCpp = path.join(review, 'src', 'battery.cpp');
+		const text = readFileSync(reviewCpp, 'utf8').split(/\r?\n/);
+		const at = (part) => text.findIndex((l) => l.includes(part)) + 1;
+		await session('heat', review, reviewCpp, at('fire_transition(home_battery_ctl, "", true);'), { 'dataflow.heat.frameFunctions': ['main'] }, async (s) => {
+			await s.openSide('DataFlow: Open Side View');
+			await s.splitAt(EDITOR_WIDTH);
+			await s.until(() => s.inSide(`return /Engine: ready/.test(doc.querySelector('.status')?.textContent ?? '');`), 'ready engine', 160);
+			await sleep(2000);
+			await s.setLenses([]);
+			await s.command('DataFlow: Toggle Heat');
+			await s.details('Heat');
+			await s.until(() => s.inSide(`return !doc.querySelector('.heat-busy, .heat-scan')
+				&& [...doc.querySelectorAll('.heat-current .heat-reasons li')].some((l) => /On the frame path/.test(l.textContent));`), 'heat with the frame path', 240);
+			await s.scrollSide(at('std::optional<Requests> process(') - 1);
+			await sleep(1500);
+			await s.shot('heat', await s.sideBox());
+		});
+	}
 } finally {
 	rmSync(temp, { recursive: true, force: true });
 }

@@ -341,10 +341,52 @@ export interface MetricsFunction extends EngineFunction {
 	virtual?: boolean;
 	override?: boolean;
 	declaration: { file: string; line: number }; // the first declaration, for example in a header
+	reach?: MetricsReach | null; // undefined: the call graph is not complete. null: the call graph has no node for the function
 }
+
+// The reach of a function in the call graph of the engine
+export interface MetricsReach {
+	callers: number; // the functions that call the function directly
+	transitiveCallers: number; // the functions that reach the function through calls, at most 1000
+	isCapped?: boolean; // the walk up the graph stopped at 1000 callers
+	callerFiles: number; // the files of the transitive callers, other than the file of the function
+	// the frame path: the reason of the frame function, the functions from the frame function to the caller, and whether
+	// a caller on the frame path calls the function in a loop. A frame function has an empty path
+	frame?: { reason: string; path: string[]; isInLoop: boolean };
+}
+
+// none: no scan. partial: a first scan that stopped. ready: a complete graph, maybe from before the last changes
+export type CallGraphState = 'none' | 'scanning' | 'partial' | 'ready';
 
 export interface MetricsModel {
 	functions: MetricsFunction[];
+	callGraph: { state: CallGraphState; done?: number; total?: number }; // done and total: the progress of a scan
+}
+
+// A function that runs in each frame, and the reason. Lines start at 1
+export interface CallGraphFrame {
+	name: string;
+	file: string;
+	line: number;
+	reason: string; // for example "override of QWidget::paintEvent"
+}
+
+// The data of dataflow/callGraph. engine/README.md describes the fields
+export interface CallGraphResult {
+	units: number; // the source files in the project folders
+	scanned: number; // the source files of this scan
+	isComplete: boolean;
+	functions: number;
+	calls: number;
+	frames: CallGraphFrame[];
+	failed: string[]; // the source files that the scan could not parse
+	ms: number;
+}
+
+// The progress of the scan of the call graph
+export interface EngineProgress {
+	done: number;
+	total: number;
 }
 
 // The data of dataflow/includers: the source files of the compile databases that include a file
@@ -356,6 +398,10 @@ export interface IncludersResult {
 	isUnit: boolean; // the file is a source file of a compile database
 	scanned: boolean; // the request scanned all source files
 	scanMs: number; // the time of the last scan
+	// the source files in the project folders with no build folders, for example with no folder _deps of fetched
+	// libraries, and the source files of them that include the file
+	projectUnits: number;
+	projectIncluders: number;
 	ms: number;
 }
 
@@ -655,6 +701,9 @@ export class EngineClient implements vscode.Disposable {
 	// A file got a context after a parse alone with errors. The earlier results of the file came from the parse alone
 	private readonly contextEmitter = new vscode.EventEmitter<IncludeContext>();
 	readonly onDidSetContext = this.contextEmitter.event;
+	// The progress of the scan of the call graph, one time each second
+	private readonly progressEmitter = new vscode.EventEmitter<EngineProgress>();
+	readonly onProgress = this.progressEmitter.event;
 
 	constructor(private readonly options: EngineOptions) {}
 
@@ -678,6 +727,8 @@ export class EngineClient implements vscode.Disposable {
 		this.rpc.onNotification((n) => {
 			if (n.method === 'dataflow/status') {
 				this.statusEmitter.fire(n.params as EngineStatus);
+			} else if (n.method === 'dataflow/progress') {
+				this.progressEmitter.fire(n.params as EngineProgress);
 			}
 		});
 
@@ -777,9 +828,17 @@ export class EngineClient implements vscode.Disposable {
 		return this.request('dataflow/cost', { file, minCopyBytes, ...(unit ? { unit } : {}) }, token);
 	}
 
-	// The metrics of the functions of the file, for the heat score
-	metrics(file: string, token?: vscode.CancellationToken): Promise<FileResult & MetricsModel> {
-		return this.request('dataflow/metrics', { file }, token);
+	// The metrics of the functions of the file, for the heat score. With a complete call graph, also the reach of each
+	// function. frameFunctions: the names of more frame functions
+	metrics(file: string, frameFunctions: string[], token?: vscode.CancellationToken): Promise<FileResult & MetricsModel> {
+		return this.request('dataflow/metrics', { file, frameFunctions }, token);
+	}
+
+	// Makes the call graph of the project current: the first request scans all source files in the roots, a later request
+	// only the source files that changed. The engine runs one scan at a time. A cancel stops the scan, and the next
+	// request continues it
+	callGraph(roots: string[], frameFunctions: string[], token?: vscode.CancellationToken): Promise<CallGraphResult> {
+		return this.request('dataflow/callGraph', { roots, frameFunctions }, token);
 	}
 
 	// The call graph of the functions of the file
@@ -850,6 +909,7 @@ export class EngineClient implements vscode.Disposable {
 		this.stateEmitter.dispose();
 		this.statusEmitter.dispose();
 		this.contextEmitter.dispose();
+		this.progressEmitter.dispose();
 	}
 
 	// A request for a file. If the parse of the file alone has errors, and the file is a part of a source file, for

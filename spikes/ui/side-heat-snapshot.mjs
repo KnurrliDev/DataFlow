@@ -141,6 +141,9 @@ try {
 			reasons: [...doc.querySelectorAll('.heat-current .heat-reasons li')].map((l) => l.textContent),
 		},
 		notices: [...doc.querySelectorAll('.heat-details > p.sub')].map((p) => p.textContent),
+		scan: doc.querySelector('.heat-scan')?.textContent ?? null,
+		graph: doc.querySelector('.heat-graph summary')?.textContent ?? null,
+		graphText: doc.querySelector('.heat-graph')?.textContent ?? null,
 	};`);
 
 	await until(() => wb.evaluate('!!document.querySelector(".monaco-editor .view-lines")'), 'editor');
@@ -154,11 +157,21 @@ try {
 	if (!side) { throw new Error('the side view was not found'); }
 	await until(() => inSide(`return /Engine: ready/.test(doc.querySelector('.status')?.textContent ?? '');`), 'ready engine', 200);
 
-	// Heat on: the side view shows the tab Heat and the busy mark until the heat is ready
+	// Heat on: the side view shows the tab Heat and the busy mark until the heat is ready. The scan of the call graph
+	// starts, and at its end the function at the cursor gets its callers
 	await command('DataFlow: Toggle Heat');
-	await until(async () => { const s = await heatState(); return !s.busy && s.items.length > 0; }, 'heat of the functions', 200);
+	let sawScan = false;
+	await until(async () => {
+		const s = await heatState();
+		if (s.scan && !sawScan) {
+			sawScan = true;
+			await shot('scan', await sideBox());
+		}
+		return !s.busy && !!s.graph && (s.current?.reasons ?? []).some((t) => /calls it/.test(t));
+	}, 'heat with the callers', 240);
 	await sleep(800);
 	result.heat = await heatState();
+	result.sawScan = sawScan;
 	await shot('on', await sideBox());
 
 	// a click on a function of the list shows the function in the code

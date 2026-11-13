@@ -359,7 +359,9 @@ Example request: "Explain the members of HomeBatteryCtrl, and tell me how to mak
 
 Gives the heat score of each function of a file, as the lens Heat shows it: how much a change of the function can break. The functions come in the sequence of their scores, the hottest first.
 
-Each function has its lines, its score from 0 to 100, its band and its flames. It also has the points of reach, risk and history, and the reasons with their points. The notices tell which signals are not available, for example the callers, or the history with no git repository.
+Each function has its lines, its score from 0 to 100, its band and its flames. It also has the points of reach, risk and history, and the reasons with their points. `siloed` is true if the reach is less than 10. Then the risk and the history count half. The notices tell which signals are not available, for example the history with no git repository.
+
+The callers and the frame path come from the call graph of the project. The first call starts the scan of the call graph and does not wait for it. Until the scan is complete, `callGraph` tells the progress, and the reach has no callers and no frame path. Call the tool again later for the complete scores. If the user stopped the scan, `callGraph` tells it.
 
 | Parameter | Type | Function |
 | --- | --- | --- |

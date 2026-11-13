@@ -57,16 +57,20 @@ namespace DataFlow {
     // the methods that override each method, by the canonical declaration of the overridden method
     using overrides_t = std::unordered_map<const clang::CXXMethodDecl*, std::vector<const clang::CXXMethodDecl*>>;
 
-    // the files of the project: the main file and the files in the folders of the project. with no folders, all files
-    // except the system headers
+    // the files of the project: the main file and the files in the folders of the project, but not in the skipped
+    // folders. with no folders, all files except the system headers
     class ProjectFiles {
       const clang::SourceManager& sm_;
       std::vector<std::string> roots_;  // as keys of normalize_path
+      std::vector<std::string> skips_;
       llvm::DenseMap<clang::FileID, bool> files_;
 
      public:
-      ProjectFiles(const clang::SourceManager& _sm, const std::vector<std::string>& _roots) : sm_(_sm) {
+      ProjectFiles(const clang::SourceManager& _sm, const std::vector<std::string>& _roots,
+                   const std::vector<std::string>& _skips = {})
+          : sm_(_sm) {
         for (const std::string& r : _roots) roots_.push_back(normalize_path(r));
+        for (const std::string& s : _skips) skips_.push_back(normalize_path(s));
       }
 
       [[nodiscard]] bool contains(const clang::SourceLocation _loc) {
@@ -76,9 +80,10 @@ namespace DataFlow {
         const auto [it, isNew] = files_.try_emplace(sm_.getFileID(at), false);
         if (isNew) {
           const std::string key = normalize_path(file_of(sm_, at));
-          it->second            = std::ranges::any_of(roots_, [&](const std::string& _r) {
-            return key.size() > _r.size() && key.starts_with(_r) && llvm::sys::path::is_separator(key[_r.size()]);
-          });
+          const auto is_under   = [&](const std::string& _dir) {
+            return key.size() > _dir.size() && key.starts_with(_dir) && llvm::sys::path::is_separator(key[_dir.size()]);
+          };
+          it->second = std::ranges::any_of(roots_, is_under) && std::ranges::none_of(skips_, is_under);
         }
         return it->second;
       }  // contains

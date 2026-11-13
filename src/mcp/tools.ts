@@ -205,8 +205,12 @@ export function createTools(host: McpHost): McpTool[] {
 			[], true, (a) => host.outline(a.text('file'), a.text('name'), a.line('line'))),
 		tool('get_heat', 'Get the heat of the functions',
 			'The heat score of the functions of a C++ file: how much a change of a function can break, from 0 to 100, the hottest first. The score adds points of reach '
-			+ '(the source files that include the header of the declaration, and a virtual function), risk (decisions, nesting, writes to shared state, data that threads share, '
+			+ '(the frame path: a function that runs in each frame, for example from a main loop or a tick or paint override, and the functions that it calls; '
+			+ 'the functions that reach it through calls and their files; '
+			+ 'the source files that include the header of the declaration; a virtual function), risk (decisions, nesting, writes to shared state, data that threads share, '
 			+ 'allocations and copies in loops, a long body) and history (the commits, the fixes and the recent changes in git). Each point has a reason. '
+			+ 'A siloed function (reach less than 10) gets half of its risk and history. The callers and the frame path come from a scan of the call graph of the project. '
+			+ 'The first call starts the scan and does not wait: the result tells the progress, and a later call gets the callers. '
 			+ 'For a review, start with the hottest changed functions.',
 			{ file: FILE, function: { ...FUNCTION, description: 'One function: its qualified name or its name. Default: all functions of the file.' } },
 			[], true, (a) => host.heat(a.text('file'), a.text('function'))),

@@ -116,7 +116,7 @@ suite('Include Hierarchy', () => {
 		const res: IncludersResult = {
 			file: path.join(ROOT, 'lib', 'x.h'),
 			units: [path.join(ROOT, 'lib', 'b.cpp'), path.join(ROOT, 'app', 'a.cpp'), path.join(ROOT, 'lib', 'sub', 'c.cpp'), outside],
-			unitCount: 9, failed: [path.join(ROOT, 'bad.cpp')], isUnit: false, scanned: true, scanMs: 12, ms: 12,
+			unitCount: 9, failed: [path.join(ROOT, 'bad.cpp')], isUnit: false, scanned: true, scanMs: 12, projectUnits: 8, projectIncluders: 3, ms: 12,
 		};
 		const side = buildSideIncluders(res, res.file, [ROOT, path.join(ROOT, 'lib')]);
 		const names = side.units.map((u) => u.name);

@@ -1,4 +1,4 @@
-import type { MetricsFunction, ThreadsModel } from '../engine/client';
+import type { MetricsFunction, MetricsModel, MetricsReach, ThreadsModel } from '../engine/client';
 
 // The heat score of the functions of a file: how much a change of a function can break. The score adds points of
 // reach, risk and history, and each point has a reason. docs/heat-score-strategy.md gives the points. This module does
@@ -25,6 +25,7 @@ export interface HeatFunction {
 	reach: number;
 	risk: number;
 	history: number;
+	isSiloed: boolean; // the reach is less than 10 with the callers, thus the risk and the history count half
 	reasons: HeatReason[]; // the reasons with points, the largest first in each group
 }
 
@@ -32,7 +33,7 @@ export interface HeatModel {
 	file: string;
 	functions: HeatFunction[]; // in the sequence of the file
 	notices: string[]; // the signals that are not available
-	isReachComplete: boolean; // false: the reach has no callers and no frame path
+	isReachComplete: boolean; // false: the reach of one or more functions has no callers and no frame path
 }
 
 // The blame of a file: the commit of each line, and the time and the summary of each commit
@@ -49,6 +50,7 @@ export interface HeatInputs {
 	includeReach: (file: string) => { units: number; total: number } | undefined;
 	threads?: ThreadsModel; // undefined: no analysis of the threads
 	blame?: Blame; // undefined: no git history
+	callGraph?: MetricsModel['callGraph']; // the state of the call graph of the engine
 	now: number; // milliseconds since 1970
 }
 
@@ -118,10 +120,39 @@ export function parseBlame(porcelain: string): Blame {
 	return { lines, commits };
 }
 
-// The reach points: the include reach of the declaration, and an interface. The callers and the frame path need the
-// call graph of the engine
+// The text of a frame path: the frame function with its reason, the functions after it, and the function. A long path
+// shows the frame function, the number of the other functions and the last two functions
+function framePathText(frame: NonNullable<MetricsReach['frame']>, name: string): string {
+	const [first, ...rest] = [...frame.path, name];
+	const tail = rest.length > 3 ? [`${rest.length - 2} more`, ...rest.slice(-2)] : rest;
+	return [`${first} (${frame.reason})`, ...tail].join(', then ');
+}
+
+// The reach points: the frame path, the callers and their files from the call graph of the engine, the include reach of
+// the declaration, and an interface
 function reachReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 	const out: HeatReason[] = [];
+	const graph = fn.reach;
+	if (graph?.frame) {
+		out.push({
+			group: 'reach', points: 40,
+			text: graph.frame.path.length === 0 ? `Runs in each frame: ${graph.frame.reason}` : `On the frame path: ${framePathText(graph.frame, fn.qualifiedName)}`,
+		});
+		if (graph.frame.isInLoop) {
+			out.push({ group: 'reach', points: 10, text: 'A caller on the frame path calls it in a loop' });
+		}
+	}
+	// the transitive callers show how much code depends on the function
+	if (graph && graph.transitiveCallers > 0) {
+		const all = `${graph.transitiveCallers}${graph.isCapped ? ' or more' : ''}`;
+		const text = graph.transitiveCallers === graph.callers
+			? `${plural(graph.callers, 'function calls', 'functions call')} it directly`
+			: `${all} ${graph.transitiveCallers === 1 ? 'function calls' : 'functions call'} it, ${graph.callers} of them directly`;
+		out.push({ group: 'reach', points: logPoints(graph.transitiveCallers, 2, 10), text });
+	}
+	if (graph && graph.callerFiles > 0) {
+		out.push({ group: 'reach', points: Math.min(5, graph.callerFiles), text: `Callers in ${plural(graph.callerFiles, 'other file', 'other files')}` });
+	}
 	const reach = inputs.includeReach(fn.declaration.file);
 	if (reach && reach.total > 0 && reach.units > 0) {
 		const points = Math.min(8, Math.round((16 * reach.units) / reach.total));
@@ -239,14 +270,14 @@ const sum = (reasons: HeatReason[]): number => reasons.reduce((n, r) => n + r.po
 const byPoints = (a: HeatReason, b: HeatReason): number => b.points - a.points;
 
 export function buildHeat(inputs: HeatInputs): HeatModel {
-	// the reach has no callers yet, so no function counts as siloed
-	const isReachComplete = false;
 	const functions = inputs.functions.map((fn): HeatFunction => {
 		const reach = reachReasons(fn, inputs).sort(byPoints);
 		const risk = riskReasons(fn, inputs).sort(byPoints);
 		const history = historyReasons(fn, inputs).sort(byPoints);
 		const reachPoints = Math.min(MAX_REACH, sum(reach));
-		const factor = isReachComplete && reachPoints < SILOED_REACH ? 0.5 : 1;
+		// only the callers show that a function is siloed
+		const isSiloed = !!fn.reach && reachPoints < SILOED_REACH;
+		const factor = isSiloed ? 0.5 : 1;
 		const riskPoints = Math.floor(Math.min(MAX_RISK, sum(risk)) * factor);
 		const historyPoints = Math.floor(Math.min(MAX_HISTORY, sum(history)) * factor);
 		const score = Math.min(100, reachPoints + riskPoints + historyPoints);
@@ -262,15 +293,27 @@ export function buildHeat(inputs: HeatInputs): HeatModel {
 			reach: reachPoints,
 			risk: riskPoints,
 			history: historyPoints,
+			isSiloed,
 			reasons: [...reach, ...risk, ...history],
 		};
 	});
-	const notices = ['The reach has only the include reach. DataFlow does not count the callers and the frame path yet.'];
+
+	// the engine gives the reach of all functions when the call graph is complete. A function that is newer than the
+	// scan has no node in the graph
+	const notices: string[] = [];
+	const missing = inputs.functions.filter((f) => f.reach === null).length;
+	if (inputs.functions.some((f) => f.reach === undefined)) {
+		notices.push(inputs.callGraph?.state === 'scanning'
+			? 'The scan of the call graph runs. Until it is complete, the reach has no callers and no frame path.'
+			: 'The call graph is not complete. The reach has no callers and no frame path.');
+	} else if (missing > 0) {
+		notices.push(`The call graph has no data for ${plural(missing, 'function', 'functions')} of the file, for example a function that is newer than the scan. The reach of ${missing === 1 ? 'this function' : 'these functions'} has no callers.`);
+	}
 	if (!inputs.blame) {
 		notices.push('No history: the file is not in a git repository, or git cannot blame it.');
 	}
 	if (!inputs.threads) {
 		notices.push('No threads: the analysis of the threads gave no result.');
 	}
-	return { file: inputs.file, functions, notices, isReachComplete };
+	return { file: inputs.file, functions, notices, isReachComplete: inputs.functions.every((f) => !!f.reach) };
 }

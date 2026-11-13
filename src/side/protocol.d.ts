@@ -268,7 +268,21 @@ export interface SideHeatFunction {
 	reach: number;
 	risk: number;
 	history: number;
+	isSiloed: boolean; // the risk and the history count half, because the reach is small
 	reasons: SideHeatReason[];
+}
+
+// The call graph of the engine for the reach of the heat score: the state of the scan, and the data of the last
+// complete scan. stopped: the user stopped the scan. Lines start at 1
+export interface SideCallGraph {
+	state: 'scanning' | 'stopped' | 'ready' | 'failed';
+	done: number;
+	total: number;
+	error?: string;
+	units?: number; // the source files of the last complete scan
+	functions?: number;
+	failed?: number; // the source files that the scan could not parse
+	frames: { name: string; file: string; line: number; reason: string }[]; // the frame functions
 }
 
 // The heat of the functions of the file. isLoading: a computation runs. The functions of the last computation of the
@@ -279,6 +293,7 @@ export interface SideHeat {
 	functions: SideHeatFunction[];
 	notices: string[]; // the signals that are not available
 	error?: string;
+	graph?: SideCallGraph; // undefined: no scan of the call graph
 }
 
 // The call graph of the file of the side view: the functions, the links between them with the data of the calls, the
@@ -803,7 +818,9 @@ export type SideAction =
 	| { type: 'guideGo'; index: number } // shows a step of the guide
 	| { type: 'guideStatus'; index: number; status: SideGuideStatus } // the mark of the user on a step
 	| { type: 'guideCopy' } // puts the summary of the guide on the clipboard
-	| { type: 'guideClose' }; // removes the guide
+	| { type: 'guideClose' } // removes the guide
+	| { type: 'heatScan' } // starts the scan of the call graph, or continues a scan that stopped
+	| { type: 'heatStop' }; // stops the scan of the call graph
 
 export type FromSide =
 	| { type: 'ready' }

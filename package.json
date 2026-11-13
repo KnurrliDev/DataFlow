@@ -545,6 +545,15 @@
           "minimum": 0,
           "description": "A copy of a trivially copyable type of this size in bytes or less does not show in Hidden C++."
         },
+        "dataflow.heat.frameFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "More frame functions for the lens Heat, for example `Renderer::frame` or `frame`. A frame function runs in each frame, and the functions that it calls are on the frame path. Use a qualified name with `::` or the end of a qualified name. DataFlow finds the overrides of the frame functions of Unreal Engine and Qt, and the functions that a main loop calls."
+        },
         "dataflow.ripple.asyncFunctions": {
           "type": "array",
           "items": {

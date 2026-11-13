@@ -16,7 +16,7 @@ import { mkdir, readFile, rm, stat } from 'fs/promises';
 import { HomeView } from './home';
 import {
 	CallGraphModel, CostModel, EngineClient, EngineFunction, FlowModel, FlowOptions, FunctionSelector, IncludeContext, LogicModel, LogicOptions, MemberEntry,
-	MemberModel, MemberOptions, ThreadsModel,
+	MemberModel, MemberOptions, MetricsModel, ThreadsModel,
 } from './engine/client';
 import { ALL_COST_CATEGORIES, buildCostMarks, CostCategory, costCounts, CostFilter, functionItems } from './lenses/cost';
 import { buildFlowView, findVariable, LineText, ordinalOf, toUtf16Column, toUtf8Column, variableAt } from './lenses/flow';
@@ -44,7 +44,7 @@ import { SideViewController } from './side/controller';
 import { functionTitle, withBrackets } from './side/names';
 import { typeDefinitionLine } from './side/outline';
 import type { SideAction, SideCallListSite, SideGuide, SideViewState } from './side/protocol';
-import { Lens, LogicPathState, StateStore } from './state/store';
+import { CallGraphView, Lens, LogicPathState, StateStore } from './state/store';
 import { StatusBar } from './statusbar';
 
 // The objects that the integration tests read. Code gets this API from getExtension(...).exports.
@@ -188,7 +188,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 	// reads the settings of Logic Map, Flow Lens, Change Ripple and Hidden C++ from this file. A setting of the file wins
 	// over the setting of VS Code, as a setting of a folder does.
 	const projectSettings = new ProjectSettings((message) => log.warn(message));
-	const PROJECT_SECTIONS = ['dataflow.logic', 'dataflow.flow', 'dataflow.ripple', 'dataflow.cost'];
+	const PROJECT_SECTIONS = ['dataflow.logic', 'dataflow.flow', 'dataflow.ripple', 'dataflow.cost', 'dataflow.heat'];
 	const settingOf = <T>(section: string, key: string, uri: vscode.Uri | undefined, fallback: T): T => {
 		const project = cdb.project;
 		if (project && PROJECT_SECTIONS.includes(section)
@@ -287,6 +287,11 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 	let heat: { file: string; uri: string } | undefined;
 	let heatRequest: vscode.CancellationTokenSource | undefined;
 	let heatTimer: NodeJS.Timeout | undefined;
+	// The scan of the call graph for the reach of the heat: the request that runs, a stop of the user, and a save of a C
+	// or C++ file after the last scan
+	let graphRequest: vscode.CancellationTokenSource | undefined;
+	let isGraphStopped = false;
+	let isGraphOld = false;
 
 	// The first failure of the call hierarchy of VS Code in this window. DataFlow does not ask it again. runningHierarchy
 	// settles when the running request settles
@@ -380,6 +385,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		const isReviewShown = !!store.state.review && side.isOpen;
 		const old = engine;
 		engine = undefined;
+		clearCallGraph();
 		await old?.stop();
 		old?.dispose();
 		store.update({ parsing: [], fn: undefined });
@@ -1632,25 +1638,108 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		return out === undefined ? undefined : parseBlame(out);
 	};
 
-	// The heat of the functions of a document: the metrics of the engine, the threads, the blame of git, and the include
-	// reach of each file with declarations of the functions
+	// The names of more frame functions for the frame paths of the heat
+	const frameFunctionsOf = (uri: vscode.Uri | undefined): string[] => settingOf<string[]>('dataflow.heat', 'frameFunctions', uri, []);
+
+	// Scans the call graph of the project in the engine, or the source files that changed after the last scan. The scan
+	// does not block: the side view shows its progress, and the heat of the file of the lens comes again at its end
+	const scanCallGraph = (client: EngineClient, uri: vscode.Uri | undefined): void => {
+		if (graphRequest) {
+			return;
+		}
+		const request = new vscode.CancellationTokenSource();
+		graphRequest = request;
+		isGraphStopped = false;
+		isGraphOld = false;
+		const result = store.state.callGraph?.result;
+		const update = (view: CallGraphView): void => {
+			if (graphRequest === request) {
+				store.update({ callGraph: view });
+			}
+		};
+		update({ state: 'scanning', done: 0, total: 0, ...(result ? { result } : {}) });
+		const progress = client.onProgress((p) => update({ state: 'scanning', done: p.done, total: p.total, ...(result ? { result } : {}) }));
+		client.callGraph(projectRoots(), frameFunctionsOf(uri), request.token).then((scan) => {
+			update({ state: 'ready', done: scan.scanned, total: scan.scanned, result: scan });
+			if (scan.failed.length > 0) {
+				log.warn(`The scan of the call graph could not parse ${scan.failed.length} source files: ${scan.failed.slice(0, 5).join(', ')}`);
+			}
+			log.info(`The call graph has ${scan.functions} functions and ${scan.calls} calls. The scan parsed ${scan.scanned} of ${scan.units} source files in ${Math.round(scan.ms)} ms.`);
+			reloadHeat();
+		}, (error) => {
+			const last = store.state.callGraph;
+			const done = { done: last?.done ?? 0, total: last?.total ?? 0, ...(result ? { result } : {}) };
+			if (request.token.isCancellationRequested) {
+				update({ state: 'stopped', ...done });
+			} else {
+				update({ state: 'failed', ...done, error: error instanceof Error ? error.message : String(error) });
+			}
+		}).finally(() => {
+			progress.dispose();
+			request.dispose();
+			if (graphRequest === request) {
+				graphRequest = undefined;
+			}
+		});
+	};
+
+	// Starts the scan of the call graph on demand: if the engine has no complete graph, or if a C or C++ file changed after
+	// the last scan. After a stop of the user, only the user starts the scan again
+	const requestCallGraph = (client: EngineClient, state: MetricsModel['callGraph']['state'], uri: vscode.Uri | undefined): void => {
+		if (!graphRequest && !isGraphStopped && (state === 'none' || state === 'partial' || (state === 'ready' && isGraphOld))) {
+			scanCallGraph(client, uri);
+		}
+	};
+
+	const stopCallGraph = (): void => {
+		isGraphStopped = true;
+		graphRequest?.cancel();
+	};
+
+	// The engine stopped, and its call graph is gone. A stop of the user stays
+	const clearCallGraph = (): void => {
+		const request = graphRequest;
+		graphRequest = undefined;
+		request?.cancel();
+		isGraphOld = false;
+		if (store.state.callGraph) {
+			store.update({ callGraph: undefined });
+		}
+	};
+
+	// The heat of the functions of a document: the metrics of the engine with the reach from the call graph, the threads,
+	// the blame of git, and the include reach of each file with declarations of the functions. If necessary, the scan of
+	// the call graph starts
 	const computeHeat = async (client: EngineClient, doc: vscode.TextDocument, token?: vscode.CancellationToken): Promise<HeatModel> => {
 		flushChange(doc);
 		const file = doc.uri.fsPath;
 		const roots = projectRoots();
 		const [metrics, threadsModel, blame] = await Promise.all([
-			client.metrics(file, token),
+			client.metrics(file, frameFunctionsOf(doc.uri), token),
 			client.threads(file, { asyncFunctions: asyncFunctionsOf(doc.uri), roots }, token).catch(() => undefined),
 			blameOf(doc).catch(() => undefined),
 		]);
+		requestCallGraph(client, metrics.callGraph.state, doc.uri);
+		// the include reach counts only the source files of the project, not for example the fetched libraries
 		const reach = new Map<string, { units: number; total: number }>();
 		for (const decl of new Set(metrics.functions.map((f) => f.declaration.file).filter((f) => f))) {
 			const res = await client.includers(decl, roots, token).catch(() => undefined);
 			if (res) {
-				reach.set(fileKey(decl), { units: res.units.length, total: res.unitCount });
+				reach.set(fileKey(decl), { units: res.projectIncluders, total: res.projectUnits });
 			}
 		}
-		return buildHeat({ file, functions: metrics.functions, includeReach: (f) => reach.get(fileKey(f)), threads: threadsModel, blame, now: Date.now() });
+		return buildHeat({
+			file, functions: metrics.functions, includeReach: (f) => reach.get(fileKey(f)), threads: threadsModel, blame,
+			callGraph: graphRequest ? { state: 'scanning' } : metrics.callGraph, now: Date.now(),
+		});
+	};
+
+	// The heat of the file of the lens comes again, for example with the reach of a new call graph
+	const reloadHeat = (): void => {
+		const doc = heat && vscode.workspace.textDocuments.find((d) => d.uri.toString() === heat?.uri);
+		if (doc && store.state.lenses.heat) {
+			void loadHeat(doc);
+		}
 	};
 
 	// Computes the heat of the file for the lens Heat. A newer computation cancels the older one. While a computation
@@ -2628,6 +2717,16 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 					mcpHost.removeLayer(side.file);
 				}
 				break;
+			case 'heatScan': {
+				const client = engine;
+				if (client?.currentState === 'ready') {
+					scanCallGraph(client, editor?.document.uri);
+				}
+				break;
+			}
+			case 'heatStop':
+				stopCallGraph();
+				break;
 		}
 	};
 
@@ -2776,6 +2875,10 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		if (affects('dataflow.mcp')) {
 			void applyMcpSettings(affects('dataflow.mcp.port'));
 		}
+		// the frame functions of the setting change the frame paths. The engine finds them in the graph at each request
+		if (affects('dataflow.heat')) {
+			reloadHeat();
+		}
 	};
 
 	// The settings file of the project. A change of a setting works as a change of the settings of VS Code
@@ -2892,6 +2995,14 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			if (review && doc.uri.scheme === 'file' && isCppFile(doc.uri.fsPath) && isInside(doc.uri.fsPath, review.root)) {
 				clearTimeout(reviewUpdate);
 				reviewUpdate = setTimeout(() => void runReview(true), REVIEW_UPDATE_MS);
+			}
+			// a saved file makes the call graph old. With the lens Heat, the update starts at once
+			if (doc.uri.scheme === 'file' && isCppFile(doc.uri.fsPath) && store.state.callGraph) {
+				isGraphOld = true;
+				const client = engine;
+				if (client?.currentState === 'ready' && store.state.lenses.heat && store.state.callGraph.state === 'ready') {
+					requestCallGraph(client, 'ready', doc.uri);
+				}
 			}
 		}),
 		vscode.workspace.onDidChangeTextDocument((e) => {

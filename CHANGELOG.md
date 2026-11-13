@@ -3,10 +3,14 @@
 ## Unreleased
 
 - Heat: the new lens shows how much a change of each function can break. Each function gets a score from 0 to 100, 1 to 5 flames before the line number of its name, and a strip in the color of its band.
-- The score adds points of reach, risk and history. The reach comes from the source files that include the declaration. The risk comes from the decisions, the nesting, the writes to shared state, the data that threads share, the costs in loops and the length. The history comes from the commits of git. The reach does not count the callers yet.
-- The tab Heat shows each point of the function at the cursor with its reason, and the functions of the file, the hottest first.
+- The score adds points of reach, risk and history. The reach comes from the frame path, the callers and their files, and the source files that include the declaration. The callers are all functions that reach the function through calls. The risk comes from the decisions, the nesting, the writes to shared state, the data that threads share, the costs in loops and the length. The history comes from the commits of git.
+- A function on the frame path runs in each frame and is hot. A frame path starts at an override of a frame function of Unreal Engine or Qt, or at a function that a main loop calls. The new setting `dataflow.heat.frameFunctions` adds more frame functions.
+- If the reach of a function is less than 10, its risk and its history count half. Thus a complex function that only a small part of the project uses stays cool.
+- The callers come from a scan of the call graph of the project in the engine. The scan starts with Heat and does not block DataFlow. The tab Heat shows its progress with **Stop** and **Continue**. After a save, an update parses only the source files that include a changed file.
+- The scan and the include reach skip the build folders in the project folders, for example the libraries that CMake fetches into `_deps`.
+- The tab Heat shows each point of the function at the cursor with its reason, the functions of the file, the hottest first, and the frame functions of the project.
 - The command **DataFlow: Toggle Heat**, and the theme colors `dataflow.heatCool`, `dataflow.heatWarm`, `dataflow.heatHot` and `dataflow.heatVeryHot`.
-- The engine has the new request `dataflow/metrics`, and the MCP server has the new tool `get_heat`.
+- The engine has the new requests `dataflow/metrics` and `dataflow/callGraph`, and the MCP server has the new tool `get_heat`.
 
 ## 0.4.0
 

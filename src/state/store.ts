@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { CompileDbInfo } from '../cdb/manager';
-import { EngineFunction, EngineState, MemberModel } from '../engine/client';
+import { CallGraphResult, EngineFunction, EngineState, MemberModel } from '../engine/client';
 import type { CostCategory, CostItemInfo, CostMark } from '../lenses/cost';
 import type { FlowView } from '../lenses/flow';
 import type { HeatModel } from '../lenses/heat';
@@ -19,6 +19,15 @@ export interface HeatLayerState {
 	isLoading: boolean;
 	model?: HeatModel;
 	error?: string;
+}
+
+// The scan of the call graph of the engine, for the reach of the heat score. stopped: the user stopped the scan
+export interface CallGraphView {
+	state: 'scanning' | 'stopped' | 'ready' | 'failed';
+	done: number; // the progress of the scan
+	total: number;
+	error?: string;
+	result?: CallGraphResult; // the last complete scan
 }
 
 // The variable or the data member that Flow Lens traces. Lines start at 0.
@@ -105,6 +114,7 @@ export interface DataFlowState {
 	callsLayer?: SideCalls; // the call graph of the file
 	threadsLayer?: SideThreads; // the threads and the shared data of the file
 	heatLayer?: HeatLayerState; // the heat of the functions of the file
+	callGraph?: CallGraphView; // the scan of the call graph. Undefined: no scan
 	review?: ReviewState; // the state of the last review
 	rippleLayer?: RippleLayerState; // the ripple of the last review
 	modelLayers: SideModel[]; // the blocks and the notes of a language model, one layer for each file

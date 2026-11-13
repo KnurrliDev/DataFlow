@@ -392,13 +392,22 @@ export class DataFlowMcpHost implements McpHost {
 				throw new Error(`No function ${fn} in ${path.basename(f)}. Call list_functions.`);
 			}
 		}
+		// the scan of the call graph does not block the tool. Its state tells the model when to call again
+		const graph = this.deps.store.state.callGraph;
+		const progress = graph && graph.total > 0 ? `runs: ${graph.done} of ${graph.total} source files` : 'starts';
+		const scan = graph?.state === 'scanning'
+			? `The scan of the call graph ${progress}. Call get_heat again later for the callers and the frame paths.`
+			: graph?.state === 'stopped' ? 'The user stopped the scan of the call graph. The reach has no callers and no frame paths.'
+				: graph?.state === 'failed' ? `The scan of the call graph failed: ${graph.error ?? 'no reason'}` : undefined;
 		return {
 			file: f,
 			functions: functions.slice(0, MAX_ITEMS).map((h) => ({
 				name: h.qualifiedName || h.name, lines: [h.first, h.last], score: h.score, band: h.band === 'veryHot' ? 'very hot' : h.band, flames: h.flames,
-				reach: h.reach, risk: h.risk, history: h.history, reasons: h.reasons.map((r) => `${r.text} (+${r.points} ${r.group})`),
+				reach: h.reach, risk: h.risk, history: h.history, ...(h.isSiloed ? { siloed: true } : {}),
+				reasons: h.reasons.map((r) => `${r.text} (+${r.points} ${r.group})`),
 			})),
 			...(functions.length > MAX_ITEMS ? { more: functions.length - MAX_ITEMS } : {}),
+			...(scan ? { callGraph: scan } : {}),
 			notices: model.notices,
 		};
 	}

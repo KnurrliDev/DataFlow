@@ -239,7 +239,12 @@ test('Heat: the flames and the strips of the functions, the tab Heat with the re
 	assert.ok(h.current.reasons.includes('+8 types.hpp with the declaration is in 2 of 2 source files'), JSON.stringify(h.current.reasons));
 	assert.ok(h.current.reasons.some((t) => /^\+\d+ \d+ decisions$/.test(t)), JSON.stringify(h.current.reasons));
 	assert.ok(h.current.reasons.includes('+2 Changed in 1 commit') && h.current.reasons.includes('+2 Changed in the last 30 days'), JSON.stringify(h.current.reasons));
-	assert.ok(h.notices.some((n) => /does not count the callers/.test(n)), JSON.stringify(h.notices));
+	// the call graph: main() in main.cpp calls process(). The fixture has no frame functions
+	assert.ok(h.current.reasons.includes('+2 1 function calls it directly') && h.current.reasons.includes('+1 Callers in 1 other file'),
+		JSON.stringify(h.current.reasons));
+	assert.match(h.graph, /^Call graph: \d+ functions in 2 source files$/);
+	assert.match(h.graphText, /The call graph has no frame functions/);
+	assert.ok(!h.notices.some((n) => /call graph/.test(n)) && h.scan === null, JSON.stringify(h));
 	// a click in the list shows the function in the code, and Heat off removes the flames and the strips
 	assert.equal(typeof r.revealed, 'number');
 	assert.equal(r.off, true);

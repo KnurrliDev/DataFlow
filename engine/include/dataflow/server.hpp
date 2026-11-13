@@ -1,5 +1,6 @@
 #pragma once
 
+#include <dataflow/callgraph.hpp>
 #include <dataflow/calls.hpp>
 #include <dataflow/cost.hpp>
 #include <dataflow/definition.hpp>
@@ -129,6 +130,15 @@ namespace DataFlow {
     // index is old
     std::mutex units_mutex_;
     std::shared_ptr<const UnitIndex> units_;
+
+    // the call graph of the project for the reach of the heat score. one scan at a time works on a copy of the graph,
+    // and the graph changes when the scan ends
+    std::mutex graph_mutex_;
+    std::shared_ptr<const ProjectGraph> graph_;
+    bool isGraphScanning_ = false;
+    size_t graphDone_ = 0, graphTotal_ = 0;    // the progress of the scan
+    std::shared_ptr<const FramePaths> paths_;  // the frame paths of graph_ for pathNames_
+    std::vector<std::string> pathNames_;
   };  // Server
 
   // a request that needs the ast of a file
@@ -195,6 +205,35 @@ namespace DataFlow {
           if (const auto s = v.getAsString()) out.push_back(s->str());
       return out;
     }  // get_strings
+
+    // a complete call graph of the server with its frame paths, and the state of the call graph
+    struct GraphView {
+      std::shared_ptr<const ProjectGraph> graph_;  // null if the graph is not complete
+      std::shared_ptr<const FramePaths> paths_;
+      JsonObject state_;
+    };  // GraphView
+
+    // the state is none, scanning, partial or ready. a partial graph is from a first scan that stopped. _names: the
+    // frame functions of the setting
+    [[nodiscard]] inline GraphView graph_view(Server& _srv, const std::vector<std::string>& _names) {
+      const std::lock_guard lock(_srv.graph_mutex_);
+      GraphView out;
+      const bool isComplete = _srv.graph_ && is_graph_complete(*_srv.graph_);
+      const char* state = _srv.isGraphScanning_ ? "scanning" : !_srv.graph_ ? "none" : isComplete ? "ready" : "partial";
+      out.state_        = JsonObject{{"state", state}};
+      if (_srv.isGraphScanning_) {
+        out.state_["done"]  = int64_t(_srv.graphDone_);
+        out.state_["total"] = int64_t(_srv.graphTotal_);
+      }
+      if (!isComplete) return out;
+      if (!_srv.paths_ || _srv.pathNames_ != _names) {
+        _srv.paths_     = std::make_shared<const FramePaths>(frame_paths(*_srv.graph_, _names));
+        _srv.pathNames_ = _names;
+      }
+      out.graph_ = _srv.graph_;
+      out.paths_ = _srv.paths_;
+      return out;
+    }  // graph_view
   }  // namespace Detail
 
   // params: compileCommands, resourceDir, maxThreads, cacheSize
@@ -296,6 +335,108 @@ namespace DataFlow {
   inline void post_file_request(Server& _srv, const Json& _id, const std::string& _file, FileWork&& _work) {
     post_entry_request(_srv, _id, _file, [work = std::move(_work)](TuEntry& _e) { return work(*_e.ast_); });
   }  // post_file_request
+
+  // makes the call graph of the server current: a new graph for other project folders, else a scan of the source files
+  // that need a scan. the scan runs on half of the threads of the pool, and sends dataflow/progress one time each
+  // second. a cancel stops the scan. a stopped first scan keeps its source files for the next scan, and a stopped
+  // update keeps the complete graph. params: roots, frameFunctions
+  inline void post_call_graph(Server& _srv, const Json& _id, const JsonObject* _params) {
+    {
+      const std::lock_guard lock(_srv.graph_mutex_);
+      if (_srv.isGraphScanning_)
+        return Protocol::reply_error(_id, Protocol::ec_invalid_params, "a scan of the call graph runs");
+      _srv.isGraphScanning_ = true;
+      _srv.graphDone_       = 0;
+      _srv.graphTotal_      = 0;
+    }
+    const std::string key = Detail::id_key(_id);
+    auto cancelled        = std::make_shared<std::atomic<bool>>(false);
+    {
+      const std::lock_guard lock(_srv.cancel_mutex_);
+      _srv.cancels_[key] = cancelled;
+    }
+
+    _srv.pool_->post([&_srv, id = _id, key, roots = Detail::get_strings(_params, "roots"),
+                      names = Detail::get_strings(_params, "frameFunctions"), cancelled]() {
+      const auto start = std::chrono::steady_clock::now();
+      std::shared_ptr<const ProjectGraph> old;
+      {
+        const std::lock_guard lock(_srv.graph_mutex_);
+        old = _srv.graph_;
+      }
+      const bool isSame                 = old && old->roots_ == roots;
+      const bool wasComplete            = isSame && is_graph_complete(*old);
+      const std::vector<Buffer> buffers = _srv.buffers_.snapshot();
+      const uint32_t threads            = std::max(1u, _srv.pool_->get_count() / 2);
+      const auto parallel = [&](const std::function<void()>& _fn) { _srv.pool_->run_on_threads(threads, _fn); };
+
+      // the index of the includes gives the source files of a changed header. a new graph needs no index
+      std::shared_ptr<const UnitIndex> index;
+      if (isSame) {
+        const std::lock_guard lock(_srv.units_mutex_);
+        if (!_srv.units_ || is_index_old(*_srv.units_, roots, buffers_key(buffers)))
+          _srv.units_ =
+              std::make_shared<const UnitIndex>(build_unit_index(_srv.dbs_, _srv.resource_dir_, buffers, parallel));
+        index = _srv.units_;
+      }
+      std::optional<ProjectGraph> fresh;
+      if (!isSame) fresh = new_graph(_srv.dbs_, roots);
+      const std::vector<size_t> todo = old_units(isSame ? *old : *fresh, index.get(), buffers);
+      {
+        const std::lock_guard lock(_srv.graph_mutex_);
+        _srv.graphTotal_ = todo.size();
+      }
+      Protocol::notify("dataflow/progress",
+                       JsonObject{{"id", id}, {"done", int64_t(0)}, {"total", int64_t(todo.size())}});
+
+      // the progress one time each second, and at the end. the threads can tell their counts out of sequence
+      std::mutex progress_mutex;
+      auto sent         = std::chrono::steady_clock::now();
+      size_t most       = 0;
+      const auto report = [&](const size_t _done) {
+        const std::lock_guard lock(progress_mutex);
+        most = std::max(most, _done);
+        {
+          const std::lock_guard graph_lock(_srv.graph_mutex_);
+          _srv.graphDone_ = most;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (most < todo.size() && now - sent < std::chrono::seconds(1)) return;
+        sent = now;
+        Protocol::notify("dataflow/progress",
+                         JsonObject{{"id", id}, {"done", int64_t(most)}, {"total", int64_t(todo.size())}});
+      };
+
+      // the scan works on a copy, because the requests of the metrics read the graph
+      std::shared_ptr<const ProjectGraph> result;
+      if (!isSame || !todo.empty()) {
+        ProjectGraph next     = isSame ? ProjectGraph(*old) : std::move(*fresh);
+        const auto is_stopped = [&]() { return cancelled->load(); };
+        const bool isComplete = todo.empty() || scan_graph(next, _srv.dbs_, _srv.resource_dir_, buffers, todo, parallel,
+                                                           is_stopped, report);
+        if (isComplete || !wasComplete) result = std::make_shared<const ProjectGraph>(std::move(next));
+      }
+      {
+        const std::lock_guard lock(_srv.graph_mutex_);
+        if (result) {
+          _srv.graph_ = std::move(result);
+          _srv.paths_.reset();
+        }
+        _srv.isGraphScanning_ = false;
+      }
+      {
+        const std::lock_guard lock(_srv.cancel_mutex_);
+        _srv.cancels_.erase(key);
+      }
+      if (cancelled->load()) return Protocol::reply_error(id, Protocol::ec_request_cancelled, "request cancelled");
+
+      const Detail::GraphView view = Detail::graph_view(_srv, names);
+      if (!view.graph_) return Protocol::reply_error(id, Protocol::ec_internal, "the call graph is not complete");
+      JsonObject out = graph_to_json(*view.graph_, *view.paths_, todo.size());
+      out["ms"]      = elapsed_ms(start);
+      Protocol::reply(id, std::move(out));
+    });
+  }  // post_call_graph
 
   // the function of a request: by name (function) or by position (line and col, from 1). with a name, a line selects
   // one of the overloads
@@ -407,6 +548,9 @@ namespace DataFlow {
     if (!_id) return;
     if (!_srv.isInitialized_) return reply(std::unexpected("not initialized"));
 
+    // the call graph of the project for the heat score. it needs no file
+    if (_method == "dataflow/callGraph") return post_call_graph(_srv, *_id, _params);
+
     const auto file = Detail::get_string(_params, "file");
     if (!file) return reply(std::unexpected(_method + " needs a file"));
 
@@ -469,7 +613,20 @@ namespace DataFlow {
         JsonObject out = includers_to_json(*index, file);
         out["file"]    = file;
         out["scanned"] = isScanned;
-        out["ms"]      = elapsed_ms(start);
+
+        // the source files of the folders of the project with no build folders, for the include reach of the heat
+        const GraphScope scope = graph_scope(srv.dbs_, roots);
+        const std::string key  = normalize_path(file);
+        int64_t projectUnits = 0, projectIncluders = 0;
+        for (const std::string& u : index->unitKeys_) projectUnits += Detail::is_in_scope(scope, u) ? 1 : 0;
+        if (const auto it = index->files_.find(key); it != index->files_.end())
+          for (const int32_t u : index->includers_[size_t(it->second)]) {
+            const std::string& unit = index->unitKeys_[size_t(u)];
+            projectIncluders += unit != key && Detail::is_in_scope(scope, unit) ? 1 : 0;
+          }
+        out["projectUnits"]     = projectUnits;
+        out["projectIncluders"] = projectIncluders;
+        out["ms"]               = elapsed_ms(start);
         Protocol::reply(id, std::move(out));
       });
       return;
@@ -605,13 +762,24 @@ namespace DataFlow {
                                  out["function"] = function_to_json(**fn, _ast.getSourceManager());
                                  return out;
                                });
-    // the metrics of the functions of the file for the heat score: decisions, depth, loops, writes and costs in loops
+    // the metrics of the functions of the file for the heat score: decisions, depth, loops, writes and costs in loops.
+    // with a complete call graph, also the reach of each function. frameFunctions: the frame functions of the setting
     if (_method == "dataflow/metrics")
-      return post_file_request(_srv, *_id, *file, [](clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
-        const std::vector<const clang::FunctionDecl*> fns = main_file_functions(_ast);
-        return metrics_to_json(build_metrics(fns, main_file_instantiations(_ast), _ast.getASTContext()),
-                               _ast.getSourceManager());
-      });
+      return post_file_request(_srv, *_id, *file,
+                               [&srv = _srv, names = Detail::get_strings(&params, "frameFunctions")](
+                                   clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
+                                 const std::vector<const clang::FunctionDecl*> fns = main_file_functions(_ast);
+                                 const std::vector<FunctionMetrics> metrics =
+                                     build_metrics(fns, main_file_instantiations(_ast), _ast.getASTContext());
+                                 JsonObject out               = metrics_to_json(metrics, _ast.getSourceManager());
+                                 const Detail::GraphView view = Detail::graph_view(srv, names);
+                                 if (JsonArray* list = out.getArray("functions"); list && view.graph_)
+                                   for (size_t i = 0; i < metrics.size() && i < list->size(); ++i)
+                                     if (JsonObject* o = (*list)[i].getAsObject())
+                                       (*o)["reach"] = reach_to_json(*view.graph_, *view.paths_, *metrics[i].fn_);
+                                 out["callGraph"] = JsonObject(view.state_);
+                                 return out;
+                               });
     // with a unit, the hidden c++ of a header in the translation unit of a source file that includes it. thus the
     // templates of the header get the items of their instantiations in the source file
     if (_method == "dataflow/cost") {

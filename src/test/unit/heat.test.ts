@@ -99,9 +99,60 @@ suite('Heat', () => {
 		assert.strictEqual(heat.functions[0].reach, 10);
 		// a function of the source file only: no reach
 		assert.deepStrictEqual([heat.functions[1].reach, heat.functions[1].reasons], [0, []]);
-		// the reach has no callers, so the notice tells it, and no function is siloed
+		// with no call graph, the notice tells it, and no function is siloed
 		assert.strictEqual(heat.isReachComplete, false);
-		assert.match(heat.notices[0], /does not count the callers and the frame path yet/);
+		assert.match(heat.notices[0], /^The call graph is not complete/);
+		assert.ok(heat.functions.every((f) => !f.isSiloed));
+	});
+
+	test('The reach adds the frame path, a call in a loop on it, the callers and their files. A siloed function gets half of its risk and history', () => {
+		const frame = { reason: 'override of QWidget::paintEvent', path: ['View::paintEvent', 'draw'], isInLoop: true };
+		const hot = fn('shade', 1, 5, { decisions: 1, reach: { callers: 3, transitiveCallers: 40, callerFiles: 7, frame } });
+		const root = fn('paintEvent', 7, 9, {
+			reach: { callers: 0, transitiveCallers: 0, callerFiles: 0, frame: { reason: frame.reason, path: [], isInLoop: false } },
+		});
+		const deep = fn('leaf', 11, 12, {
+			reach: {
+				callers: 1, transitiveCallers: 1, callerFiles: 1,
+				frame: { reason: 'called in the main loop of main', path: ['frame', 'a', 'b', 'c', 'd'], isInLoop: false },
+			},
+		});
+		const siloed = fn('solve', 14, 40, { decisions: 24, reach: { callers: 1, transitiveCallers: 1, callerFiles: 0 } });
+		const core = fn('execute', 42, 50, { reach: { callers: 2, transitiveCallers: 1000, isCapped: true, callerFiles: 50 } });
+		const heat = buildHeat(inputs([hot, root, deep, siloed, core]));
+		// the transitive callers give the points: 40 functions reach shade() through calls, and 3 of them call it directly
+		assert.deepStrictEqual(heat.functions[0].reasons.map((r) => [r.group, r.points, r.text]), [
+			['reach', 40, 'On the frame path: View::paintEvent (override of QWidget::paintEvent), then draw, then rate::shade'],
+			['reach', 10, 'A caller on the frame path calls it in a loop'],
+			['reach', 10, '40 functions call it, 3 of them directly'],
+			['reach', 5, 'Callers in 7 other files'],
+			['risk', 3, '1 decision'],
+		]);
+		assert.deepStrictEqual(heat.functions[4].reasons.map((r) => [r.points, r.text]),
+			[[10, '1000 or more functions call it, 2 of them directly'], [5, 'Callers in 50 other files']]);
+		// the reach stops at 60
+		assert.deepStrictEqual([heat.functions[0].reach, heat.functions[0].score, heat.functions[0].band], [60, 63, 'hot']);
+		assert.deepStrictEqual(heat.functions[1].reasons.map((r) => r.text), ['Runs in each frame: override of QWidget::paintEvent']);
+		// a long path shows the frame function, the number of the other functions and the last two
+		assert.strictEqual(heat.functions[2].reasons[0].text,
+			'On the frame path: frame (called in the main loop of main), then 3 more, then d, then rate::leaf');
+		// 1 caller gives 2 points. The reach is less than 10, thus the 10 points of the decisions count half
+		const s = heat.functions[3];
+		assert.deepStrictEqual([s.reach, s.risk, s.isSiloed, s.score], [2, 5, true, 7]);
+		assert.strictEqual(heat.isReachComplete, true);
+		assert.ok(!heat.notices.some((n) => n.includes('call graph')), JSON.stringify(heat.notices));
+	});
+
+	test('A function that is newer than the scan has no reach, and the notice tells the state of the call graph', () => {
+		const heat = buildHeat(inputs([
+			fn('old', 1, 2, { reach: { callers: 1, transitiveCallers: 1, callerFiles: 0 } }), fn('added', 4, 5, { reach: null, decisions: 24 }),
+		]));
+		assert.match(heat.notices[0], /^The call graph has no data for 1 function of the file/);
+		// a function with no node in the graph is not siloed
+		assert.deepStrictEqual([heat.functions[1].isSiloed, heat.functions[1].risk], [false, 10]);
+		assert.strictEqual(heat.isReachComplete, false);
+		const scanning = buildHeat(inputs([fn('x', 1, 2)], { callGraph: { state: 'scanning' } }));
+		assert.match(scanning.notices[0], /^The scan of the call graph runs/);
 	});
 
 	test('The history adds the commits, the fixes and a recent change of the lines of the function', () => {

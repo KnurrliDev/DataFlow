@@ -92,6 +92,12 @@ Threads and races shows the code that runs on a worker thread, the data that two
 
 ![Threads and races shows a race on is_dirty, with boxes in the code and the accesses of the two threads.](docs/images/threads.png)
 
+### Heat
+
+Heat shows how much a change of each function can break. The flames before the line numbers show the score, and the tab Heat gives the reason of each point. A function that runs in each frame is hot. The engine finds the frame functions in the call graph of the project: the main loop, and the overrides of the frame functions of Unreal Engine and Qt. [Use Heat](docs/usage.md#heat)
+
+![Heat with main() as a frame function of the setting: process() runs in each frame and is very hot. The tab Heat shows the points of reach, risk and history, and the functions of the file, the hottest first.](docs/images/heat.png)
+
 ### Change Ripple
 
 Change Ripple shows the code that the changes of your branch affect. The story follows a changed line through the functions, the lambdas and the async calls. [Use Change Ripple](docs/usage.md#change-ripple)

@@ -127,6 +127,20 @@ The user decided to skip the beta. The first items of the side view and of the M
   Since 30 October 2026, the review works on 3 files at the same time (one less than `dataflow.engine.cacheSize`): 35 s for the same branch, with the same result. The peak memory of the engine was 5.6 GiB (before: 6.3 GiB), with 4 parses in the cache. A larger cache permits more files at the same time, but it needs more memory.
   Possible fix: none that is cheap. The time is the first parse of each changed file.
 
+## Heat
+
+- [ ] **The call graph does not follow a call through a library.**
+  A task queue, a std::function, a callback or a signal of a library can call a function of the project. The call graph does not see this call. Thus a render pass that the task queue of a fetched library runs is not on the frame path. The setting `dataflow.heat.frameFunctions` can add the task functions.
+
+- [ ] **A call in a lambda belongs to the function around the lambda.**
+  A listener lambda that a function registers counts for this function, also if the lambda runs in each frame.
+
+- [ ] **Vendored code in the project folders is a part of the project.**
+  A copy of a library in a project folder, for example Dear ImGui, gets heat and adds frame paths. The user decided to keep this on 2026-11-13. A setting can skip such folders later.
+
+- [ ] **A header that is not self-contained gets errors in the metrics.**
+  The metrics parse a header alone with an inferred command. A header that needs a different header before it gets errors. Some of its functions then have no node in the call graph, and their reach has no callers.
+
 ## Side view
 
 - [ ] **With sticky scroll, the side view shows the lines under the sticky lines at its top.**

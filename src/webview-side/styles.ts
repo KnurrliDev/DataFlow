@@ -866,6 +866,20 @@ button.mnote { cursor: pointer; }
 .heat-item .flames { flex: none; min-width: 4.4em; color: var(--hc); }
 .heat-score { flex: none; min-width: 2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
 .heat-item .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.heat-siloed { margin: -4px 0 8px !important; }
+/* the scan of the call graph: the progress with the button Stop, and the frame functions of the last scan */
+.heat-scan { display: grid; gap: 4px; margin: 4px 0 10px; }
+.heat-scan-line { display: flex; align-items: center; gap: 8px; color: var(--vscode-descriptionForeground); }
+.heat-scan-text { flex: 1; min-width: 0; }
+.heat-track { display: block; height: 4px; border-radius: 2px; overflow: hidden;
+  background: color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-focusBorder)) 18%, transparent); }
+.heat-track i { display: block; height: 100%; background: var(--vscode-progressBar-background, var(--vscode-focusBorder)); transition: width 0.3s; }
+.no-motion .heat-track i { transition: none; }
+.heat-graph { margin: 10px 0 4px; }
+.heat-graph summary { cursor: pointer; color: var(--vscode-descriptionForeground); }
+.heat-graph > * + * { margin-top: 4px !important; }
+.heat-frames { margin: 2px 0 0; padding: 0; list-style: none; }
+.heat-frames li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 1px 0; }
 `;
 
 // The number of levels with their own rule for the indent guides, as in the text editor

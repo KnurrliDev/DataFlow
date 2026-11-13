@@ -37,9 +37,9 @@ The score is a heuristic. Each point has a reason that the user can see, so the 
 | Signal | Source | Points |
 | --- | --- | --- |
 | Frame path: a frame function calls the function, directly or through other functions | The call graph and the frame functions (sections 4.2 and 4.3) | 40. 10 more if a caller on the frame path calls the function in a loop. |
-| Callers: the number of functions that call the function | The call graph | 0 to 10 on a log scale. 1 caller gives 2 points, and 30 or more callers give 10. |
-| Files of the callers: the number of different files | The call graph | 0 to 5 |
-| Include reach: the part of the source files of the project that include the header with the declaration of the function, directly or through other headers | The include index of the engine (`dataflow/includers`) | 0 to 8. 50 % or more of the source files give 8. |
+| Callers: the number of functions that reach the function through calls, directly or through other functions (the transitive callers) | The call graph | 0 to 10 on a log scale. 1 caller gives 2 points, and 31 or more callers give 10. |
+| Files of the callers: the number of different files of the transitive callers, other than the file of the function | The call graph | 0 to 5 |
+| Include reach: the part of the source files of the project that include the header with the declaration of the function, directly or through other headers. The source files of the build folders do not count. | The include index of the engine (`dataflow/includers`) | 0 to 8. 50 % or more of the source files give 8. |
 | Interface: a virtual function or an override | The engine | 2 |
 
 The sum of the reach points stops at 60.
@@ -107,7 +107,7 @@ The new request `dataflow/metrics` has the parameter `file`. It parses the file 
 - The allocations and the copies in loops, from the analysis of Hidden C++.
 - The lines of the body.
 - `virtual` or `override`.
-- The reach data, if the call graph is available: the callers, the files of the callers, the frame path and the calls in loops. The reply tells the state of the call graph: none, scanning or ready.
+- The reach data, if the call graph is available: the callers, the files of the callers, the frame path and the calls in loops. The reply tells the state of the call graph: none, scanning, partial or ready. A partial graph comes from a first scan that the user stopped.
 
 The request uses the analyses of `dataflow/logic`, `dataflow/structure` and `dataflow/cost`. It does not use a new type of parse. The threads come from the request `dataflow/threads` of Threads and races.
 
@@ -115,13 +115,15 @@ The request uses the analyses of `dataflow/logic`, `dataflow/structure` and `dat
 
 The new request `dataflow/callGraph` starts the scan of the call graph, with the project folders in `roots`. The reply comes when the scan is complete.
 
-- The scan parses each source file of the compile databases one time. It keeps only the call graph and no syntax tree.
+- The scan parses each source file of the compile databases in the project folders one time. It keeps only the call graph and no syntax tree.
+- The scan skips the build folders: the folder of a compile database in a project folder, and each folder `_deps` with the libraries that CMake fetches. On a header-only library, the database listed 106 source files of Catch2 in `build/_deps` and 1 source file of the project.
+- The graph keeps the functions of each file. The first source file that parses a file of the project gets its functions, and the other source files skip the bodies of its functions. Thus a project with its code in headers keeps each function one time.
 - For each function definition in the project folders, the graph keeps the USR, the qualified name, the file and the range. For each call, it keeps the called function, the line and whether the call is in a loop.
 - A virtual call also goes to the overrides of the called function, as in Call Hierarchy.
 - The scan uses a maximum of half of the threads of the engine. Thus the requests of the side view stay fast during the scan.
 - The engine sends the notification `dataflow/progress` one time each second, with the number of scanned source files and the number of all source files.
-- `$/cancelRequest` stops the scan. The engine then discards the part of the graph that it made.
-- After a change of a project file, the graph is old. The next request uses the old graph and tells this. A new scan parses only the source files that include a changed file. The include index gives these source files.
+- `$/cancelRequest` stops the scan. The source files that a first scan parsed stay, and the next scan continues with the other source files. A stopped update keeps the complete graph of the last scan.
+- After a save of a project file, the graph is old. The metrics use the old graph until the update is complete. The update parses only the source files that include a changed file. The include index gives these source files.
 
 The time of a scan depends on the headers. Each source file gets one parse, as for the build. A project with 100 source files and the standard library takes some tens of seconds. An Unreal project with the headers of the engine can take many minutes. The busy widget shows the progress, and the graph stays for all later requests until the engine stops.
 
@@ -132,7 +134,7 @@ The engine finds the frame functions in two ways:
 1. **Overrides of the frame functions of the frameworks.** The syntax tree tells exactly which functions override them. A name is not sufficient: a function `Tick` of a class that is not an actor is not a frame function.
    - Unreal Engine: `AActor::Tick`, `UActorComponent::TickComponent`, `UUserWidget::NativeTick`, `SWidget::OnPaint` and `FTickableGameObject::Tick`
    - Qt: `QWidget::paintEvent`, `QOpenGLWidget::paintGL`, `QObject::timerEvent` and `QQuickItem::updatePaintNode`
-2. **Main loops.** A loop with no fixed number of iterations, in `main` or in a function that `main` calls, is a main loop. Examples are `while (!window.should_close())` and `for (;;)`. The functions that the body of the loop calls run in each frame.
+2. **Main loops.** A loop with no fixed number of iterations in `main` is a main loop. If `main` has no main loop, the engine looks in the functions that `main` calls. Examples are `while (!window.should_close())` and `for (;;)`. The functions that the body of the loop calls run in each frame. A loop that empties a container, for example `while (!errors.empty())`, is not a main loop.
 
 The engine does not use a timer that `connect` sets, for example a lambda for `QTimer::timeout`, because it cannot know the interval of the timer. An override of `QObject::timerEvent` is in the list, because the user selected it.
 
@@ -171,7 +173,7 @@ A new module `src/lenses/heat.ts` adds the points. It does not use the VS Code A
 
 - The tab shows the functions of the file, the hottest first, with their scores. A click on a function shows it in the code.
 - For the function at the cursor, the tab shows each reason with its points. An example is "On the frame path: Renderer::paint, then Scene::draw (40)".
-- During the scan, the tab shows a busy widget: a progress bar, the number of scanned source files, and the button **Stop**. The flames in the code show the local scores, with a mark that the reach is not complete.
+- During the scan, the tab shows a busy widget: a progress bar, the number of scanned source files, and the button **Stop**. After a stop, the button **Continue** starts the scan again. The flames in the code show the local scores, and a note in the tab tells that the reach is not complete.
 - The tab lists the frame functions that the engine found, with the reason of each.
 - The tab tells which signals are not available, for example "No git repository: no history".
 
@@ -188,7 +190,7 @@ The instructions of the server get one sentence: for a review, start with the ho
 | Phase | Content |
 | --- | --- |
 | A | The engine request `dataflow/metrics` with no reach data, the history from `git blame`, the include reach, the heat model, the lens Heat, the tab Heat and `get_heat`. |
-| B | The call graph of the engine with the progress, the button Stop and the update after changes. The frame functions of section 4.3 and the setting `dataflow.heat.frameFunctions`. The busy widget. Calibration of the points on a header-only library, a Qt project and an Unreal project. |
+| B | The call graph of the engine with the progress, the button Stop and the update after changes. The frame functions of section 4.3 and the setting `dataflow.heat.frameFunctions`. The busy widget. Calibration of the points on a header-only library and a game engine (section 12). |
 | C | Heat in the guided review and in the diff walk: `get_review` and `get_diff` give the heat of each changed function, and the plan of the model can start with the hottest changes. |
 
 Each phase is one commit with its tests and its documents.
@@ -206,7 +208,7 @@ Each phase is one commit with its tests and its documents.
 
 - The scan of a large project takes long, and an Unreal project can take many minutes. The scan runs only on demand, it does not block the side view, and the user can stop it.
 - The scan uses CPU. It uses a maximum of half of the threads of the engine.
-- After many changes, the graph is old until the next scan. The tab and `get_heat` tell when the graph is old.
+- After a save, the graph is old until the update is complete. With the lens Heat on, the update starts at the save. After a save of a header that all source files include, the update parses all source files again.
 - The main loop rule is a heuristic. The tab shows each frame function with its reason, so the user can see a wrong one. The setting adds the frame functions that the engine does not find.
 - The points are a heuristic. The reasons let the user judge each score, and phase B calibrates the points.
 - Functions that a macro makes, for example the functions of `GENERATED_BODY()` of Unreal Engine, get no score.
@@ -225,5 +227,27 @@ The user decided on 2026-11-13:
 4. Each function gets 1 to 5 flames when DataFlow has its score (section 3.4).
 5. The lens Heat is off until the user turns it on, because the heat runs on demand.
 6. Phase A started on 2026-11-13.
+7. The calibration uses a header-only library and a game engine with a main loop (section 12).
+8. The caller points count the transitive callers, not only the direct callers, because the calibration showed that a core function behind one entry point stays low.
+9. Vendored code in the project folders stays a part of the project, for example a copy of Dear ImGui. Its heat is correct, and it does not change the scores of the other functions.
 
-Open question: the names of the render loops of your projects that the engine does not find, for the setting `dataflow.heat.frameFunctions`.
+## 12. Calibration
+
+The calibration ran on two projects of the user on 2026-11-13:
+
+| Project | Source files of the scan | Functions | Calls | Scan | Peak memory |
+| --- | --- | --- | --- | --- | --- |
+| A header-only library with a test program | 1 | 167 | 308 | 2 s | 384 MB |
+| A game engine with a main loop, in headers | 12 | 3397 | 18801 | 7 s | 1057 MB |
+
+The calibration found these problems, and phase B fixes them:
+
+- The compile databases list the source files of fetched libraries: 106 source files of Catch2 for the library, and 243 source files in the build folder of the game engine. The scan and the include reach now skip the build folders and the folders `_deps`.
+- The include reach divided by all source files of the compile database. Thus all headers of the library got 0 points. It now counts only the source files of the project.
+- A loop in `main` that empties a queue of errors made the error function a frame function. Such a loop is now not a main loop. If `main` has a main loop, the loops of the functions that `main` calls do not count.
+- A function in a header that no source file includes had no node. Its reach was unknown, thus it was not siloed. It now has no callers.
+- With only the direct callers, the core function of the scheduler of the library had 1 caller and a score of 40. With the transitive callers, the core functions of the library are at the top of the list.
+
+The engine found the main loop of the game engine itself: the update of the world, of the camera and of the events, the new frame of ImGui, and the barriers of the frame. The render passes of the game engine run as tasks of a task library from the main loop. The call graph cannot follow this dispatch, because the library is a fetched library. For such a project, the setting `dataflow.heat.frameFunctions` gives the task functions, for example `run`.
+
+The points of section 3 stay. A function on the frame path is hot, and a library with no frame path has warm functions at most. No function of the two projects is very hot, because the functions on the frame path have little complexity.

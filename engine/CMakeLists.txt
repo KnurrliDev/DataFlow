@@ -24,7 +24,7 @@ separate_arguments(llvm_defs NATIVE_COMMAND "${LLVM_DEFINITIONS}")
 target_compile_definitions(dataflow-engine PRIVATE ${llvm_defs})
 target_link_libraries(dataflow-engine PRIVATE
   clangTooling clangToolingInclusionsStdlib clangDependencyScanning clangDriver clangFrontend clangSerialization
-  clangAnalysisFlowSensitiveModels
+  clangUnifiedSymbolResolution clangAnalysisFlowSensitiveModels
   clangAnalysisFlowSensitive clangAnalysis clangASTMatchers clangAST clangLex clangBasic)
 
 # copy the builtin headers of clang next to the engine. the engine reads them from <exe folder>/lib/clang/<major>

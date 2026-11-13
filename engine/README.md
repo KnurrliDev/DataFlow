@@ -81,7 +81,8 @@ The engine parses each file with the command of its compile database, with these
 | `dataflow/logic` | `file`, `function` or `line` and `col`, `lambda`, `eventFunctions`, `nullableFunctions`, `checkFunctions` | The CFG blocks, the decisions, the else-if chains, the events, the nullable pointers and the effects of the function, or of a lambda in it |
 | `dataflow/structure` | `file`, `function` or `line` and `col`, `eventFunctions`, `asyncFunctions` | The statements of the function with their lines, branches and items, and the accesses with their paths, roles and scopes |
 | `dataflow/cost` | `file`, `minCopyBytes`, `unit` | The hidden C++ of all functions of the file: copies, conversions, temporaries, destructors, lookups and more. With `unit`, a source file that includes the header `file`, the engine parses the unit. Then the templates of the header get the items of their instantiations in the unit. The reply then has the parse of the unit. |
-| `dataflow/metrics` | `file` | The metrics of each function of the file, for the heat score: the decisions (`if`, the loops, the `case` labels, `catch`, `&&`, `\|\|` and `?:`), the deepest nesting of the decisions, the first and the last line of each loop, the lines of the body, the writes to data members, globals, static locals and data through reference or pointer parameters, the allocations and the copies in loops, `virtual` and `override`, and the file and the line of the first declaration |
+| `dataflow/metrics` | `file`, `frameFunctions` | The metrics of each function of the file, for the heat score: the decisions (`if`, the loops, the `case` labels, `catch`, `&&`, `\|\|` and `?:`), the deepest nesting of the decisions, the first and the last line of each loop, the lines of the body, the writes to data members, globals, static locals and data through reference or pointer parameters, the allocations and the copies in loops, `virtual` and `override`, and the file and the line of the first declaration. With a complete call graph, each function also has `reach`. `callGraph` gives the state of the call graph. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
+| `dataflow/callGraph` | `roots`, `frameFunctions` | Makes the call graph of the project current, for the heat score: the size of the graph and the frame functions. The request needs no `file`. |
 | `dataflow/slice` | `file`, and `lines` and `deleted`, or `call`; `asyncFunctions`, `confidence` | The forward slice of changed lines or of a call: the steps and the exits in each function and lambda, and the callers in the same file |
 | `dataflow/tokens` | `file`, `first`, `last`, `bracketLevelPerType` | The text and the tokens of the lines `first` to `last`. The default is all lines. With `bracketLevelPerType`, the level of a bracket counts only the brackets of its type. |
 | `dataflow/definition` | `file`, `line`, `col` | The definition of the name at the position: `name`, `kind` (the kind of its token) and `targets` with `file`, `line`, `col` and `role`. The role is `definition` if the translation unit has the definition, else `declaration`, the first declaration. A macro gives its `#define`. The file of an `#include` gives the file with the role `file`. A position right after a name also gives the name. The walk of the names of `dataflow/tokens` finds the declaration of each name. |
@@ -89,7 +90,7 @@ The engine parses each file with the command of its compile database, with these
 | `$/cancelRequest` | `id` | No reply. The request stops with the error code -32800. |
 | `shutdown`, `exit` | none | The engine stops. |
 
-Lines and columns start at 1. The replies for a file also contain `parsed`, `parseMs`, `parseCount`, `errorCount`, `errors` and `analysisMs`. `parseCount` is the number of the parse. Each parse of each file gets a new number. `preambleBuilds` is the number of preambles that the parses of the file built. During a parse, the engine sends the notification `dataflow/status`.
+Lines and columns start at 1. The replies for a file also contain `parsed`, `parseMs`, `parseCount`, `errorCount`, `errors` and `analysisMs`. `parseCount` is the number of the parse. Each parse of each file gets a new number. `preambleBuilds` is the number of preambles that the parses of the file built. During a parse, the engine sends the notification `dataflow/status`. During a scan of the call graph, it sends `dataflow/progress`.
 
 A request with `function` finds the function by its name. A name can be qualified. If overloads have the name, `line` selects the overload that contains the line, or the overload that starts nearest to it.
 
@@ -196,6 +197,40 @@ The engine keeps the result of the scan. A later request scans again if a direct
 - `failed`: the source files that the scanner could not scan, for example a source file that does not exist.
 - `isUnit`: the file is a source file of a compile database.
 - `scanned`: the request made a new scan. `scanMs` is the time of the last scan, and `ms` the time of the request.
+- `projectUnits`: the number of the source files in `roots` with no build folders, as for the call graph. `projectIncluders`: the number of these source files that include the file. The heat score uses them for the include reach, thus the fetched libraries in the build folder do not count.
+
+## The result of `dataflow/callGraph`
+
+The request makes the call graph of the project current. The first request scans the source files of the compile databases in `roots`. A later request scans only the source files that need a new scan. The reply comes when the scan ends. The engine runs one scan at a time. A request during a scan gets an error.
+
+- The scan skips the build folders. A build folder is the folder of a compile database in a folder of `roots`, or a folder `_deps` with the libraries that CMake fetches. A folder `_deps` can be out of the folder of the compile database, for example `build/_deps` next to `build/dataflow`.
+- The parse of a source file skips the bodies of the functions out of the project, and no syntax tree stays after the parse. The first source file that parses a file of the project gets the functions of the file. The other source files skip the bodies of its functions.
+- The scan reads the unsaved text of the open files. It uses half of the threads of the engine, thus the other requests stay fast.
+- The engine sends the notification `dataflow/progress` with `id`, the id of the request, `done` and `total`: one time at the start, one time each second, and at the end.
+- `$/cancelRequest` stops the scan after the source file that a thread parses. The reply is the error -32800. The source files that a first scan parsed stay, and the next request continues with the other source files. A stopped update keeps the complete graph of the last scan.
+- A source file needs a new scan if it has no scan, or if a file that it includes changed on disk after its scan. It also needs a new scan if an open file that it includes has a new text. An open file with no text at the last scan has a new text if its text is not the text on disk. This is also true for a file that the client closed after the scan. The index of `dataflow/includers` gives the files of each source file.
+
+A node of the graph is a function definition in the project, by its USR. All instantiations of a template are one node: the pattern. An edge is a call of a function of the project, with its line and whether a loop runs it. A call in a lambda belongs to the function around the lambda. A virtual call also goes to the overrides of the called function in the project, also through other overrides. A constructor of the project is a call.
+
+The frame functions run in each frame:
+
+- An override of `AActor::Tick`, `UActorComponent::TickComponent`, `UUserWidget::NativeTick`, `SWidget::OnPaint`, `FTickableGameObject::Tick`, `QWidget::paintEvent`, `QOpenGLWidget::paintGL`, `QObject::timerEvent` or `QQuickItem::updatePaintNode`, directly or through other overrides.
+- A function that a main loop calls. A main loop is a `while` loop, a `do` loop, or a `for` loop with no condition or with a condition that does not use a variable of its init. It is in `main`, `wmain`, `WinMain` or `wWinMain`. If `main` has no main loop, the engine looks in the functions that `main` calls. A range-based `for` loop is not a main loop. A loop with a condition that only tests the size of a container is also not a main loop, for example `while (!queue.empty())`. The size functions are `empty`, `isEmpty`, `IsEmpty`, `size`, `count`, `Num` and `length`.
+- A function of `frameFunctions`: a qualified name, or the end of a qualified name after `::`.
+
+The reply:
+
+- `units`: the source files of the graph. `scanned`: the source files of this request. `isComplete`: the scans parsed all source files.
+- `functions` and `calls`: the nodes and the edges.
+- `frames`: each frame function with `name`, `file`, `line` and `reason`, for example `override of QWidget::paintEvent`, `called in the main loop of main` or `frame function of the setting`.
+- `failed`: the source files with no command, or that Clang could not parse at all. A parse with errors also gives the functions that Clang understood.
+- `ms`: the time of the request.
+
+`dataflow/metrics` adds `callGraph` with `state`: `none` (no scan), `scanning`, `partial` (a first scan that stopped) or `ready`. During a scan, `done` and `total` give the progress. With a complete graph, also during an update, each function has `reach`:
+
+- `callers`: the functions that call the function directly. `transitiveCallers`: the functions that reach the function through calls, directly or through other functions. The walk up the graph stops at 1000 callers, and then `isCapped` is true. `callerFiles`: the files of the transitive callers, other than the file of the function.
+- `frame`, if the function is on a frame path: `reason`, the reason of the frame function; `path`, the functions from the frame function to the caller before the function; `isInLoop`, a caller on the frame path calls the function in a loop. A frame function has an empty `path`. A frame path follows a maximum of 8 calls.
+- `reach` is null if the graph has no node for the function, for example a function that is newer than the scan. If no source file of the scan includes the file of the function, the function has no callers.
 
 ## The result of `dataflow/threads`
 

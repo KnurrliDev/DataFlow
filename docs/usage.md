@@ -128,7 +128,7 @@ DataFlow only reads the project. It does not run CMake or qmake. The C/C++ exten
 
 A review of the project uses its git repository. The git extension of VS Code then shows the repository in the Source Control view.
 
-VS Code does not read the `.vscode/settings.json` file of the project, because its folder is not open. Thus DataFlow reads the settings of Logic Map, Flow Lens, Change Ripple and Hidden C++ from this file. Examples are `dataflow.logic.eventFunctions` and `dataflow.ripple.baseRef`. A setting of this file has priority over your user setting, as a setting of an open folder has. A change of the file applies immediately. The other DataFlow settings of the file do not apply, for example the settings of the engine.
+VS Code does not read the `.vscode/settings.json` file of the project, because its folder is not open. Thus DataFlow reads the settings of Logic Map, Flow Lens, Change Ripple, Hidden C++ and Heat from this file. Examples are `dataflow.logic.eventFunctions`, `dataflow.ripple.baseRef` and `dataflow.heat.frameFunctions`. A setting of this file has priority over your user setting, as a setting of an open folder has. A change of the file applies immediately. The other DataFlow settings of the file do not apply, for example the settings of the engine.
 
 ### `.inc` files
 
@@ -433,17 +433,36 @@ The score adds the points of three groups:
 
 | Group | Maximum | Points |
 | --- | --- | --- |
-| Reach | 60 | The part of the source files of the project that include the file with the declaration of the function, and a virtual function or an override |
+| Reach | 60 | The frame path, the callers of the function and their files, the part of the source files of the project that include the file with the declaration of the function, and a virtual function or an override. The callers are all functions that reach the function through calls, directly or through other functions. |
 | Risk | 25 | The decisions, the nesting of the decisions, the writes to shared state, the data that two threads share, the allocations and the copies in loops, and a long body |
 | History | 15 | The commits of the lines of the function, the commits that fix bugs, and a change in the last 30 days or a change that is not committed |
 
 The color of the strip and of the flames shows the band: cool under 25, warm from 25, hot from 50 and very hot from 75. Each 20 points add one flame: 1 flame under 20, and 5 flames from 80.
 
-The reach does not count the callers of the function yet. Thus most scores are under 50.
+If the reach of a function is less than 10, its risk and its history count half. Thus a complex function that only a small part of the project uses stays cool. The tab tells when this rule applies to the function at the cursor.
 
 The history needs a git repository. For a file with changes that are not saved, git uses the text of the editor.
 
 The theme colors `dataflow.heatCool`, `dataflow.heatWarm`, `dataflow.heatHot` and `dataflow.heatVeryHot` give the colors of the bands. The MCP tool `get_heat` gives the scores and their reasons to a language model.
+
+### The call graph
+
+The callers and the frame path come from the call graph of the project. When you turn on Heat, the engine starts to scan the call graph. The scan does not block DataFlow:
+
+- The tab **Heat** shows the progress of the scan: the source files that the scan parsed, and all source files. To stop the scan, click **Stop**. To continue it, click **Continue**. The next scan parses only the source files that the stopped scan did not parse.
+- Until the scan is complete, the scores have no callers and no frame path, and a note in the tab tells this. At the end of the scan, the scores come again with the callers and the frame path.
+- The scan parses the source files of the compile databases in the project folders. It skips the folder of a compile database in a project folder, and the folders `_deps` with the libraries that CMake fetches.
+- The scan uses half of the threads of the engine. A large project can take some minutes, for example an Unreal project.
+- When you save a C or C++ file, the call graph is old. With Heat on, an update starts immediately. The update parses only the source files that include a changed file.
+
+A function on the frame path runs in each frame. It gets 40 points, and 10 more points if a caller on the frame path calls it in a loop. A frame path starts at a frame function:
+
+- An override of a frame function of Unreal Engine: `AActor::Tick`, `UActorComponent::TickComponent`, `UUserWidget::NativeTick`, `SWidget::OnPaint` or `FTickableGameObject::Tick`.
+- An override of a frame function of Qt: `QWidget::paintEvent`, `QOpenGLWidget::paintGL`, `QObject::timerEvent` or `QQuickItem::updatePaintNode`.
+- A function that a main loop calls. A main loop is a loop with no fixed number of iterations in `main`. Examples are `while (!window.should_close())` and `for (;;)`. If `main` has no main loop, DataFlow looks in the functions that `main` calls. A loop with a counter, for example `for (int i = 0; i < 100; ++i)`, is not a main loop. A loop that empties a container, for example `while (!errors.empty())`, is also not a main loop.
+- A function of the setting `dataflow.heat.frameFunctions`, for example `Renderer::frame`. A name is a qualified name, or the end of a qualified name after `::`.
+
+The frame path follows a maximum of 8 calls from a frame function. To see the frame functions of the project, open **Call graph** at the end of the tab **Heat**. To show a frame function in the code, click it.
 
 ## Change Ripple
 
@@ -561,6 +580,7 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | `dataflow.flow.readFunctions` | `[]` | Functions that only read their arguments and their object, for example `log_value` or `Config::get`. Flow Lens shows a call of such a function as a read, not as a possible write. Use a qualified name with `::` or a simple name. The format functions of std, fmt and spdlog are reads already. |
 | `dataflow.cost.categories` | all categories | The categories of Hidden C++ that show: `copy`, `move`, `conversion`, `lifetime`, `destructor`, `allocation`, `lookup` and `state`. The category `lifetime` contains the temporaries and the variables that hide a variable of an outer scope. |
 | `dataflow.cost.minCopyBytes` | `16` | A copy of a trivially copyable type of this size in bytes or less does not show in Hidden C++. |
+| `dataflow.heat.frameFunctions` | `[]` | More frame functions for Heat, for example `Renderer::frame` or `frame`. A frame function runs in each frame, and the functions that it calls are on the frame path. A name is a qualified name, or the end of a qualified name after `::`. See [The call graph](#the-call-graph). |
 | `dataflow.ripple.asyncFunctions` | `std::async`, `QtConcurrent::run`, `tf::Executor::async`, `Async`, `AsyncTask`, `AsyncThread`, `AsyncPool`, `UE::Tasks::Launch` | Functions that run a callable on a different thread and return its result. Change Ripple continues with the result of a call of one of these functions, and marks the step as async. Flow Lens shows the callable of a data member trace on a different thread. Call Hierarchy shows the calls in the callable as calls on a different thread. Threads and races shows the callable as a worker thread. A name with `::` is a qualified name. |
 | `dataflow.ripple.baseRef` | empty | The target branch of Change Ripple, if you did not select one with **Target** in the Change Ripple bar. Change Ripple compares the files with the merge base of `HEAD` and this ref. If the ref starts with `origin/` and does not exist, Change Ripple uses the local branch. If the ref is empty or does not exist, Change Ripple uses the default branch of the remote, then `origin/main`, `main`, `origin/master` or `master`. |
 | `dataflow.ripple.maxDepth` | `2` | The number of caller levels that Change Ripple analyzes after a return value, from 0 to 5. |

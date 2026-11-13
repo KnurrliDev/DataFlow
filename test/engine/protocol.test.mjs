@@ -3130,6 +3130,249 @@ test('tells for each include if forward declarations can replace it, or the firs
 	}
 });
 
+test('call graph: the callers, the files of the callers and the frame paths, and updates of the changed source files', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-graph-'));
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		mkdirSync(path.dirname(file), { recursive: true });
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	// a header of a library out of the project folders, with a frame function of qt
+	write('lib/QWidget.h', [
+		'#pragma once',
+		'class QWidget {',
+		' public:',
+		'  virtual ~QWidget() = default;',
+		'  void update() { paintEvent(nullptr); }',
+		' protected:',
+		'  virtual void paintEvent(void* e) {}',
+		'};',
+	]);
+	const renderLines = [
+		'#pragma once',
+		'struct Mesh { int size = 0; };',
+		'void draw(const Mesh& m);',
+		'int shade(int x);',
+		'struct Pass { virtual ~Pass() = default; virtual void run() = 0; };',
+		'struct Blur : Pass { void run() override; };',
+		'struct Glow : Pass { void run() override; };',
+		'inline int helper() { return 1; }',
+	];
+	const header = write('include/render.h', renderLines);
+	const render = write('src/render.cpp', [
+		'#include "render.h"',
+		'int shade(int x) { return x * 2 + helper(); }',
+		'void draw(const Mesh& m) { for (int i = 0; i < m.size; ++i) shade(i); }',
+		'void Blur::run() { shade(1); }',
+		'void Glow::run() { draw(Mesh{}); }',
+	]);
+	// a loop that empties a queue is no main loop
+	const main = write('src/main.cpp', [
+		'#include "render.h"',
+		'#include <queue>',
+		'static bool running = true;',
+		'void frame(Pass& p) { p.run(); draw(Mesh{3}); }',
+		'void setup() { helper(); }',
+		'void report(int code) { (void)code; }',
+		'int main() {',
+		'  setup();',
+		'  std::queue<int> errors;',
+		'  while (!errors.empty()) { report(errors.front()); errors.pop(); }',
+		'  Blur b;',
+		'  while (running) frame(b);',
+		'  return 0;',
+		'}',
+	]);
+	// a header that no source file includes
+	const unused = write('include/unused.h', ['#pragma once', 'inline int unused() { return 1; }']);
+	const viewLines = [
+		'#include "render.h"',
+		'#include <QWidget.h>',
+		'int lonely(int a) { return a + 1; }',
+		'class View : public QWidget {',
+		' protected:',
+		'  void paintEvent(void* e) override { draw(Mesh{1}); }',
+		'};',
+		'template <class T> T twice(T v) { return v + v; }',
+		'int twiceUser() { return twice(3) + int(twice(4.0)); }',
+		'int more() { return twice(5); }',
+	];
+	const view = write('src/view.cpp', viewLines);
+	const db = path.join(dir, 'compile_commands.json');
+	const args = (file) => ['clang++', '-std=c++20', `-I${path.join(dir, 'include')}`, `-I${path.join(dir, 'lib')}`, '-c', file];
+	writeFileSync(db, JSON.stringify([render, main, view].map((file) => ({ directory: dir, file, arguments: args(file) }))));
+	const roots = [path.join(dir, 'include'), path.join(dir, 'src')];
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 4, cacheSize: 4 })).error, undefined);
+		// the state of the call graph, and the reach of each function of a file by its qualified name
+		const reach = async (file, frameFunctions = []) => {
+			const res = await own.send('dataflow/metrics', { file, frameFunctions });
+			assert.equal(res.error, undefined, JSON.stringify(res.error));
+			assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+			return [res.result.callGraph, Object.fromEntries(res.result.functions.map((f) => [f.qualifiedName, f.reach]))];
+		};
+		const scan = async () => {
+			const { id, reply } = own.request('dataflow/callGraph', { roots });
+			const res = await reply;
+			assert.equal(res.error, undefined, JSON.stringify(res.error));
+			return { ...res.result, id };
+		};
+
+		// before the scan, the metrics have no reach
+		const [before, none] = await reach(render);
+		assert.deepEqual([before, none.shade], [{ state: 'none' }, undefined]);
+
+		// the scan parses the three source files. the progress starts with 0 and ends with all source files
+		const first = await scan();
+		assert.deepEqual([first.units, first.scanned, first.isComplete, first.failed], [3, 3, true, []]);
+		assert.deepEqual(first.frames.map((f) => `${f.name}: ${f.reason}`).sort(),
+			['View::paintEvent: override of QWidget::paintEvent', 'frame: called in the main loop of main']);
+		const progress = own.notifications.filter((n) => n.method === 'dataflow/progress' && n.params.id === first.id).map((n) => n.params);
+		assert.deepEqual([progress[0], progress.at(-1)], [{ id: first.id, done: 0, total: 3 }, { id: first.id, done: 3, total: 3 }]);
+
+		// draw has callers in main.cpp, render.cpp and view.cpp. its own file does not count. the override of paintEvent
+		// calls it. draw calls shade in a loop on the frame path. a virtual call goes to the overrides of Pass::run
+		const [state, fns] = await reach(render);
+		assert.deepEqual(state, { state: 'ready' });
+		const qt = 'override of QWidget::paintEvent';
+		const loop = 'called in the main loop of main';
+		assert.deepEqual(fns.draw, { callers: 3, transitiveCallers: 4, callerFiles: 2, frame: { reason: qt, path: ['View::paintEvent'], isInLoop: false } });
+		assert.deepEqual(fns.shade, { callers: 2, transitiveCallers: 6, callerFiles: 2, frame: { reason: qt, path: ['View::paintEvent', 'draw'], isInLoop: true } });
+		assert.deepEqual(fns['Blur::run'], { callers: 1, transitiveCallers: 2, callerFiles: 1, frame: { reason: loop, path: ['frame'], isInLoop: false } });
+		assert.deepEqual(fns['Glow::run'], { callers: 1, transitiveCallers: 2, callerFiles: 1, frame: { reason: loop, path: ['frame'], isInLoop: false } });
+
+		// main calls setup before the loop, and report in a loop that empties a queue. a frame function of the setting starts
+		// a frame path
+		const [, mains] = await reach(main);
+		assert.deepEqual([mains.main, mains.setup, mains.report], [{ callers: 0, transitiveCallers: 0, callerFiles: 0 }, { callers: 1, transitiveCallers: 1, callerFiles: 0 }, { callers: 1, transitiveCallers: 1, callerFiles: 0 }]);
+		assert.deepEqual(mains.frame, { callers: 1, transitiveCallers: 1, callerFiles: 0, frame: { reason: loop, path: [], isInLoop: false } });
+		const [, named] = await reach(main, ['setup']);
+		assert.deepEqual(named.setup.frame, { reason: 'frame function of the setting', path: [], isInLoop: false });
+
+		// the instantiations of a template are one node. the functions of the header come from one of the three source
+		// files
+		const [, views] = await reach(view);
+		assert.deepEqual([views.twice, views.lonely], [{ callers: 2, transitiveCallers: 2, callerFiles: 0 }, { callers: 0, transitiveCallers: 0, callerFiles: 0 }]);
+		assert.deepEqual(views['View::paintEvent'], { callers: 0, transitiveCallers: 0, callerFiles: 0, frame: { reason: qt, path: [], isInLoop: false } });
+		const [, headers] = await reach(header);
+		assert.deepEqual(headers.helper,
+			{ callers: 2, transitiveCallers: 8, callerFiles: 3, frame: { reason: qt, path: ['View::paintEvent', 'draw', 'shade'], isInLoop: false } });
+		// no source file includes unused.h, thus its function has no callers
+		assert.deepEqual((await reach(unused))[1].unused, { callers: 0, transitiveCallers: 0, callerFiles: 0 });
+
+		// with no change, the next scan parses nothing
+		assert.equal((await scan()).scanned, 0);
+
+		// an open file with a new text: only its source file
+		viewLines[5] = '  void paintEvent(void* e) override { draw(Mesh{1}); lonely(1); }';
+		own.notify('textDocument/didOpen', { file: view, text: viewLines.join('\n') + '\n', version: 1 });
+		assert.equal((await scan()).scanned, 1);
+		assert.deepEqual((await reach(view))[1].lonely,
+			{ callers: 1, transitiveCallers: 1, callerFiles: 0, frame: { reason: qt, path: ['View::paintEvent'], isInLoop: false } });
+
+		// a change of the header on disk: the three source files that include it
+		write('include/render.h', [...renderLines, 'inline int extra() { return shade(2); }']);
+		assert.equal((await scan()).scanned, 3);
+		assert.equal((await reach(render))[1].shade.callers, 3);
+
+		// a closed file with a text that is not on disk
+		own.notify('textDocument/didClose', { file: view });
+		assert.equal((await scan()).scanned, 1);
+		assert.deepEqual((await reach(view))[1].lonely, { callers: 0, transitiveCallers: 0, callerFiles: 0 });
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('call graph: the scan skips the folder of a compile database in the project folder, for example the fetched libraries', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-graph-build-'));
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		mkdirSync(path.dirname(file), { recursive: true });
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	const app = write('src/app.cpp', ['#include "dep.h"', 'int app() { return dep(); }']);
+	write('build/_deps/dep/dep.h', ['#pragma once', 'inline int dep() { return 1; }']);
+	const lib = write('build/_deps/dep/dep.cpp', ['#include "dep.h"', 'int other() { return dep(); }']);
+	const build = path.join(dir, 'build');
+	const db = path.join(build, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([app, lib].map((file) =>
+		({ directory: build, file, arguments: ['clang++', '-std=c++20', `-I${path.join(build, '_deps', 'dep')}`, '-c', file] }))));
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 2, cacheSize: 2 })).error, undefined);
+		// only app.cpp is a source file of the project, and app() is the only function. A call into the build folder is no
+		// edge
+		const res = await own.send('dataflow/callGraph', { roots: [dir] });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.deepEqual([res.result.units, res.result.scanned, res.result.functions, res.result.calls], [1, 1, 1, 0]);
+
+		// the include reach of the heat counts only the source files of the project
+		const includers = await own.send('dataflow/includers', { file: path.join(build, '_deps', 'dep', 'dep.h'), roots: [dir] });
+		const r = includers.result;
+		assert.deepEqual([r.units.length, r.unitCount, r.projectIncluders, r.projectUnits], [2, 2, 1, 1]);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('call graph: one scan at a time, and a stop keeps the parsed source files for the next scan', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-graph-stop-'));
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	// the headers of the standard library make each parse slow enough for a stop during the scan
+	const heavy = ['#include <algorithm>', '#include <map>', '#include <regex>', '#include <string>', '#include <vector>'];
+	const units = [0, 1, 2, 3, 4, 5].map((i) =>
+		write(`unit${i}.cpp`, [...heavy, `int unit${i}() { std::vector<int> v{3, 1, 2}; std::sort(v.begin(), v.end()); return v[0]; }`]));
+	const tiny = write('tiny.cpp', ['int tiny() { return 1; }']);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([...units, tiny].map((file) => ({ directory: dir, file, arguments: ['clang++', '-std=c++20', '-c', file] }))));
+	// two threads: the scan uses one of them, and the metrics use the other
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 2, cacheSize: 2 })).error, undefined);
+		const metrics = async () => {
+			const res = await own.send('dataflow/metrics', { file: tiny });
+			assert.equal(res.error, undefined, JSON.stringify(res.error));
+			return res.result;
+		};
+		const first = own.request('dataflow/callGraph', { roots: [dir] });
+		const busy = await own.send('dataflow/callGraph', { roots: [dir] });
+		assert.match(busy.error?.message ?? '', /a scan of the call graph runs/);
+
+		// a stop after the first source file
+		let scanning;
+		do {
+			scanning = (await metrics()).callGraph;
+		} while (scanning.state === 'scanning' && scanning.done < 1);
+		assert.deepEqual([scanning.state, scanning.total], ['scanning', 7]);
+		own.notify('$/cancelRequest', { id: first.id });
+		assert.equal((await first.reply).error?.code, -32800);
+
+		// a partial graph gives no reach
+		const partial = await metrics();
+		assert.deepEqual([partial.callGraph, partial.functions[0].reach], [{ state: 'partial' }, undefined]);
+
+		// the next scan parses only the source files that the stopped scan did not parse
+		const next = await own.send('dataflow/callGraph', { roots: [dir] });
+		assert.equal(next.error, undefined, JSON.stringify(next.error));
+		assert.ok(next.result.isComplete && next.result.scanned > 0 && next.result.scanned < 7, JSON.stringify(next.result));
+		const ready = await metrics();
+		assert.deepEqual([ready.callGraph, ready.functions[0].reach], [{ state: 'ready' }, { callers: 0, transitiveCallers: 0, callerFiles: 0 }]);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('sends status notifications', () => {
 	const states = engine.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params.state);
 	assert.ok(states.includes('parsing') && states.includes('ready'), states.join(','));
