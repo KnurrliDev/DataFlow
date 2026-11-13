@@ -128,7 +128,7 @@ suite('MCP server on the fixture', () => {
 	test('The server lists its tools, and get_view gives the file of the editor', async () => {
 		const list = await rpc('tools/list');
 		assert.deepStrictEqual(list.result.tools.map((t: { name: string }) => t.name), [
-			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_callers', 'get_place', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'get_heat', 'get_call_graph', 'get_logic', 'get_ripple',
+			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_callers', 'get_place', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'get_member_sites', 'get_heat', 'get_call_graph', 'get_logic', 'get_ripple',
 			'show_blocks', 'show_flow', 'show_logic_path', 'show_line', 'highlight', 'comment_lines', 'add_detail', 'clear', 'remove', 'set_lens', 'clear_flow', 'start_ripple', 'clear_ripple', 'mark_base', 'delete_mark',
 			'scan_call_graph', 'stop_call_graph', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step', 'close_guide',
 		]);
@@ -467,6 +467,11 @@ suite('MCP server on the fixture', () => {
 		const byLine = await tool('get_outline', { file: header, line: headerLine });
 		assert.deepStrictEqual([byLine.data?.type, byLine.data?.line], ['electricity::power_ctrl::HomeBatteryCtrl', headerLine], byLine.text);
 		assert.ok((await tool('get_outline', { file: header })).isError);
+		// the sites of the members of a type, at the line of its name. The call graph can be incomplete here, so only the
+		// members are sure
+		const sites = await tool('get_member_sites', { file: header, line: headerLine });
+		assert.deepStrictEqual([sites.isError, sites.data?.type, sites.data?.kind, sites.data?.members?.length], [false, 'electricity::power_ctrl::HomeBatteryCtrl', 'struct', 10], sites.text);
+		assert.match((await tool('get_member_sites', { file: header })).text, /Give the name of the type, or a line with its name\./);
 	});
 
 	test('get_calls gives the callers in other files from the call hierarchy of VS Code', async function () {

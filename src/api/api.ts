@@ -225,6 +225,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		getCallGraph: () => call('get_call_graph'),
 		getCallers: (args) => call('get_callers', args),
 		getPlace: (args) => call('get_place', args),
+		getMemberSites: (args) => call('get_member_sites', args),
 		getLogic: (args) => call('get_logic', args),
 		getRipple: () => call('get_ripple'),
 		getReview: (args) => call('get_review', args),

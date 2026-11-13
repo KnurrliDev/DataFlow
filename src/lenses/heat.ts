@@ -1,5 +1,6 @@
 import type * as Api from '../../api/dataflow-api';
-import type { MetricsFunction, MetricsModel, MetricsReach, ThreadsModel, UnknownCallersCause } from '../engine/client';
+import type { MemberMetricsMember, MemberMetricsModel, MetricsFunction, MetricsModel, MetricsReach, ThreadsModel, UnknownCallersCause } from '../engine/client';
+import { sameFile } from './member';
 
 // The heat score of the functions of a file: how much a change of a function can break. The score adds points of
 // reach, risk and history, and each point has a reason. docs/heat-score-strategy.md gives the points. This module does
@@ -34,8 +35,37 @@ export interface HeatFunction {
 export interface HeatModel {
 	file: string;
 	functions: HeatFunction[]; // in the sequence of the file
+	types: HeatType[]; // the classes, the structs and the unions of the file, in the sequence of the file
 	notices: string[]; // the signals that are not available
 	isReachComplete: boolean; // false: the reach of one or more functions has no callers and no frame path
+}
+
+// The facts of a class, a struct or a union of the file and of its data members. They have no score: the score of a
+// member needs a calibration first
+export interface HeatType {
+	name: string; // the qualified name
+	kind: string; // class, struct or union
+	line: number; // the line of the name
+	first: number;
+	last: number;
+	includeReach?: { units: number; total: number }; // the source files of the project that include the file
+	isReachComplete: boolean; // the call graph gives the functions that use the members
+	members: HeatMember[];
+}
+
+export interface HeatMember {
+	name: string;
+	line: number;
+	type: string;
+	isStatic: boolean;
+	readers?: number; // the functions that read the member. Undefined until the call graph is complete
+	writers?: number; // the functions that write the member
+	files?: number; // the files of these functions
+	users?: { function: string; file: string; line: number; isWrite: boolean }[]; // the first 20 functions
+	framePath?: { function: string; reason: string; calls: number }; // the user on the shortest frame path
+	// two or more threads use the member, from the analysis of the threads of the file. unprotected: an access has no
+	// lock, no atomic and no order to the other threads
+	shared?: 'unprotected' | 'locked';
 }
 
 // The blame of a file: the commit of each line, and the time and the summary of each commit
@@ -53,6 +83,7 @@ export interface HeatInputs {
 	threads?: ThreadsModel; // undefined: no analysis of the threads
 	blame?: Blame; // undefined: no git history
 	callGraph?: MetricsModel['callGraph']; // the state of the call graph of the engine
+	types?: MemberMetricsModel; // the types of the file with the facts of their data members
 	now: number; // milliseconds since 1970
 }
 
@@ -376,7 +407,37 @@ export function buildHeat(inputs: HeatInputs): HeatModel {
 	if (!inputs.threads) {
 		notices.push('No threads: the analysis of the threads gave no result.');
 	}
-	return { file: inputs.file, functions, notices, isReachComplete: inputs.functions.every((f) => !!f.reach) };
+	const types = (inputs.types?.types ?? []).map((t): HeatType => {
+		const reach = inputs.includeReach(inputs.file);
+		return {
+			name: t.qualifiedName || t.name, kind: t.kind, line: t.line, first: t.first, last: t.last,
+			...(reach ? { includeReach: { ...reach } } : {}),
+			isReachComplete: inputs.types!.callGraph.state === 'ready',
+			members: t.members.map((m) => heatMember(m, inputs)),
+		};
+	});
+	return { file: inputs.file, functions, types, notices, isReachComplete: inputs.functions.every((f) => !!f.reach) };
+}
+
+// The facts of a data member, with the data that threads share: an item of the analysis of the threads with the
+// declaration of the member, which two or more threads use
+function heatMember(m: MemberMetricsMember, inputs: HeatInputs): HeatMember {
+	let shared: HeatMember['shared'];
+	for (const item of inputs.threads?.items ?? []) {
+		if (!item.decl || item.decl.line !== m.line || !sameFile(item.decl.file, inputs.file) || new Set(item.refs.map((r) => r.thread)).size < 2) {
+			continue;
+		}
+		const isSafe = (r: (typeof item.refs)[number]) => item.isAtomic || !!r.atomic || r.locks.length > 0
+			|| !!(r.order.after?.length || r.order.before?.length || r.order.empty?.length || r.order.ready?.length);
+		shared = item.refs.every(isSafe) && shared !== 'unprotected' ? 'locked' : 'unprotected';
+	}
+	return {
+		name: m.name, line: m.line, type: m.type, isStatic: !!m.isStatic,
+		...(m.readers !== undefined ? { readers: m.readers, writers: m.writers ?? 0, files: m.files ?? 0 } : {}),
+		...(m.users ? { users: m.users.map((u) => ({ function: u.name, file: u.file, line: u.line, isWrite: u.isWrite })) } : {}),
+		...(m.frame ? { framePath: { ...m.frame } } : {}),
+		...(shared ? { shared } : {}),
+	};
 }
 
 //-------------------

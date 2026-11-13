@@ -19,6 +19,9 @@
       gets the functions of the file, and the other source files skip the bodies of its functions
     > an update parses only the source files that include a changed file. a scan that stops keeps the source files
       that it parsed, and the next scan continues with the other source files
+    > the index of the uses: the data members, the static data members and the global variables of the project that
+      each body reads or writes, and the switch statements on the enums of the project with the enumerators of their
+      case labels. the index keeps each usr and each name of an enumerator one time, as a number
 */
 
 namespace DataFlow {
@@ -49,6 +52,58 @@ namespace DataFlow {
     uint32_t line_       = 0;  // the line of the call of connect
   };  // GraphConnect
 
+  // a data member, a static data member or a global variable of the project that a body uses, by the number of its usr
+  // in GraphNames. a body has one use for each variable
+  struct GraphUse {
+    uint32_t name_ = 0;
+    uint32_t line_ = 0;  // the first use
+    bool isRead_   = false;
+    bool isWrite_  = false;  // an assignment, ++, --, &, a call of a non-const member function or a non-const reference
+  };  // GraphUse
+
+  // a switch statement on an enum of the project
+  struct GraphSwitch {
+    uint32_t enum_ = 0;  // the number of the usr of the enum in GraphNames
+    uint32_t line_ = 0;
+    std::vector<uint32_t> handled_;  // the numbers of the names of the enumerators with a case label
+    bool hasDefault_ = false;
+  };  // GraphSwitch
+
+  // the usrs and the names of the index, each one time. a use refers to a name by its number, so the memory stays
+  // small. the scans of a server share the table, so the numbers stay the same after an update. the table only grows
+  class GraphNames {
+    mutable std::mutex mutex_;
+    std::deque<std::string> names_;  // a deque keeps the views of numbers_ valid
+    std::unordered_map<std::string_view, uint32_t> numbers_;
+    size_t bytes_ = 0;
+
+   public:
+    [[nodiscard]] uint32_t add(const std::string_view _name) {
+      const std::lock_guard lock(mutex_);
+      if (const auto it = numbers_.find(_name); it != numbers_.end()) return it->second;
+      const std::string& name = names_.emplace_back(_name);
+      bytes_ += name.capacity() + sizeof(std::string) + 48;  // the string and the entry of the map
+      return numbers_.emplace(name, uint32_t(names_.size() - 1)).first->second;
+    }  // add
+
+    // the number of a name, or nullopt if no scan saw the name
+    [[nodiscard]] std::optional<uint32_t> find(const std::string_view _name) const {
+      const std::lock_guard lock(mutex_);
+      const auto it = numbers_.find(_name);
+      return it != numbers_.end() ? std::optional(it->second) : std::nullopt;
+    }  // find
+
+    [[nodiscard]] size_t get_count() const {
+      const std::lock_guard lock(mutex_);
+      return names_.size();
+    }  // get_count
+
+    [[nodiscard]] size_t get_bytes() const {
+      const std::lock_guard lock(mutex_);
+      return bytes_;
+    }  // get_bytes
+  };  // GraphNames
+
   // a function definition in a file of the project. a signal of qt with no body and the initializers of the global
   // variables of a file also have an entry
   struct GraphFunction {
@@ -67,6 +122,8 @@ namespace DataFlow {
     std::vector<GraphCall> calls_;
     std::vector<GraphRef> refs_;
     std::vector<GraphConnect> connects_;
+    std::vector<GraphUse> uses_;
+    std::vector<GraphSwitch> switches_;
   };  // GraphFunction
 
   struct GraphEdge {
@@ -122,6 +179,12 @@ namespace DataFlow {
     std::vector<GraphRoot> frames_;              // the frame functions of the code
     std::shared_ptr<const std::deque<GraphFunction>> signals_;  // the connected signals of qt of the project
     std::vector<GraphUnknown> unknown_;                         // the callers that the graph cannot see, of each node
+
+    // the index of the uses: the names of the usrs, the nodes that use each variable, and the nodes with a switch on
+    // each enum, by the numbers of the names
+    std::shared_ptr<GraphNames> names_ = std::make_shared<GraphNames>();
+    std::unordered_map<uint32_t, std::vector<int32_t>> usersOf_;
+    std::unordered_map<uint32_t, std::vector<int32_t>> switchesOf_;
   };  // ProjectGraph
 
   // true if the scans parsed all source files of the graph
@@ -315,19 +378,155 @@ namespace DataFlow {
       return text.contains("slots") || text.contains("SLOTS");
     }  // is_slot
 
+    // a name with no usr
+    inline constexpr uint32_t no_name = UINT32_MAX;
+
+    // the numbers of the usrs of the declarations of one source file in a scan. the usr of a declaration comes one time
+    class GraphIndex {
+      GraphNames& names_;
+      llvm::DenseMap<const clang::Decl*, uint32_t> numbers_;
+
+     public:
+      explicit GraphIndex(GraphNames& _names) : names_(_names) {}
+
+      // the number of the usr of a declaration, or no_name
+      [[nodiscard]] uint32_t number_of(const clang::Decl& _d) {
+        const auto [it, isNew] = numbers_.try_emplace(&_d, no_name);
+        if (isNew)
+          if (const std::string usr = usr_of(_d); !usr.empty()) it->second = names_.add(usr);
+        return it->second;
+      }  // number_of
+
+      [[nodiscard]] uint32_t number_of_name(const std::string_view _name) { return names_.add(_name); }
+    };  // GraphIndex
+
+    // the non-const member functions of the containers and the smart pointers that give a part of the object, for
+    // example operator[] or front(). a call changes the object only if the code changes the part
+    inline constexpr std::array<std::string_view, 15> part_functions = {
+        "begin", "end",   "rbegin", "rend", "find",  "lower_bound", "upper_bound", "equal_range",
+        "data",  "front", "back",   "at",   "value", "Find",        "FindRef",
+    };
+
+    // true if a call of a member function can change its object. _isPartWritten: the code changes the result of the
+    // call, for example v[i] = 1
+    [[nodiscard]] inline bool is_changing_call(const clang::CXXMethodDecl& _m, const bool _isPartWritten) {
+      if (_m.isConst()) return false;
+      const bool isPart =
+          _m.isOverloadedOperator()
+              ? llvm::is_contained({clang::OO_Subscript, clang::OO_Star, clang::OO_Arrow}, _m.getOverloadedOperator())
+              : _m.getIdentifier() && llvm::is_contained(part_functions, std::string_view(_m.getName()));
+      return !isPart || _isPartWritten;
+    }  // is_changing_call
+
+    // true if a parameter is a reference to non-const, so the function can change its argument
+    [[nodiscard]] inline bool is_written_param(const clang::FunctionDecl* _fn, const size_t _param) {
+      if (!_fn || _param >= _fn->getNumParams()) return false;
+      const clang::QualType t = _fn->getParamDecl(unsigned(_param))->getType();
+      return t->isLValueReferenceType() && !t.getNonReferenceType().isConstQualified();
+    }  // is_written_param
+
+    // true if a statement can change the value of its child: the left side of an assignment, the operand of ++, -- and
+    // &, the object of a member function that changes it, an argument of a reference to non-const, a reference to
+    // non-const or a range for with one, and a part of an object that the statement changes. _isWrite: the parent of
+    // the statement can change the value of the statement
+    [[nodiscard]] inline bool is_write(const clang::Stmt& _s, const clang::Stmt* _child, const bool _isWrite) {
+      if (llvm::isa<clang::ParenExpr, clang::MaterializeTemporaryExpr>(_s)) return _isWrite;
+      if (const auto* c = llvm::dyn_cast<clang::ImplicitCastExpr>(&_s)) {
+        const clang::CastKind k = c->getCastKind();
+        return _isWrite && (k == clang::CK_NoOp || k == clang::CK_DerivedToBase ||
+                            k == clang::CK_UncheckedDerivedToBase || k == clang::CK_ArrayToPointerDecay);
+      }
+      if (const auto* b = llvm::dyn_cast<clang::BinaryOperator>(&_s))
+        return b->isAssignmentOp() && _child == b->getLHS();
+      if (const auto* u = llvm::dyn_cast<clang::UnaryOperator>(&_s))
+        return u->isIncrementDecrementOp() || u->getOpcode() == clang::UO_AddrOf;
+      // a change of a.b changes a. a change of p->b does not change the pointer p
+      if (const auto* m = llvm::dyn_cast<clang::MemberExpr>(&_s)) return _isWrite && !m->isArrow();
+      if (const auto* a = llvm::dyn_cast<clang::ArraySubscriptExpr>(&_s))
+        return _isWrite && _child == a->getBase() && a->getBase()->IgnoreImpCasts()->getType()->isArrayType();
+      if (const auto* mc = llvm::dyn_cast<clang::CXXMemberCallExpr>(&_s)) {
+        const clang::CXXMethodDecl* md = mc->getMethodDecl();
+        if (_child == mc->getCallee()) return md && is_changing_call(*md, _isWrite);
+        for (unsigned i = 0; i < mc->getNumArgs(); ++i)
+          if (mc->getArg(i) == _child) return is_written_param(md, i);
+        return false;
+      }
+      // the first argument of a member operator is its object. the other arguments are its parameters
+      if (const auto* op = llvm::dyn_cast<clang::CXXOperatorCallExpr>(&_s)) {
+        const auto* md = llvm::dyn_cast_or_null<clang::CXXMethodDecl>(op->getDirectCallee());
+        for (unsigned i = 0; i < op->getNumArgs(); ++i) {
+          if (op->getArg(i) != _child) continue;
+          if (md) return i == 0 ? is_changing_call(*md, _isWrite) : is_written_param(md, i - 1);
+          return is_written_param(op->getDirectCallee(), i);
+        }
+        return false;
+      }
+      if (const auto* c = llvm::dyn_cast<clang::CallExpr>(&_s)) {
+        for (unsigned i = 0; i < c->getNumArgs(); ++i)
+          if (c->getArg(i) == _child) return is_written_param(c->getDirectCallee(), i);
+        return false;
+      }
+      if (const auto* c = llvm::dyn_cast<clang::CXXConstructExpr>(&_s)) {
+        for (unsigned i = 0; i < c->getNumArgs(); ++i)
+          if (c->getArg(i) == _child) return is_written_param(c->getConstructor(), i);
+        return false;
+      }
+      // the variable of the range of a range for is a reference of the compiler: the loop variable tells the change
+      if (const auto* d = llvm::dyn_cast<clang::DeclStmt>(&_s)) {
+        for (const clang::Decl* x : d->decls()) {
+          const auto* v = llvm::dyn_cast<clang::VarDecl>(x);
+          if (!v || v->getInit() != _child) continue;
+          if (v->isImplicit() || (v->getIdentifier() && v->getName().starts_with("__range"))) return _isWrite;
+          return v->getType()->isLValueReferenceType() && !v->getType().getNonReferenceType().isConstQualified();
+        }
+        return false;
+      }
+      if (const auto* r = llvm::dyn_cast<clang::CXXForRangeStmt>(&_s)) {
+        if (_child != r->getRangeStmt() || !r->getLoopVariable()) return false;
+        const clang::QualType t = r->getLoopVariable()->getType();
+        return t->isReferenceType() && !t.getNonReferenceType().isConstQualified();
+      }
+      return false;
+    }  // is_write
+
+    // the value of a case label. an enumerator of a scoped enum is no integer constant expression, thus the value
+    // comes from an evaluation. nullopt for a label that depends on a template parameter
+    [[nodiscard]] inline std::optional<llvm::APSInt> case_value(const clang::Expr* _e, const clang::ASTContext& _ctx) {
+      if (!_e || _e->isValueDependent()) return std::nullopt;
+      clang::Expr::EvalResult res;
+      if (!_e->EvaluateAsInt(res, _ctx)) return std::nullopt;
+      return res.Val.getInt();
+    }  // case_value
+
+    // a data member of an instantiation of a class template: the data member of the template, so all instantiations
+    // have one usr
+    [[nodiscard]] inline const clang::ValueDecl& member_pattern_of(const clang::ValueDecl& _d) {
+      const auto* rd                      = llvm::dyn_cast<clang::CXXRecordDecl>(_d.getDeclContext());
+      const clang::CXXRecordDecl* pattern = rd ? rd->getTemplateInstantiationPattern() : nullptr;
+      if (!pattern || pattern == rd || !_d.getDeclName().isIdentifier()) return _d;
+      for (const clang::NamedDecl* m : pattern->lookup(_d.getDeclName()))
+        if (const auto* v = llvm::dyn_cast<clang::ValueDecl>(m); v && v->getKind() == _d.getKind()) return *v;
+      return _d;
+    }  // member_pattern_of
+
     // the calls of a body: the calls of the functions of the project, the virtual calls, and the constructors of the
     // project. a call in a lambda belongs to the body. the walk also records the uses of the address of a function of
-    // the project, and the connections of signals of qt to slots
+    // the project, and the connections of signals of qt to slots. with an index, it also records the uses of the data
+    // members and of the global variables of the project, and the switch statements on the enums of the project
     struct GraphCallWalker {
       const clang::SourceManager& sm_;
       ProjectFiles& files_;
       std::vector<GraphCall>& out_;
       std::vector<GraphRef>& refs_;
       std::vector<GraphConnect>& connects_;
+      GraphIndex* index_                                 = nullptr;
+      std::vector<GraphUse>* uses_                       = nullptr;
+      std::vector<GraphSwitch>* switches_                = nullptr;
       llvm::SmallPtrSet<const clang::Expr*, 16> callees_ = {};  // the names that a call calls: no use of an address
 
-      // _loops: the number of loops around _s. _isMainLoop: a loop with no fixed number of iterations is around _s
-      void walk(const clang::Stmt* _s, const uint32_t _loops, const bool _isMainLoop) {
+      // _loops: the number of loops around _s. _isMainLoop: a loop with no fixed number of iterations is around _s.
+      // _isWrite: the parent of _s can change the value of _s
+      void walk(const clang::Stmt* _s, const uint32_t _loops, const bool _isMainLoop, const bool _isWrite = false) {
         if (!_s) return;
         uint32_t loops  = _loops;
         bool isMainLoop = _isMainLoop;
@@ -348,13 +547,75 @@ namespace DataFlow {
           if (const auto* fn = llvm::dyn_cast<clang::FunctionDecl>(r->getDecl()))
             ref(pattern_of(*fn), r->getLocation());
         }
-        for (const clang::Stmt* c : _s->children()) walk(c, loops, isMainLoop);
+        if (index_) {
+          use(*_s, _isWrite);
+          if (const auto* sw = llvm::dyn_cast<clang::SwitchStmt>(_s)) add_switch(*sw);
+        }
+        for (const clang::Stmt* c : _s->children()) walk(c, loops, isMainLoop, index_ && is_write(*_s, c, _isWrite));
       }  // walk
 
      private:
       [[nodiscard]] uint32_t line_of(const clang::SourceLocation _at) const {
         return sm_.getExpansionLineNumber(sm_.getExpansionLoc(_at));
       }  // line_of
+
+      // a use of a data member, a static data member or a global variable of the project. a constant is no use
+      void use(const clang::Stmt& _s, const bool _isWrite) {
+        const clang::ValueDecl* d = nullptr;
+        clang::SourceLocation at;
+        if (const auto* m = llvm::dyn_cast<clang::MemberExpr>(&_s)) {
+          d  = m->getMemberDecl();
+          at = m->getMemberLoc();
+        } else if (const auto* r = llvm::dyn_cast<clang::DeclRefExpr>(&_s)) {
+          d  = r->getDecl();
+          at = r->getLocation();
+        }
+        if (!d) return;
+        const auto* v = llvm::dyn_cast<clang::VarDecl>(d);
+        const bool isGlobal =
+            v && v->hasGlobalStorage() && !v->isStaticLocal() && !v->isConstexpr() && !v->getType().isConstQualified();
+        if (!llvm::isa<clang::FieldDecl>(d) && !isGlobal) return;
+        const clang::ValueDecl& pattern = member_pattern_of(*d);
+        if (!files_.contains(pattern.getLocation())) return;
+        const uint32_t name = index_->number_of(pattern);
+        if (name == no_name) return;
+        auto it = std::ranges::find(*uses_, name, &GraphUse::name_);
+        if (it == uses_->end()) it = uses_->insert(uses_->end(), GraphUse{name, line_of(at), false, false});
+        it->isRead_  = it->isRead_ || !_isWrite;
+        it->isWrite_ = it->isWrite_ || _isWrite;
+      }  // use
+
+      // a switch statement on an enum of the project, with the enumerators of its case labels and a flag for default
+      void add_switch(const clang::SwitchStmt& _s) {
+        const clang::Expr* cond = _s.getCond();
+        const clang::EnumDecl* e =
+            cond && !cond->isTypeDependent() ? cond->IgnoreParenImpCasts()->getType()->getAsEnumDecl() : nullptr;
+        if (e) e = e->getDefinition();
+        if (!e || !files_.contains(e->getLocation())) return;
+        GraphSwitch out;
+        out.enum_ = index_->number_of(*e);
+        if (out.enum_ == no_name) return;
+        out.line_ = line_of(_s.getBeginLoc());
+        for (const clang::SwitchCase* c = _s.getSwitchCaseList(); c; c = c->getNextSwitchCase()) {
+          const auto* cs = llvm::dyn_cast<clang::CaseStmt>(c);
+          if (!cs) {
+            out.hasDefault_ = true;
+            continue;
+          }
+          // a case label with a value or with a range of values, for example case 1 ... 3 of gnu
+          const std::optional<llvm::APSInt> low  = case_value(cs->getLHS(), e->getASTContext());
+          const std::optional<llvm::APSInt> high = cs->getRHS() ? case_value(cs->getRHS(), e->getASTContext()) : low;
+          if (!low || !high) continue;
+          for (const clang::EnumConstantDecl* k : e->enumerators()) {
+            if (llvm::APSInt::compareValues(k->getInitVal(), *low) < 0 ||
+                llvm::APSInt::compareValues(k->getInitVal(), *high) > 0)
+              continue;
+            const uint32_t n = index_->number_of_name(k->getName());
+            if (!llvm::is_contained(out.handled_, n)) out.handled_.push_back(n);
+          }
+        }
+        switches_->push_back(std::move(out));
+      }  // add_switch
 
       // a use of the address of a function of the project, for example &Dialog::accept or a std::function = run
       void ref(const clang::FunctionDecl& _fn, const clang::SourceLocation _at) {
@@ -435,13 +696,20 @@ namespace DataFlow {
       const size_t unit_;
       UnitFunctions& out_;
       bool& isParsed_;
+      GraphIndex index_;
       std::unique_ptr<ProjectFiles> files_;
       llvm::DenseMap<clang::FileID, std::vector<GraphFunction>*> owned_;  // null for a file that the unit did not get
 
      public:
       GraphConsumer(clang::CompilerInstance& _ci, const GraphScope& _scope, GraphClaims& _claims, const size_t _unit,
-                    UnitFunctions& _out, bool& _isParsed)
-          : ci_(_ci), scope_(_scope), claims_(_claims), unit_(_unit), out_(_out), isParsed_(_isParsed) {}
+                    UnitFunctions& _out, bool& _isParsed, GraphNames& _names)
+          : ci_(_ci),
+            scope_(_scope),
+            claims_(_claims),
+            unit_(_unit),
+            out_(_out),
+            isParsed_(_isParsed),
+            index_(_names) {}
 
       bool shouldSkipFunctionBody(clang::Decl* _d) override { return !owned(_d->getLocation()); }
 
@@ -510,7 +778,7 @@ namespace DataFlow {
           if (g.frame_.empty()) g.libraryOverride_ = library_override_of(*m->getCanonicalDecl(), files());
           g.isSlot_ = is_slot(*m, _sm, ci_.getLangOpts());
         }
-        GraphCallWalker walker{_sm, files(), g.calls_, g.refs_, g.connects_};
+        GraphCallWalker walker{_sm, files(), g.calls_, g.refs_, g.connects_, &index_, &g.uses_, &g.switches_};
         walker.walk(_fn.getBody(), 0, false);
         if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(&_fn))
           for (const clang::CXXCtorInitializer* init : ctor->inits())
@@ -543,14 +811,15 @@ namespace DataFlow {
       const size_t unit_;
       UnitFunctions& out_;
       bool& isParsed_;
+      GraphNames& names_;
 
      public:
       GraphAction(const GraphScope& _scope, GraphClaims& _claims, const size_t _unit, UnitFunctions& _out,
-                  bool& _isParsed)
-          : scope_(_scope), claims_(_claims), unit_(_unit), out_(_out), isParsed_(_isParsed) {}
+                  bool& _isParsed, GraphNames& _names)
+          : scope_(_scope), claims_(_claims), unit_(_unit), out_(_out), isParsed_(_isParsed), names_(_names) {}
 
       std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance& _ci, llvm::StringRef) override {
-        return std::make_unique<GraphConsumer>(_ci, scope_, claims_, unit_, out_, isParsed_);
+        return std::make_unique<GraphConsumer>(_ci, scope_, claims_, unit_, out_, isParsed_, names_);
       }  // CreateASTConsumer
     };  // GraphAction
 
@@ -562,14 +831,21 @@ namespace DataFlow {
       const size_t unit_;
       UnitFunctions& out_;
       bool& isParsed_;
+      GraphNames& names_;
 
      public:
       GraphFactory(const std::vector<Buffer>& _buffers, const GraphScope& _scope, GraphClaims& _claims,
-                   const size_t _unit, UnitFunctions& _out, bool& _isParsed)
-          : buffers_(_buffers), scope_(_scope), claims_(_claims), unit_(_unit), out_(_out), isParsed_(_isParsed) {}
+                   const size_t _unit, UnitFunctions& _out, bool& _isParsed, GraphNames& _names)
+          : buffers_(_buffers),
+            scope_(_scope),
+            claims_(_claims),
+            unit_(_unit),
+            out_(_out),
+            isParsed_(_isParsed),
+            names_(_names) {}
 
       std::unique_ptr<clang::FrontendAction> create() override {
-        return std::make_unique<GraphAction>(scope_, claims_, unit_, out_, isParsed_);
+        return std::make_unique<GraphAction>(scope_, claims_, unit_, out_, isParsed_, names_);
       }  // create
 
       bool runInvocation(std::shared_ptr<clang::CompilerInvocation> _inv, clang::FileManager* _files,
@@ -586,11 +862,12 @@ namespace DataFlow {
 
     // the functions in the files of the project that one source file gets in a scan. a parse with errors also gives
     // the functions that clang understood. nullopt if the source file has no command, or if clang could not start the
-    // parse
+    // parse. _names: the names of the index of the graph
     [[nodiscard]] inline std::optional<UnitFunctions> scan_unit(const CompileDb& _db, const std::string& _unit,
                                                                 const size_t _index, const std::string& _resource_dir,
                                                                 const std::vector<Buffer>& _buffers,
-                                                                const GraphScope& _scope, GraphClaims& _claims) {
+                                                                const GraphScope& _scope, GraphClaims& _claims,
+                                                                GraphNames& _names) {
       auto cmd = db_command(_db, _unit, _resource_dir);
       if (!cmd || cmd->args_.empty()) return std::nullopt;
       if (!_resource_dir.empty()) cmd->args_.insert(cmd->args_.begin() + 1, "-resource-dir=" + _resource_dir);
@@ -601,7 +878,7 @@ namespace DataFlow {
       const auto files = llvm::makeIntrusiveRefCnt<clang::FileManager>(fso, fs);
       UnitFunctions out;
       bool isParsed = false;
-      GraphFactory factory(_buffers, _scope, _claims, _index, out, isParsed);
+      GraphFactory factory(_buffers, _scope, _claims, _index, out, isParsed, _names);
       clang::tooling::ToolInvocation tool(std::move(cmd->args_), &factory, files.get(),
                                           std::make_shared<clang::PCHContainerOperations>());
       clang::IgnoringDiagConsumer ignore;
@@ -853,6 +1130,16 @@ namespace DataFlow {
     for (size_t i = 0; i < count; ++i)
       if (const GraphFunction& f = *_g.nodes_[i]; f.isSlot_ && _g.callers_[i].empty())
         mark(int32_t(i), "slot", "a slots section", f.file_, f.first_);
+
+    // the index of the uses: the nodes that use each variable, and the nodes with a switch on each enum
+    _g.usersOf_.clear();
+    _g.switchesOf_.clear();
+    for (size_t i = 0; i < count; ++i) {
+      for (const GraphUse& u : _g.nodes_[i]->uses_) _g.usersOf_[u.name_].push_back(int32_t(i));
+      for (const GraphSwitch& s : _g.nodes_[i]->switches_)
+        if (std::vector<int32_t>& list = _g.switchesOf_[s.enum_]; list.empty() || list.back() != int32_t(i))
+          list.push_back(int32_t(i));
+    }
   }  // merge_graph
 
   // scans the source files _todo of a graph with the unsaved text of the open files, and merges the functions of the
@@ -876,8 +1163,9 @@ namespace DataFlow {
     _parallel([&]() {
       for (size_t i = next++; i < _todo.size() && !_isStopped(); i = next++) {
         const size_t u                           = _todo[i];
-        std::optional<Detail::UnitFunctions> fns = Detail::scan_unit(_dbs[size_t(_graph.dbs_[u])], _graph.units_[u], u,
-                                                                     _resource_dir, _buffers, _graph.scope_, claims);
+        std::optional<Detail::UnitFunctions> fns =
+            Detail::scan_unit(_dbs[size_t(_graph.dbs_[u])], _graph.units_[u], u, _resource_dir, _buffers, _graph.scope_,
+                              claims, *_graph.names_);
         {
           const std::lock_guard lock(mutex);
           std::erase(_graph.failed_, _graph.units_[u]);
@@ -1156,10 +1444,27 @@ namespace DataFlow {
                                   {"file", _g.nodes_[size_t(r.node_)]->file_},
                                   {"line", int64_t(_g.nodes_[size_t(r.node_)]->first_)},
                                   {"reason", r.reason_}});
-    return JsonObject{
-        {"units", int64_t(_g.units_.size())},     {"scanned", int64_t(_scanned)}, {"isComplete", is_graph_complete(_g)},
-        {"functions", int64_t(_g.nodes_.size())}, {"calls", int64_t(calls)},      {"frames", std::move(frames)},
-        {"failed", JsonArray(_g.failed_)}};
+    // the size of the index of the uses, with the memory of its parts
+    size_t uses = 0, switches = 0, bytes = _g.names_->get_bytes();
+    for (const GraphFunction* f : _g.nodes_) {
+      uses += f->uses_.size();
+      switches += f->switches_.size();
+      bytes += f->uses_.capacity() * sizeof(GraphUse) + f->switches_.capacity() * sizeof(GraphSwitch);
+      for (const GraphSwitch& s : f->switches_) bytes += s.handled_.capacity() * sizeof(uint32_t);
+    }
+    for (const auto* map : {&_g.usersOf_, &_g.switchesOf_})
+      for (const auto& [name, list] : *map) bytes += 48 + list.capacity() * sizeof(int32_t);
+    return JsonObject{{"units", int64_t(_g.units_.size())},
+                      {"scanned", int64_t(_scanned)},
+                      {"isComplete", is_graph_complete(_g)},
+                      {"functions", int64_t(_g.nodes_.size())},
+                      {"calls", int64_t(calls)},
+                      {"frames", std::move(frames)},
+                      {"failed", JsonArray(_g.failed_)},
+                      {"index", JsonObject{{"uses", int64_t(uses)},
+                                           {"switches", int64_t(switches)},
+                                           {"names", int64_t(_g.names_->get_count())},
+                                           {"bytes", int64_t(bytes)}}}};
   }  // graph_to_json
 
 }  // namespace DataFlow

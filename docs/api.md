@@ -69,6 +69,7 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `getHidden({ file, function, line })` | [`get_hidden`](tools.md#get_hidden) | read |
 | `getIncludes({ file })` | [`get_includes`](tools.md#get_includes) | read |
 | `getOutline({ file, name, line })` | [`get_outline`](tools.md#get_outline) | read |
+| `getMemberSites({ file, name, line })` | [`get_member_sites`](tools.md#get_member_sites) | read |
 | `getHeat({ file, function, lines })` | [`get_heat`](tools.md#get_heat) | read |
 | `getCallGraph()` | [`get_call_graph`](tools.md#get_call_graph) | read |
 | `getLogic({ file, function, line, choices })` | [`get_logic`](tools.md#get_logic) | read |

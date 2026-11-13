@@ -2,7 +2,7 @@ import { existsSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { isInside } from '../cdb/project';
-import type { CallersModel, EngineClient, EngineFunction, FileResult, LogicModel, LogicOptions, PlaceModel, StructureModel } from '../engine/client';
+import type { CallersModel, EngineClient, EngineFunction, FileResult, LogicModel, LogicOptions, MemberSitesModel, PlaceModel, StructureModel } from '../engine/client';
 import {
 	addDetail, functionLines, MAX_DETAILS, mergeComments, ModelBlockInput, ModelCommentInput, ModelDetailInput, ModelNoteInput, moveModelLayer, ownerOf,
 	resolveComments, resolveDetail, resolveNotes, snapBlocks, structureSummary, TextChange, withIds,
@@ -84,6 +84,9 @@ export interface HostDeps {
 	// the facts of a line from the engine, with the reach of its function in the call graph. Lines from 1. A call graph
 	// that is not complete starts its scan, as for the heat
 	place(doc: vscode.TextDocument, line: number): Promise<FileResult & PlaceModel>;
+	// the sites of the members of a type from the index of the call graph: by its name, or at a position with a UTF-8
+	// column from 1. A call graph that is not complete starts its scan, as for the heat
+	memberSites(doc: vscode.TextDocument, at: { name: string } | { line: number; col: number }): Promise<FileResult & MemberSitesModel>;
 	// the options of Logic Map for a document: the settings of the event functions, of the functions that can give null,
 	// and of the null checks
 	logicOptions(doc: vscode.TextDocument): LogicOptions;
@@ -472,6 +475,9 @@ export class DataFlowMcpHost implements McpHost {
 		if (lines) {
 			functions = functions.filter((h) => h.first <= lines[1] && h.last >= lines[0]);
 		}
+		// the types of the file with the facts of their data members: not with a function, and with lines only the types
+		// with a line in the lines
+		const types = fn ? [] : model.types.filter((t) => !lines || (t.first <= lines[1] && t.last >= lines[0]));
 		const scan = this.scanNote();
 		return {
 			file: f,
@@ -485,6 +491,20 @@ export class DataFlowMcpHost implements McpHost {
 				signals: h.reasons.map((r) => ({ ...r })),
 			})),
 			...(functions.length > MAX_ITEMS ? { more: functions.length - MAX_ITEMS } : {}),
+			...(types.length > 0 ? {
+				types: types.map((t) => ({
+					name: t.name, kind: t.kind, lines: [t.first, t.last] as [number, number],
+					...(t.includeReach ? { includeReach: { ...t.includeReach } } : {}),
+					isReachComplete: t.isReachComplete,
+					members: t.members.map((m) => ({
+						name: m.name, line: m.line, type: m.type, ...(m.isStatic ? { static: true } : {}),
+						...(m.readers !== undefined ? { readers: m.readers, writers: m.writers, files: m.files } : {}),
+						...(m.users ? { users: m.users.map((u) => ({ ...u })) } : {}),
+						...(m.framePath ? { framePath: { ...m.framePath } } : {}),
+						...(m.shared ? { shared: m.shared } : {}),
+					})),
+				})),
+			} : {}),
 			...(lines && functions.length === 0
 				? { note: `No function${fn ? ` ${fn}` : ''} has a line in the lines ${lines[0]} to ${lines[1]} of ${path.basename(f)}.` } : {}),
 			...(scan ? { callGraph: scan } : {}),
@@ -664,6 +684,68 @@ export class DataFlowMcpHost implements McpHost {
 					: `No class, struct, union or enum on line ${line} of ${path.basename(f)}.`);
 		}
 		return { ...outlineFacts(result.outline), ...parseNote(result) };
+	}
+
+	// The sites of the members of a type: the functions that use the data members of a class, a struct or a union, the
+	// most members first, or the switch statements on an enum. A type that the translation unit only declares gets the
+	// sites of the header with its definition, as for the outline
+	async memberSites(file: string | undefined, name: string | undefined, line: number | undefined): Promise<Api.MemberSitesFacts> {
+		if (!name && line === undefined) {
+			throw new Error('Give the name of the type, or a line with its name.');
+		}
+		const { doc, file: f } = await this.prepare(file);
+		let result: (FileResult & MemberSitesModel) | undefined;
+		let place: { doc: vscode.TextDocument; pos: vscode.Position } | undefined;
+		if (name) {
+			result = await this.deps.memberSites(doc, { name });
+			if (result.candidates?.length) {
+				throw new Error(`${result.candidates.length} types match ${name}: ${result.candidates.slice(0, 10).join(', ')}. Give the name with its namespaces.`);
+			}
+		} else {
+			if (line! > doc.lineCount) {
+				throw new Error(`${path.basename(f)} has ${doc.lineCount} lines.`);
+			}
+			const text = doc.lineAt(line! - 1).text;
+			for (const col of typeNameColumns(text)) {
+				result = await this.deps.memberSites(doc, { line: line!, col: toUtf8Column(text, col) });
+				if (result.type || result.declaration) {
+					place = { doc, pos: new vscode.Position(line! - 1, col) };
+					break;
+				}
+			}
+		}
+		if (result && !result.type && result.declaration) {
+			const header = await this.deps.definitionHeader(result.declaration.name, place);
+			if (header) {
+				result = await this.deps.memberSites(await vscode.workspace.openTextDocument(header), { name: result.declaration.name });
+			}
+		}
+		if (!result?.type) {
+			throw new Error(result?.declaration ? `DataFlow found no definition of ${result.declaration.name}.`
+				: name ? `No class, struct, union or enum ${name} in the translation unit of ${path.basename(f)}.`
+					: `No class, struct, union or enum on line ${line} of ${path.basename(f)}.`);
+		}
+		const isReady = result.callGraph.state === 'ready';
+		const note = isReady ? undefined : this.scanNote() ?? 'The call graph is not complete. Call get_member_sites again later.';
+		const members = result.members;
+		return {
+			type: result.type.name, kind: result.type.kind, file: result.type.file, line: result.type.line,
+			isReachComplete: isReady,
+			...(members ? {
+				members: [...members],
+				functions: (result.functions ?? []).map((s) => ({
+					function: s.name, file: s.file, lines: [s.first, s.last] as [number, number], uses: [...s.uses], writes: [...s.writes],
+					part: members.length > 0 ? Math.round((s.uses.length / members.length) * 100) / 100 : 0,
+				})),
+			} : {}),
+			...(result.enumerators ? {
+				enumerators: [...result.enumerators],
+				switches: (result.switches ?? []).map((s) => ({ function: s.function, file: s.file, line: s.line, missing: [...s.missing], hasDefault: s.hasDefault })),
+			} : {}),
+			...(result.isCapped ? { more: true } : {}),
+			...(note ? { callGraph: note } : {}),
+			...parseNote(result),
+		};
 	}
 
 	//-------------------

@@ -3628,6 +3628,175 @@ test('place: the function of a line, the statements around it, the locks at its 
 	}
 });
 
+test('index: the uses of the members, the switch statements on an enum, and the facts of the members', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-sites-'));
+	const headerLines = [
+		'#pragma once',
+		'#include <string>',
+		'#include <vector>',
+		'namespace demo {',
+		'  enum class Mode { IDLE, RUN, STOP };',
+		'  struct Settings {',
+		'    int rate_ = 0;',
+		'    std::string name_;',
+		'    std::vector<int> limits_;',
+		'    Mode mode_ = Mode::IDLE;',
+		'    static int s_count;',
+		'  };',
+		'  template <class T>',
+		'  struct Box {',
+		'    T value_{};',
+		'    int hits_ = 0;',
+		'  };',
+		'  void load(Settings& _s);',
+		'  void save(const Settings& _s, std::string& _out);',
+		'  int step(Settings& _s);',
+		'}  // namespace demo',
+	];
+	const sourceLines = [
+		'#include "settings.h"',
+		'namespace demo {',
+		'  int Settings::s_count = 0;',
+		'  void load(Settings& _s) {',
+		'    _s.rate_ = 5;',
+		'    _s.name_ = "main";',
+		'    _s.limits_.push_back(1);',
+		'    _s.mode_ = Mode::RUN;',
+		'    ++Settings::s_count;',
+		'  }',
+		'  void save(const Settings& _s, std::string& _out) {',
+		'    _out = _s.name_ + std::to_string(_s.rate_) + std::to_string(_s.limits_.size());',
+		'    switch (_s.mode_) {',
+		'      case Mode::IDLE: _out += "i"; break;',
+		'      case Mode::RUN: _out += "r"; break;',
+		'      default: break;',
+		'    }',
+		'  }',
+		'  int step(Settings& _s) {',
+		'    int total = 0;',
+		'    for (const int l : _s.limits_) total += l;',
+		'    switch (_s.mode_) {',
+		'      case Mode::IDLE:',
+		'      case Mode::RUN:',
+		'        return total + _s.rate_;',
+		'      case Mode::STOP:',
+		'        return 0;',
+		'    }',
+		'    return total;',
+		'  }',
+		'}  // namespace demo',
+	];
+	const mainLines = [
+		'#include "settings.h"',
+		'int peek(demo::Box<int>& _b) {',
+		'  _b.hits_ += 1;',
+		'  return _b.value_;',
+		'}',
+		'int main() {',
+		'  demo::Settings s;',
+		'  demo::load(s);',
+		'  demo::Box<int> box;',
+		'  bool running = true;',
+		'  while (running) {',
+		'    running = demo::step(s) > 0 && peek(box) >= 0;',
+		'    switch (s.mode_) {',
+		'      case demo::Mode::STOP: running = false; break;',
+		'    }',
+		'  }',
+		'  return 0;',
+		'}',
+	];
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	const header = write('settings.h', headerLines);
+	const source = write('settings.cpp', sourceLines);
+	const main = write('main.cpp', mainLines);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([source, main].map((file) => ({ directory: dir, file, arguments: ['clang++', '-std=c++20', `-I${dir}`, '-c', file] }))));
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	const sites = async (params) => {
+		const res = await own.send('dataflow/memberSites', params);
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		return res.result;
+	};
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 4, cacheSize: 4 })).error, undefined);
+
+		// with no call graph: the members and the enumerators, with no sites
+		const before = await sites({ file: source, name: 'demo::Settings' });
+		assert.deepEqual([before.type.kind, before.members, before.functions, before.callGraph.state], ['struct', ['rate_', 'name_', 'limits_', 'mode_'], undefined, 'none']);
+
+		// the scan records the uses and the switch statements, each usr one time
+		const scan = await own.send('dataflow/callGraph', { roots: [dir] });
+		assert.equal(scan.error, undefined, JSON.stringify(scan.error));
+		const index = scan.result.index;
+		assert.ok(index.uses >= 12 && index.switches === 3 && index.names >= 8, JSON.stringify(index));
+		assert.ok(index.bytes > 0 && index.bytes < 100000, JSON.stringify(index));
+
+		// the functions that use the members of a struct, the most members first, with the members that they write. a
+		// const member function, a range for with no reference and a read through a const reference are reads
+		const record = await sites({ file: source, name: 'Settings' });
+		assert.deepEqual([record.type.name, path.basename(record.type.file), record.type.line], ['demo::Settings', 'settings.h', 6]);
+		assert.deepEqual(record.functions.map((f) => [f.name, f.uses, f.writes]), [
+			['demo::load', ['rate_', 'name_', 'limits_', 'mode_'], ['rate_', 'name_', 'limits_', 'mode_']],
+			['demo::save', ['rate_', 'name_', 'limits_', 'mode_'], []],
+			['demo::step', ['rate_', 'limits_', 'mode_'], []],
+			['main', ['mode_'], []],
+		]);
+		// a member of an instantiation of a class template is the member of the template
+		const box = await sites({ file: main, name: 'demo::Box' });
+		assert.deepEqual(box.functions.map((f) => [f.name, f.uses, f.writes]), [['peek', ['value_', 'hits_'], ['hits_']]]);
+
+		// the switch statements on an enum: the enumerators that each one does not handle, the switches with a missing
+		// enumerator first
+		const mode = await sites({ file: source, name: 'demo::Mode' });
+		assert.deepEqual([mode.type.kind, mode.enumerators], ['enum class', ['IDLE', 'RUN', 'STOP']]);
+		assert.deepEqual(mode.switches.map((s) => [s.function, path.basename(s.file), s.line, s.missing, s.hasDefault]), [
+			['main', 'main.cpp', 13, ['IDLE', 'RUN'], false],
+			['demo::save', 'settings.cpp', 13, ['STOP'], true],
+			['demo::step', 'settings.cpp', 22, [], false],
+		]);
+		// a new enumerator in the unsaved text: each switch misses it, also with no new scan
+		const added = headerLines.map((l) => l.replace('STOP };', 'STOP, PAUSE };'));
+		own.notify('textDocument/didOpen', { file: header, text: added.join('\n') + '\n', version: 1 });
+		const paused = await sites({ file: header, name: 'demo::Mode' });
+		assert.deepEqual(paused.switches.map((s) => [s.function, s.missing]), [
+			['main', ['IDLE', 'RUN', 'PAUSE']], ['demo::save', ['STOP', 'PAUSE']], ['demo::step', ['PAUSE']],
+		]);
+		own.notify('textDocument/didClose', { file: header });
+
+		// the type at a position, and a name that is not a type
+		const atLine = await sites({ file: header, line: 6, col: 10 });
+		assert.equal(atLine.type.name, 'demo::Settings');
+		const nothing = await sites({ file: source, name: 'nothing_here' });
+		assert.deepEqual([nothing.type, nothing.functions, nothing.candidates], [null, undefined, undefined]);
+
+		// the facts of the members for the heat: the readers, the writers, their files, the first users, and the user on
+		// the shortest frame path
+		const metrics = await own.send('dataflow/memberMetrics', { file: header });
+		assert.equal(metrics.error, undefined, JSON.stringify(metrics.error));
+		const types = metrics.result.types;
+		assert.deepEqual(types.map((t) => [t.qualifiedName, t.kind, t.first, t.last]), [['demo::Settings', 'struct', 6, 12], ['demo::Box', 'struct', 14, 17]]);
+		const facts = (t) => Object.fromEntries(t.members.map((m) => [m.name, [m.readers, m.writers, m.files, m.frame?.function, !!m.isStatic]]));
+		assert.deepEqual(facts(types[0]), {
+			rate_: [2, 1, 1, 'demo::step', false],
+			name_: [1, 1, 1, undefined, false],
+			limits_: [2, 1, 1, 'demo::step', false],
+			mode_: [3, 1, 2, 'demo::step', false],
+			s_count: [0, 1, 1, undefined, true],
+		});
+		assert.deepEqual(facts(types[1]), { value_: [1, 0, 1, 'peek', false], hits_: [0, 1, 1, 'peek', false] });
+		assert.deepEqual(types[0].members[0].users.map((u) => [u.name, u.isWrite]), [['demo::load', true], ['demo::save', false], ['demo::step', false]]);
+		assert.equal(types[0].members[3].frame.reason, 'called in the main loop of main');
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('sends status notifications', () => {
 	const statuses = engine.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params);
 	const states = statuses.map((s) => s.state);

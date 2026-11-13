@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import type { MetricsFunction, ThreadsModel } from '../../engine/client';
+import type { MemberMetricsMember, MemberMetricsModel, MetricsFunction, ThreadsModel } from '../../engine/client';
 import { bandOf, bandText, buildHeat, changedFunctions, flamesOf, heatFact, HeatInputs, hottestIn, parseBlame, unknownCallersText } from '../../lenses/heat';
 
 // The heat score: the parse of the blame of git, the points of each signal, the maximum of each group, the bands and
@@ -84,6 +84,48 @@ suite('Heat', () => {
 		threads.items[0].refs[0].locks = ['mutex_'];
 		const locked = buildHeat(inputs([big], { threads })).functions[0];
 		assert.ok(locked.reasons.some((r) => r.points === 3 && r.text === 'Data that threads share, with a lock: jobs_'), JSON.stringify(locked.reasons));
+	});
+
+	test('The types of the file get the facts of their data members, with the data that threads share, and no score', () => {
+		const members: MemberMetricsMember[] = [
+			{
+				name: 'jobs_', line: 4, type: 'int', readers: 2, writers: 1, files: 2, users: [{ name: 'rate::solve', file: FILE, line: 20, isWrite: true }],
+				frame: { function: 'rate::solve', reason: 'called in the main loop of main', calls: 1 },
+			},
+			{ name: 's_count', line: 5, type: 'int', isStatic: true, readers: 0, writers: 0, files: 0, users: [] },
+		];
+		const types: MemberMetricsModel = {
+			callGraph: { state: 'ready' },
+			types: [{ name: 'Pool', qualifiedName: 'rate::Pool', kind: 'class', line: 3, first: 3, last: 9, members }],
+		};
+		// two threads use jobs_ with no lock. The item of the threads has the declaration of the member
+		const ref = (thread: number) => ({ file: FILE, line: 20, col: 1, len: 5, role: 'write', thread, fn: 0, path: 'jobs_', sub: [], locks: [] as string[], order: {}, guards: [], via: [] });
+		const threads = {
+			threads: [], captures: [], isTruncated: false, analysisMs: 0, cached: false, functions: [],
+			items: [{ key: 'jobs', label: 'jobs_', kind: 'member', type: 'int', isAtomic: false, decl: { file: FILE, line: 4, col: 5, len: 5 }, refs: [ref(-1), ref(0)] }],
+		} as unknown as ThreadsModel;
+		const heat = buildHeat(inputs([], { types, threads, includeReach: (f) => (f === FILE ? { units: 3, total: 9 } : undefined) }));
+		assert.deepStrictEqual(heat.types, [{
+			name: 'rate::Pool', kind: 'class', line: 3, first: 3, last: 9, includeReach: { units: 3, total: 9 }, isReachComplete: true,
+			members: [
+				{
+					name: 'jobs_', line: 4, type: 'int', isStatic: false, readers: 2, writers: 1, files: 2,
+					users: [{ function: 'rate::solve', file: FILE, line: 20, isWrite: true }],
+					framePath: { function: 'rate::solve', reason: 'called in the main loop of main', calls: 1 }, shared: 'unprotected',
+				},
+				{ name: 's_count', line: 5, type: 'int', isStatic: true, readers: 0, writers: 0, files: 0, users: [] },
+			],
+		}]);
+
+		// with a lock on each access, the member is shared with a lock. With no complete call graph, the members have no
+		// users
+		for (const r of threads.items[0].refs) {
+			r.locks = ['mutex_'];
+		}
+		const scanning = buildHeat(inputs([], {
+			threads, types: { callGraph: { state: 'scanning' }, types: [{ ...types.types[0], members: [{ name: 'jobs_', line: 4, type: 'int' }] }] },
+		}));
+		assert.deepStrictEqual([scanning.types[0].isReachComplete, scanning.types[0].members], [false, [{ name: 'jobs_', line: 4, type: 'int', isStatic: false, shared: 'locked' }]]);
 	});
 
 	test('The reach adds the include reach of the declaration and a virtual function', () => {

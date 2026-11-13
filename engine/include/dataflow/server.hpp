@@ -13,6 +13,7 @@
 #include <dataflow/outline.hpp>
 #include <dataflow/place.hpp>
 #include <dataflow/protocol.hpp>
+#include <dataflow/sites.hpp>
 #include <dataflow/slice.hpp>
 #include <dataflow/structure.hpp>
 #include <dataflow/threads.hpp>
@@ -218,8 +219,8 @@ namespace DataFlow {
     };  // GraphView
 
     // the state is none, scanning, partial or ready. a partial graph is from a first scan that stopped. _names: the
-    // frame functions of the setting
-    [[nodiscard]] inline GraphView graph_view(Server& _srv, const std::vector<std::string>& _names) {
+    // frame functions of the setting. with no _names, the view has no frame paths
+    [[nodiscard]] inline GraphView graph_view(Server& _srv, const std::vector<std::string>* _names) {
       const std::lock_guard lock(_srv.graph_mutex_);
       GraphView out;
       const bool isComplete = _srv.graph_ && is_graph_complete(*_srv.graph_);
@@ -230,14 +231,54 @@ namespace DataFlow {
         out.state_["total"] = int64_t(_srv.graphTotal_);
       }
       if (!isComplete) return out;
-      if (!_srv.paths_ || _srv.pathNames_ != _names) {
-        _srv.paths_     = std::make_shared<const FramePaths>(frame_paths(*_srv.graph_, _names));
-        _srv.pathNames_ = _names;
+      if (_names && (!_srv.paths_ || _srv.pathNames_ != *_names)) {
+        _srv.paths_     = std::make_shared<const FramePaths>(frame_paths(*_srv.graph_, *_names));
+        _srv.pathNames_ = *_names;
       }
       out.graph_ = _srv.graph_;
-      out.paths_ = _srv.paths_;
+      if (_names) out.paths_ = _srv.paths_;
       return out;
     }  // graph_view
+
+    [[nodiscard]] inline GraphView graph_view(Server& _srv, const std::vector<std::string>& _names) {
+      return graph_view(_srv, &_names);
+    }  // graph_view
+
+    // the type of a request: by a name, with or without its namespaces, or the name at a position (line and col, from
+    // 1). if more than one type ends with the name, the candidates give their qualified names
+    struct RequestTag {
+      const clang::TagDecl* tag_ = nullptr;
+      std::vector<std::string> candidates_;
+    };  // RequestTag
+
+    [[nodiscard]] inline RequestTag request_tag(TuEntry& _e, const JsonObject& _params) {
+      RequestTag out;
+      clang::ASTContext& ctx = _e.ast_->getASTContext();
+      if (const auto name = get_string(&_params, "name")) {
+        out.tag_ = tag_by_name(ctx, *name);
+        if (out.tag_) return out;
+        const std::vector<const clang::TagDecl*> tags = tags_ending_with(ctx, *name);
+        if (tags.size() == 1) out.tag_ = tags.front();
+        if (tags.size() > 1)
+          for (const clang::TagDecl* t : tags) out.candidates_.push_back(t->getQualifiedNameAsString());
+      } else if (const auto line = _params.getInteger("line"), col = _params.getInteger("col");
+                 line && col && *line > 0 && *col > 0) {
+        update_tokens(_e);
+        if (const FileToken* token = definition_token(*_e.tokens_, uint32_t(*line), uint32_t(*col)))
+          if (const auto it = _e.tokens_->decls_.find(token->offset_); it != _e.tokens_->decls_.end())
+            out.tag_ = outline_tag(it->second);
+      }
+      return out;
+    }  // request_tag
+
+    // the declaration of a type with no definition in the translation unit. the extension then looks for the header of
+    // the definition
+    [[nodiscard]] inline JsonObject tag_declaration_to_json(const clang::TagDecl& _tag) {
+      JsonObject out =
+          outline_place_to_json(outline_place(_tag.getASTContext().getSourceManager(), _tag.getLocation()));
+      out["name"] = _tag.getQualifiedNameAsString();
+      return out;
+    }  // tag_declaration_to_json
   }  // namespace Detail
 
   // params: compileCommands, resourceDir, maxThreads, cacheSize
@@ -1010,37 +1051,48 @@ namespace DataFlow {
     // of a qualified name. a type with no definition in the translation unit gives its declaration
     if (_method == "dataflow/outline")
       return post_entry_request(_srv, *_id, *file, [params](TuEntry& _e) -> std::expected<JsonObject, std::string> {
-        clang::ASTContext& ctx    = _e.ast_->getASTContext();
-        const clang::TagDecl* tag = nullptr;
-        if (const auto name = Detail::get_string(&params, "name")) {
-          // a name with no namespaces, or with only a part of them, needs a search. more than one match gives the
-          // candidates
-          tag = Detail::tag_by_name(ctx, *name);
-          if (!tag) {
-            const std::vector<const clang::TagDecl*> tags = Detail::tags_ending_with(ctx, *name);
-            if (tags.size() > 1) {
-              JsonArray candidates;
-              for (const clang::TagDecl* t : tags) candidates.push_back(t->getQualifiedNameAsString());
-              return JsonObject{{"outline", nullptr}, {"candidates", std::move(candidates)}};
-            }
-            if (!tags.empty()) tag = tags.front();
-          }
-        } else if (const auto line = params.getInteger("line"), col = params.getInteger("col");
-                   line && col && *line > 0 && *col > 0) {
-          Detail::update_tokens(_e);
-          if (const FileToken* token = definition_token(*_e.tokens_, uint32_t(*line), uint32_t(*col)))
-            if (const auto it = _e.tokens_->decls_.find(token->offset_); it != _e.tokens_->decls_.end())
-              tag = outline_tag(it->second);
-        }
-        if (!tag) return JsonObject{{"outline", nullptr}};
-        if (const clang::TagDecl* def = tag->getDefinition())
-          return JsonObject{{"outline", outline_to_json(build_outline(*def, ctx))}};
-        // the extension then looks for the header of the definition
-        JsonObject declaration =
-            Detail::outline_place_to_json(Detail::outline_place(ctx.getSourceManager(), tag->getLocation()));
-        declaration["name"] = tag->getQualifiedNameAsString();
-        return JsonObject{{"outline", nullptr}, {"declaration", std::move(declaration)}};
+        // a name with no namespaces, or with only a part of them, needs a search. more than one match gives the
+        // candidates
+        const Detail::RequestTag found = Detail::request_tag(_e, params);
+        if (!found.candidates_.empty())
+          return JsonObject{{"outline", nullptr}, {"candidates", JsonArray(found.candidates_)}};
+        if (!found.tag_) return JsonObject{{"outline", nullptr}};
+        if (const clang::TagDecl* def = found.tag_->getDefinition())
+          return JsonObject{{"outline", outline_to_json(build_outline(*def, _e.ast_->getASTContext()))}};
+        return JsonObject{{"outline", nullptr}, {"declaration", Detail::tag_declaration_to_json(*found.tag_)}};
       });
+    // the sites of the members of a type in the index of the call graph: the functions that use the data members of a
+    // record, or the switch statements on an enum. the type: name, or the name at a position (line and col, from 1)
+    if (_method == "dataflow/memberSites")
+      return post_entry_request(
+          _srv, *_id, *file, [&srv = _srv, params](TuEntry& _e) -> std::expected<JsonObject, std::string> {
+            const Detail::RequestTag found = Detail::request_tag(_e, params);
+            if (!found.candidates_.empty())
+              return JsonObject{{"type", nullptr}, {"candidates", JsonArray(found.candidates_)}};
+            if (!found.tag_) return JsonObject{{"type", nullptr}};
+            const clang::TagDecl* def = found.tag_->getDefinition();
+            if (!def)
+              return JsonObject{{"type", nullptr}, {"declaration", Detail::tag_declaration_to_json(*found.tag_)}};
+            const Detail::GraphView view = Detail::graph_view(srv, nullptr);
+            JsonObject out               = llvm::isa<clang::EnumDecl>(def)
+                                               ? enum_sites_to_json(view.graph_.get(), *llvm::cast<clang::EnumDecl>(def))
+                                               : record_sites_to_json(view.graph_.get(), *llvm::cast<clang::RecordDecl>(def));
+            out["type"]                  = tag_to_json(*def);
+            out["callGraph"]             = JsonObject(view.state_);
+            return out;
+          });
+    // the facts of the data members of the classes, the structs and the unions of the file for the heat, from the index
+    // of the call graph. frameFunctions: the frame functions of the setting
+    if (_method == "dataflow/memberMetrics")
+      return post_file_request(_srv, *_id, *file,
+                               [&srv = _srv, names = Detail::get_strings(&params, "frameFunctions")](
+                                   clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
+                                 const Detail::GraphView view = Detail::graph_view(srv, names);
+                                 JsonObject out   = member_metrics_to_json(main_file_records(_ast), view.graph_.get(),
+                                                                           view.paths_.get());
+                                 out["callGraph"] = JsonObject(view.state_);
+                                 return out;
+                               });
 
     Protocol::reply_error(*_id, Protocol::ec_method_not_found, "unknown method: " + _method);
   }  // dispatch

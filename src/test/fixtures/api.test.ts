@@ -43,7 +43,7 @@ suite('API for other extensions on the fixture', () => {
 		assert.throws(() => exports.getApi(2 as 1), /DataFlow has no API version 2/);
 		assert.strictEqual(api.engineState, 'ready');
 		assert.ok(api.compileDatabases.length > 0, JSON.stringify(api.compileDatabases));
-		assert.strictEqual(api.tools.length, 38);
+		assert.strictEqual(api.tools.length, 39);
 		assert.strictEqual(api.engineError, undefined);
 		const view = await api.getView();
 		assert.deepStrictEqual([view.file, view.engine], [file(), 'ready']);
@@ -170,6 +170,24 @@ suite('API for other extensions on the fixture', () => {
 			['electricity::power_ctrl::solve_power_plan', true, { direct: 1, transitive: 1, isCapped: false }, undefined, undefined]);
 		assert.deepStrictEqual(place.around.map((s) => [s.kind, s.lines[0]]), [['while', lineOf('while (charge.is_dirty)')], ['if', lineOf('if (kw) {')]]);
 		await assert.rejects(api.getPlace({ line: 100000 }), /battery\.cpp has \d+ lines\./);
+
+		// the sites of the members of a type: process() uses all 10 data members of HomeBatteryCtrl and writes
+		// is_charging_underway. The fixture has no switch statement on an enum
+		const sites = await api.getMemberSites({ name: 'HomeBatteryCtrl' });
+		assert.deepStrictEqual([sites.type, sites.kind, sites.isReachComplete, sites.members?.length], ['electricity::power_ctrl::HomeBatteryCtrl', 'struct', true, 10]);
+		const top = sites.functions![0];
+		assert.deepStrictEqual([top.function, top.part, top.writes.includes('is_charging_underway')], [PROCESS, 1, true], JSON.stringify(top));
+		const ctlState = await api.getMemberSites({ name: 'ChargeCtlState' });
+		assert.deepStrictEqual([ctlState.kind, ctlState.enumerators?.length, ctlState.switches], ['enum', 4, []]);
+		await assert.rejects(api.getMemberSites({}), /Give the name of the type, or a line with its name\./);
+
+		// the heat of the header: the types with the facts of their data members, and no score
+		const header = path.join(path.dirname(path.dirname(file())), 'include', 'battery', 'types.hpp');
+		const typeHeat = await api.getHeat({ file: header });
+		const ctrl = typeHeat.types?.find((t) => t.name === 'electricity::power_ctrl::HomeBatteryCtrl');
+		assert.ok(ctrl?.isReachComplete && ctrl.includeReach && ctrl.includeReach.units >= 1, JSON.stringify(typeHeat.types?.map((t) => [t.name, t.includeReach])));
+		const underway = ctrl!.members.find((m) => m.name === 'is_charging_underway');
+		assert.ok(underway && underway.writers! >= 1 && underway.users!.some((u) => u.function === PROCESS && u.isWrite), JSON.stringify(underway));
 	});
 
 	test('Each client has its own layer: the ids of its items, remove, and the clicks on its buttons', async function () {

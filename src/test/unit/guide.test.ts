@@ -239,7 +239,7 @@ suite('Guided review', () => {
 			name, qualifiedName: `power::${name}`, first, last, nameLine: first, score, band, flames: 1, reach: 0, risk: 0, history: 0, isSiloed: false,
 			isReachComplete: true, reasons: [{ group: 'risk', points: 10, text: '24 decisions', id: 'decisions', value: 24 }],
 		});
-		const model: HeatModel = { file: CPP, notices: [], isReachComplete: true, functions: [fn('setup', 10, 20, 80, 'veryHot'), fn('solve', 60, 80, 55, 'hot')] };
+		const model: HeatModel = { file: CPP, notices: [], isReachComplete: true, types: [], functions: [fn('setup', 10, 20, 80, 'veryHot'), fn('solve', 60, 80, 55, 'hot')] };
 		// a removed block marks the line after it: the changed lines 69 and 75 are in solve(), not in setup()
 		const facts = reviewFacts({
 			root: ROOT, missing: [], skipped: [],

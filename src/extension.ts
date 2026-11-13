@@ -1728,15 +1728,18 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		flushChange(doc);
 		const file = doc.uri.fsPath;
 		const roots = projectRoots();
-		const [metrics, threadsModel, blame] = await Promise.all([
+		const [metrics, threadsModel, blame, types] = await Promise.all([
 			client.metrics(file, frameFunctionsOf(doc.uri), testFoldersOf(doc.uri), token),
 			client.threads(file, { asyncFunctions: asyncFunctionsOf(doc.uri), roots }, token).catch(() => undefined),
 			blameOf(doc).catch(() => undefined),
+			client.memberMetrics(file, frameFunctionsOf(doc.uri), token).catch(() => undefined),
 		]);
 		requestCallGraph(client, metrics.callGraph.state, doc.uri);
-		// the include reach counts only the source files of the project, not for example the fetched libraries
+		// the include reach counts only the source files of the project, not for example the fetched libraries. The types
+		// of the file get the include reach of the file
 		const reach = new Map<string, { units: number; total: number }>();
-		for (const decl of new Set(metrics.functions.map((f) => f.declaration.file).filter((f) => f))) {
+		const files = metrics.functions.map((f) => f.declaration.file).filter((f) => f);
+		for (const decl of new Set(types?.types.length ? [...files, file] : files)) {
 			const res = await client.includers(decl, roots, token).catch(() => undefined);
 			if (res) {
 				reach.set(fileKey(decl), { units: res.projectIncluders, total: res.projectUnits });
@@ -1744,7 +1747,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		}
 		return buildHeat({
 			file, functions: metrics.functions, includeReach: (f) => reach.get(fileKey(f)), threads: threadsModel, blame,
-			callGraph: graphRequest ? { state: 'scanning' } : metrics.callGraph, now: Date.now(),
+			callGraph: graphRequest ? { state: 'scanning' } : metrics.callGraph, types, now: Date.now(),
 		});
 	};
 
@@ -2978,6 +2981,16 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			}
 			flushChange(doc);
 			const res = await client.place(doc.uri.fsPath, line, frameFunctionsOf(doc.uri));
+			requestCallGraph(client, res.callGraph.state, doc.uri);
+			return res;
+		},
+		memberSites: async (doc, at) => {
+			const client = engine;
+			if (!client || client.currentState !== 'ready') {
+				throw new Error('The DataFlow engine is not ready.');
+			}
+			flushChange(doc);
+			const res = await client.memberSites(doc.uri.fsPath, at);
 			requestCallGraph(client, res.callGraph.state, doc.uri);
 			return res;
 		},

@@ -272,7 +272,7 @@ suite('Diff walk', () => {
 			id: 'framePath', value: { reason: 'called in the main loop of main', path: [], calls: 0, isInLoop: false },
 		};
 		const model: HeatModel = {
-			file: CPP, notices: [], isReachComplete: true,
+			file: CPP, notices: [], isReachComplete: true, types: [],
 			functions: [fn('clamp_rate', 5, 7, 72, 'hot', [{ group: 'risk', points: 3, text: '1 decision', id: 'decisions', value: 1 }, frame]), fn('process', 9, 12, 30, 'warm'), fn('helper', 14, 16, 10, 'cool')],
 		};
 		const files = [rateFile()];

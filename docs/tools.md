@@ -259,6 +259,7 @@ Other extensions can add their own tools to the server with the [API for extensi
 | [`get_hidden`](#get_hidden) | read | The data of Hidden C++ |
 | [`get_includes`](#get_includes) | read | The data of Include Hierarchy, with the translation units of the compile database that include the file |
 | [`get_outline`](#get_outline) | read | The outline of a type: the members, the annotations and the memory layout |
+| [`get_member_sites`](#get_member_sites) | read | The functions that use the data members of a type, or the `switch` statements on an enum with the enumerators that they do not handle |
 | [`get_heat`](#get_heat) | read | The heat score of each function of a file: how much a change of the function can break, with the reason of each point |
 | [`get_call_graph`](#get_call_graph) | read | The state of the scan of the call graph, and the frame functions of the project |
 | [`get_logic`](#get_logic) | read | The data of Logic Map: the decisions of a function with their options, and one path through the function for the choices |
@@ -440,6 +441,27 @@ A type that the translation unit only declares gets the outline from the header 
 
 Example request: "Explain the members of HomeBatteryCtrl, and tell me how to make it smaller in memory."
 
+### get_member_sites
+
+Gives the places in the project that use the members of a type, from the call graph:
+
+- For a class, a struct or a union: its data members in `members`, and in `functions` the functions that use them. Each function has its file and its lines, the members that it uses (`uses`), the members that it writes (`writes`), and `part`: the part of the members that it uses, from 0 to 1. The function with the most members comes first. A function that loads, saves or copies the type uses most members. Thus after you add a data member, these functions possibly need it too.
+- For an enum: its enumerators in `enumerators`, and in `switches` each `switch` statement on the enum. Each switch has its function, its file and its line, the enumerators that it does not handle (`missing`), and `hasDefault`. The switches with a missing enumerator come first.
+
+A write is an assignment, `++`, `--`, `&`, a call of a member function that is not `const`, or an argument of a reference to non-const. A call of `operator[]`, `front()` or a similar function that gives a part of the object is a write only if the code changes the part. A data member of an instantiation of a class template counts for the template.
+
+The enumerators come from the type now, and the switches come from the last scan. Thus a new enumerator is missing in each switch, also before the next scan. A type that the translation unit only declares gets the sites from the header with its definition.
+
+The first call starts the scan of the call graph, as for `get_heat`, and does not wait for it. Until the scan is complete, `isReachComplete` is false, `functions` and `switches` are empty, and `callGraph` tells the progress. `more` tells that the result stopped after 200 functions or switches.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `file` | | See the common parameters. |
+| `name` | string | The name of the type, with or without its namespaces. |
+| `line` | integer | A line with the name of the type, for example the line of its definition. Use it instead of `name`. |
+
+Example request: "I added the data member max_rate to OperationalSettings. Which functions possibly need it too?"
+
 ### get_heat
 
 Gives the heat score of each function of a file, as the lens Heat shows it: how much a change of the function can break. The functions come in the sequence of their scores, the hottest first.
@@ -475,6 +497,15 @@ The callers and the frame path come from the call graph of the project. The firs
 | `file` | | See the common parameters. |
 | `function` | string | One function: its qualified name or its name. The default is all functions of the file. |
 | `lines` | two integers | Only the functions with a line in these lines: the first and the last line. The default is all lines. If no function has a line there, `functions` is empty, and `note` tells it. |
+
+With no `function`, the result also gives `types`: the classes, the structs and the unions of the file, with `lines`, `includeReach` (the source files of the project that include the file) and `isReachComplete`. With `lines`, only the types with a line in these lines come. Each data member has its line and its type, and from the call graph:
+
+- `readers` and `writers`: the functions that read it and the functions that write it, and `files`, the files of these functions
+- `users`: the first 20 of these functions, with the line of the first use and `isWrite`
+- `framePath`: the user on the shortest frame path, with its reason and the number of the calls
+- `shared`: `unprotected` or `locked` if two threads use the member, from Threads and races of the file
+
+A type and a data member have no score yet. A client can use these facts for its own risk level, for example for a step that adds a data member.
 
 Example request: "Which functions of this file are the most dangerous to change, and why?"
 

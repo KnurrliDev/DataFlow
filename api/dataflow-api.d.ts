@@ -78,6 +78,7 @@ export interface DataFlowApi {
 	getCallGraph(): Promise<CallGraphFacts>; // get_call_graph
 	getCallers(args?: CallersArgs): Promise<CallersFacts>; // get_callers
 	getPlace(args: PlaceArgs): Promise<PlaceFacts>; // get_place
+	getMemberSites(args: OutlineArgs): Promise<MemberSitesFacts>; // get_member_sites
 	getLogic(args?: LogicArgs): Promise<LogicFacts>; // get_logic
 	getRipple(): Promise<RippleFacts>; // get_ripple
 	getReview(args: ReviewArgs): Promise<ReviewFacts>; // get_review
@@ -598,6 +599,9 @@ export interface HeatFacts {
 		signals: HeatSignal[];
 	}[];
 	more?: number;
+	// the classes, the structs and the unions of the file, with the facts of their data members. Not with a function.
+	// With lines, only the types with a line in the lines
+	types?: HeatTypeFacts[];
 	note?: string; // for example: no function has a line in the lines
 	callGraph?: string; // the state of the scan of the call graph
 	notices: string[];
@@ -641,6 +645,47 @@ export interface PlaceFacts extends ParseNote {
 	framePath?: { reason: string; path: string[]; calls: number; isInLoop: boolean; isPastLimit?: boolean };
 	reachUnknown?: { cause: UnknownCallersCause; text: string };
 	callGraph?: string; // the state of the scan of the call graph
+}
+
+// The sites of the members of a type in the project. Lines start at 1
+export interface MemberSitesFacts extends ParseNote {
+	type: string; // the qualified name
+	kind: string; // class, struct, union, enum, enum class or enum struct
+	file: string;
+	line: number;
+	isReachComplete: boolean; // false until the scan of the call graph is complete. Then functions and switches are empty
+	// a class, a struct or a union: its data members, and the functions that use them, the most members first. A
+	// function that loads, saves or copies the type uses most members. part: the members that it uses, from 0 to 1
+	members?: string[];
+	functions?: { function: string; file: string; lines: [number, number]; uses: string[]; writes: string[]; part: number }[];
+	// an enum: its enumerators, and each switch statement on the enum with the enumerators that it does not handle. The
+	// switches with a missing enumerator come first
+	enumerators?: string[];
+	switches?: { function: string; file: string; line: number; missing: string[]; hasDefault: boolean }[];
+	more?: boolean; // the result stops after 200 functions or switches
+	callGraph?: string; // the state of the scan of the call graph
+}
+
+// A class, a struct or a union of a file in get_heat, with the facts of its data members. A type and a data member have
+// no score yet
+export interface HeatTypeFacts {
+	name: string;
+	kind: string;
+	lines: [number, number];
+	includeReach?: { units: number; total: number }; // the source files of the project that include the file
+	isReachComplete: boolean; // false until the scan of the call graph is complete. Then the members have no users
+	members: {
+		name: string;
+		line: number;
+		type: string;
+		static?: boolean;
+		readers?: number; // the functions that read the member
+		writers?: number; // the functions that write the member
+		files?: number; // the files of these functions
+		users?: { function: string; file: string; line: number; isWrite: boolean }[]; // the first 20 functions
+		framePath?: { function: string; reason: string; calls: number }; // the user on the shortest frame path
+		shared?: 'unprotected' | 'locked'; // two or more threads use the member, from Threads and races
+	}[];
 }
 
 // A statement around a line. A statement that starts on the line is not around the line, because code at the start of

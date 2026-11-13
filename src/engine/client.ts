@@ -401,6 +401,52 @@ export interface PlaceScope {
 	isSynchronous?: boolean; // a lambda: the call runs the lambda before it returns
 }
 
+// The data of dataflow/memberSites: the sites of the members of a type from the index of the call graph. A type with
+// no definition in the translation unit gives its declaration. Lines start at 1
+export interface MemberSitesModel {
+	type: { name: string; kind: string; file: string; line: number } | null;
+	candidates?: string[]; // more than one type ends with the name
+	declaration?: SideOutlinePlace & { name: string };
+	members?: string[]; // a class, a struct or a union: its data members
+	// the functions that use the data members, the most members first. Only with a complete call graph
+	functions?: { name: string; file: string; first: number; last: number; uses: string[]; writes: string[] }[];
+	enumerators?: string[]; // an enum
+	// the switch statements on the enum, the switches with a missing enumerator first. Only with a complete call graph
+	switches?: { function: string; file: string; line: number; missing: string[]; hasDefault: boolean }[];
+	isCapped?: boolean; // more than 200 functions or switches
+	callGraph: MetricsModel['callGraph'];
+}
+
+// The data of dataflow/memberMetrics: the classes, the structs and the unions of a file, and the facts of their data
+// members from the index of the call graph. Lines start at 1
+export interface MemberMetricsModel {
+	types: MemberMetricsType[];
+	callGraph: MetricsModel['callGraph'];
+}
+
+export interface MemberMetricsType {
+	name: string;
+	qualifiedName: string;
+	kind: string; // class, struct or union
+	line: number;
+	first: number;
+	last: number;
+	members: MemberMetricsMember[];
+}
+
+// The facts of a data member. The counts and the users come only with a complete call graph
+export interface MemberMetricsMember {
+	name: string;
+	line: number;
+	type: string;
+	isStatic?: boolean;
+	readers?: number; // the functions that read the member
+	writers?: number; // the functions that write the member
+	files?: number; // the files of these functions
+	users?: { name: string; file: string; line: number; isWrite: boolean }[]; // the first 20 functions
+	frame?: { function: string; reason: string; calls: number }; // the user on the shortest frame path
+}
+
 // none: no scan. partial: a first scan that stopped. ready: a complete graph, maybe from before the last changes
 export type CallGraphState = 'none' | 'scanning' | 'partial' | 'ready';
 
@@ -891,6 +937,17 @@ export class EngineClient implements vscode.Disposable {
 	// function in the call graph. line starts at 1
 	place(file: string, line: number, frameFunctions: string[], token?: vscode.CancellationToken): Promise<FileResult & PlaceModel> {
 		return this.request('dataflow/place', { file, line, frameFunctions }, token);
+	}
+
+	// The sites of the members of a type from the index of the call graph: by its name, or at a position with a UTF-8
+	// column from 1
+	memberSites(file: string, at: { line: number; col: number } | { name: string }, token?: vscode.CancellationToken): Promise<FileResult & MemberSitesModel> {
+		return this.request('dataflow/memberSites', { file, ...at }, token);
+	}
+
+	// The facts of the data members of the classes, the structs and the unions of the file, for the heat
+	memberMetrics(file: string, frameFunctions: string[], token?: vscode.CancellationToken): Promise<FileResult & MemberMetricsModel> {
+		return this.request('dataflow/memberMetrics', { file, frameFunctions }, token);
 	}
 
 	// Makes the call graph of the project current: the first request scans all source files in the roots, a later request

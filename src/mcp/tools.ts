@@ -55,6 +55,7 @@ export interface McpHost {
 	callGraph(): Promise<Api.CallGraphFacts>;
 	callers(file: string | undefined, fn: FunctionArg, depth: number | undefined): Promise<Api.CallersFacts>;
 	place(file: string | undefined, line: number): Promise<Api.PlaceFacts>;
+	memberSites(file: string | undefined, name: string | undefined, line: number | undefined): Promise<Api.MemberSitesFacts>;
 }
 
 export const INSTRUCTIONS = [
@@ -296,6 +297,18 @@ export function createTools(host: McpHost): McpTool[] {
 				line: { type: 'integer', minimum: 1, description: 'A line with the name of the type, for example the line of its definition. Use it instead of "name".' },
 			},
 			[], true, (a) => host.outline(a.text('file'), a.text('name'), a.line('line'))),
+		tool('get_member_sites', 'Get the sites of the members of a type',
+			'The places in the project that use the members of a type, from the call graph of the engine. For a class, a struct or a union: the functions that use its data members, '
+			+ 'each with the members that it uses and writes and part (from 0 to 1), the most members first. A function that loads, saves or copies the type uses most members, '
+			+ 'so after you add a data member, these functions possibly need it too. For an enum: each switch statement on the enum with the enumerators that it does not handle '
+			+ '(missing) and hasDefault, the switches with a missing enumerator first. A new enumerator is missing in each switch. Give the name of the type, or a line with its name. '
+			+ 'The first call starts the scan of the call graph and does not wait: callGraph tells the progress.',
+			{
+				file: FILE,
+				name: { type: 'string', description: 'The name of the type, with or without its namespaces, for example electricity::power_ctrl::HomeBatteryCtrl or HomeBatteryCtrl.' },
+				line: { type: 'integer', minimum: 1, description: 'A line with the name of the type, for example the line of its definition. Use it instead of "name".' },
+			},
+			[], true, (a) => host.memberSites(a.text('file'), a.text('name'), a.line('line'))),
 		tool('get_heat', 'Get the heat of the functions',
 			'The heat score of the functions of a C++ file: how much a change of a function can break, from 0 to 100, the hottest first. The score adds points of reach '
 			+ '(the frame path: a function that runs in each frame, for example from a main loop or a tick or paint override, and the functions that it calls; '
@@ -306,6 +319,8 @@ export function createTools(host: McpHost): McpTool[] {
 			+ 'The first call starts the scan and does not wait: the result tells the progress, and a later call gets the callers. '
 			+ 'isReachComplete is false until the scan is complete: the score can then be too low or too high. '
 			+ 'signals gives each reason with its id and its measure (value), for example the frame path as a list of functions. '
+			+ 'types gives the classes, the structs and the unions of the file with the facts of each data member: the functions that read and write it, their files, '
+			+ 'the user on the shortest frame path, and shared if two threads use it. A type and a data member have no score yet. '
 			+ 'For a review, start with the hottest changed functions.',
 			{
 				file: FILE,

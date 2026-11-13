@@ -83,6 +83,8 @@ The engine parses each file with the command of its compile database, with these
 | `dataflow/cost` | `file`, `minCopyBytes`, `unit` | The hidden C++ of all functions of the file: copies, conversions, temporaries, destructors, lookups and more. With `unit`, a source file that includes the header `file`, the engine parses the unit. Then the templates of the header get the items of their instantiations in the unit. The reply then has the parse of the unit. |
 | `dataflow/callers` | `file`, `function` or `line` and `col`, `depth`, `frameFunctions` | The callers of a function in the call graph up to `depth` calls (1 to 6, default 3), and its frame paths. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
 | `dataflow/place` | `file`, `line`, `frameFunctions` | The facts of a line: the function, the statements around the line, the locks at its start, and the reach of the function. See [The result of `dataflow/place`](#the-result-of-dataflowplace). |
+| `dataflow/memberSites` | `file`, and `line` and `col` or `name` | The sites of the members of a type from the index of the call graph: the functions that use the data members of a class, a struct or a union, or the `switch` statements on an enum. See [The result of `dataflow/memberSites`](#the-result-of-dataflowmembersites). |
+| `dataflow/memberMetrics` | `file`, `frameFunctions` | The classes, the structs and the unions of the file, with the facts of each data member for the heat. See [The result of `dataflow/memberSites`](#the-result-of-dataflowmembersites). |
 | `dataflow/metrics` | `file`, `frameFunctions`, `testFolders` | The metrics of each function of the file, for the heat score: the decisions (`if`, the loops, the `case` labels, `catch`, `&&`, `\|\|` and `?:`), the deepest nesting of the decisions, the first and the last line of each loop, the lines of the body, the writes to data members, globals, static locals and data through reference or pointer parameters, the allocations and the copies in loops, `virtual` and `override`, and the file and the line of the first declaration. With a complete call graph, each function also has `reach`. `callGraph` gives the state of the call graph. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
 | `dataflow/callGraph` | `roots`, `frameFunctions` | Makes the call graph of the project current, for the heat score: the size of the graph and the frame functions. The request needs no `file`. |
 | `dataflow/slice` | `file`, and `lines` and `deleted`, or `call`; `asyncFunctions`, `confidence` | The forward slice of changed lines or of a call: the steps and the exits in each function and lambda, and the callers in the same file |
@@ -229,12 +231,20 @@ The frame functions run in each frame:
 - A function that a main loop calls. A main loop is a `while` loop, a `do` loop, or a `for` loop with no condition or with a condition that does not use a variable of its init. It is in `main`, `wmain`, `WinMain` or `wWinMain`. If `main` has no main loop, the engine looks in the functions that `main` calls. A range-based `for` loop is not a main loop. A loop with a condition that only tests the size of a container is also not a main loop, for example `while (!queue.empty())`. The size functions are `empty`, `isEmpty`, `IsEmpty`, `size`, `count`, `Num` and `length`.
 - A function of `frameFunctions`: a qualified name, or the end of a qualified name after `::`.
 
+The scan also makes the index of the uses:
+
+- The data members, the static data members and the global variables of the project that each function reads or writes. A constant is not in the index. A data member of an instantiation of a class template counts for the template.
+- A write is the left side of an assignment, the operand of `++`, `--` and `&`, the object of a member function that is not `const`, an argument of a reference to non-const, a reference to non-const, and a range-based `for` loop with a reference to non-const. A member function that gives a part of the object, for example `operator[]`, `front()`, `at()` or `find()`, writes only if the code changes the part. A change of `a.b` writes `a`, and a change of `p->b` does not write `p`.
+- The `switch` statements on the enums of the project, with the enumerators of the case labels and a flag for `default`.
+- The index keeps each USR and each name of an enumerator one time, as a number. The scans of an engine share these numbers.
+
 The reply:
 
 - `units`: the source files of the graph. `scanned`: the source files of this request. `isComplete`: the scans parsed all source files.
 - `functions` and `calls`: the nodes and the edges.
 - `frames`: each frame function with `name`, `file`, `line` and `reason`, for example `override of QWidget::paintEvent`, `called in the main loop of main` or `frame function of the setting`.
 - `failed`: the source files with no command, or that Clang could not parse at all. A parse with errors also gives the functions that Clang understood.
+- `index`: the size of the index of the uses: `uses` (a function and a variable that it uses), `switches`, `names` (the USRs and the names of the enumerators) and `bytes`, an estimate of its memory.
 - `ms`: the time of the request.
 
 `dataflow/metrics` adds `callGraph` with `state`: `none` (no scan), `scanning`, `partial` (a first scan that stopped) or `ready`. During a scan, `done` and `total` give the progress. With a complete graph, also during an update, each function has `reach`:
@@ -250,6 +260,20 @@ The reply:
 - `callers`: the callers in the sequence of their depth, the first 200. Each caller has `name`, `file`, `first`, `last`, `depth`, `calls` (the function that it calls on the way) and `lines` (the lines of these calls). A signal has `isSignal`, and a connection to its slot has `isConnection` with the line of the call of `connect`. After 200 callers, `isCapped` is true.
 - `framePaths`: one path from each frame function that reaches the function, a maximum of 5, with `reason`, `calls` and `path` from the frame function to the function.
 - `unknownCallers`, as in `reach`.
+
+## The result of `dataflow/memberSites`
+
+The engine finds the type as `dataflow/outline` does: by `name`, or at a position. The result has `type` with `name`, `kind`, `file` and `line`, and `callGraph`, the state of the call graph. More than one type with the name gives `type: null` and `candidates`. A type with no definition in the translation unit gives `type: null` and `declaration`. The sites come only from a complete graph.
+
+- A class, a struct or a union: `members`, its data members in the sequence of the source, and `functions`, the functions of the index that use them. Each function has `name`, `file`, `first`, `last`, `uses` (its members) and `writes` (the members that it writes). The function with the most members comes first, then the functions in the sequence of their names.
+- An enum: `enumerators`, and `switches`, each `switch` statement on the enum with `function`, `file`, `line`, `missing` (the enumerators that it does not handle) and `hasDefault`. The switches with a missing enumerator come first, then the switches in the sequence of their files and lines. The enumerators come from the type in the translation unit of the request. Thus a new enumerator that the last scan did not see is missing in each switch.
+- After 200 functions or switches, `isCapped` is true.
+
+`dataflow/memberMetrics` gives `types`: the classes, the structs and the unions with a definition in the main file, and with a name. Each type has `name`, `qualifiedName`, `kind`, `line`, `first`, `last` and `members`. Each data member and each static data member has `name`, `line` and `type`, and `isStatic` for a static data member. With a complete graph, each member also has:
+
+- `readers` and `writers`: the number of the functions that read it and of the functions that write it. `files`: the number of the files of these functions.
+- `users`: the first 20 functions with `name`, `file`, `line` (the first use) and `isWrite`.
+- `frame`: the user on the shortest frame path, with `function`, `reason` and `calls`.
 
 ## The result of `dataflow/place`
 
