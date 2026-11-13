@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 - `get_heat` gives `signals`: each reason of a function with the id and the measure of its signal, for example the frame path as a list of functions. A client can use the signals with no need to read the texts.
 - Each function of `get_heat` has `isReachComplete`: false until the call graph gives its reach. Then the score can be too low or too high. The changed functions of `get_review` and `get_diff` also give it.
