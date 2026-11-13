@@ -42,6 +42,7 @@ import { commitUri, INCLUDE_FILE, isCppFile, openReviewRepository, ReviewDiff, R
 import { MAX_REVIEW_FILES, moveGuide, type ReviewFilesInput } from './review/guide';
 import { CallSite, RippleModel, runRipple } from './review/ripple';
 import { targetCandidates, targetItems, walkBranchItems } from './review/targets';
+import { MARK_BASE, markDiff, MarkInfo, MarkSource, MarkStore, MAX_MARK_FILES } from './review/marks';
 import { MAX_GUIDES, nextGuideSeq, pushGuide, setStack, stackGuides, stackOf } from './review/stack';
 import { commandWalk, walkTitle, type WalkFile, type WalkFunction, type WalkInput } from './review/walk';
 import { SideViewController } from './side/controller';
@@ -308,7 +309,8 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	const isHierarchyRunning = () => runningHierarchy !== undefined;
 
 	// Change Ripple: the last review and the root of its repository. A newer review stops an older review.
-	let review: { model: RippleModel; diff: ReviewDiff; root: string } | undefined;
+	// the last review of Change Ripple, with its base and its paths for the update after a save, and the client of a mark
+	let review: { model: RippleModel; diff: ReviewDiff; root: string; base?: string; paths?: string[]; client?: string } | undefined;
 	let reviewRun = 0;
 	let reviewUpdate: NodeJS.Timeout | undefined;
 
@@ -365,7 +367,11 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		client.onDidSetContext(onDidSetContext);
 		client.onStatus((status) => {
 			const parsing = store.state.parsing.filter((f) => f !== status.file);
-			store.update({ parsing: status.state === 'parsing' ? [...parsing, status.file] : parsing });
+			// the end of a parse goes to the event onDidParse of the API
+			const lastParse = status.state === 'ready'
+				? { file: status.file, parseMs: status.parseMs, errorCount: status.errorCount ?? 0, errors: status.errors ?? [] }
+				: status.state === 'failed' ? { file: status.file, errorCount: 0, errors: [], isFailed: true } : undefined;
+			store.update({ parsing: status.state === 'parsing' ? [...parsing, status.file] : parsing, ...(lastParse ? { lastParse } : {}) });
 		});
 		for (const doc of vscode.workspace.textDocuments) {
 			if (isCpp(doc)) {
@@ -2082,7 +2088,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		if (!review) {
 			return;
 		}
-		const state = buildReviewState(review.model, review.diff.label, review.diff.target);
+		const state = buildReviewState(review.model, review.diff.label, review.diff.target || undefined);
 		if (callHierarchyFailure && review.model.isCallHierarchyMissing) {
 			state.notice = 'The call hierarchy of the C/C++ extension stopped with an error. Change Ripple follows only the callers in the same file.';
 		}
@@ -2107,10 +2113,67 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		return vscode.workspace.workspaceFolders?.[0]?.uri ?? (project && vscode.Uri.file(project.root));
 	};
 
+	// The marks of the clients: a mark keeps the text files under its paths, so get_diff and start_ripple can compare the
+	// files with it later. The storage folder of the workspace keeps the marks
+	const marks = new MarkStore(path.join((context.storageUri ?? context.globalStorageUri).fsPath, 'marks'));
+	// The files of a mark: the files under a path with no build folders. The text of a file: the text of its editor, else
+	// the text on the disk
+	const markSource: MarkSource = {
+		files: async (full) => {
+			try {
+				return (await stat(full)).isDirectory() ? await findProjectFiles(full, MAX_MARK_FILES + 1, skipFolders(), () => true) : [full];
+			} catch {
+				return undefined;
+			}
+		},
+		text: async (file) => {
+			const doc = vscode.workspace.textDocuments.find((d) => d.uri.scheme === 'file' && fileKey(d.uri.fsPath) === fileKey(file));
+			return doc ? doc.getText() : readFile(file, 'utf8').catch(() => undefined);
+		},
+	};
+	// The folder of the relative paths of a mark: the git repository of the review folder, else the review folder
+	const markRoot = async (): Promise<string | undefined> => {
+		const folder = reviewFolder();
+		if (!folder) {
+			return undefined;
+		}
+		try {
+			return (await openReviewRepository(folder)).root;
+		} catch {
+			return folder.fsPath;
+		}
+	};
+	// Makes a mark of a client. The paths must be in the folders of the project, so a mark cannot copy other files
+	const createMark = async (client: string, name: string, paths: string[]): Promise<MarkInfo> => {
+		const root = await markRoot();
+		if (!root) {
+			throw new Error('Open a folder of the project, or select a project with "DataFlow: Open Project".');
+		}
+		const folders = [root, ...projectRoots()];
+		const full = paths.map((p) => (path.isAbsolute(p) ? path.normalize(p) : path.join(root, p)));
+		const outside = paths.filter((_, i) => !folders.some((f) => fileKey(f) === fileKey(full[i]) || isInside(full[i], f)));
+		if (outside.length > 0) {
+			throw new Error(`These paths are not in a folder of the project: ${outside.join(', ')}. No mark changed.`);
+		}
+		return marks.create(client, name, full, root, markSource);
+	};
+	// The changes since a mark of a client, as the diff of git gives them. A mark that the client does not have gives a message
+	const markChanges = async (client: string | undefined, name: string, isWanted: (file: string) => boolean):
+		Promise<{ info: MarkInfo; diff: { files: ReviewDiff['files']; deleted: string[]; other: string[] } } | { message: string }> => {
+		const info = client !== undefined ? await marks.get(client, name) : undefined;
+		if (!info) {
+			const own = client !== undefined ? (await marks.list(client)).map((m) => m.name) : [];
+			return { message: `Your client has no mark ${name}.${own.length > 0 ? ` Its marks are ${own.join(', ')}.` : ''} mark_base makes a mark.` };
+		}
+		vscode.workspace.textDocuments.forEach(flushChange);
+		return { info, diff: await markDiff(info, await marks.texts(info), markSource, isWanted) };
+	};
+
 	// Compares the files with the base, slices each change, and follows the return values to the callers. An update
 	// after a save keeps the shown review until the new review is complete: it does not open the side view, it does not
-	// ask for a target branch, and an error keeps the old review
-	const runReview = async (isUpdate = false): Promise<RippleModel | undefined> => {
+	// ask for a target branch, and an error keeps the old review. options: a base and paths of a tool, as for get_diff.
+	// A tool never asks the user: with no target branch, the review fails
+	const runReview = async (isUpdate = false, options: { base?: string; paths?: string[]; client?: string; isTool?: boolean } = {}): Promise<RippleModel | undefined> => {
 		const shown = review;
 		if (isUpdate && (!shown || store.state.review?.isRunning)) {
 			return undefined;
@@ -2147,26 +2210,62 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		}
 		const asyncFunctions = settingOf('dataflow.ripple', 'asyncFunctions', folder, DEFAULT_ASYNC_FUNCTIONS);
 		vscode.workspace.textDocuments.forEach(flushChange); // the engine gets the text of the editors first
+		// the base and the paths of the review. An update keeps the base, the paths and the owner of the shown review
+		const base = (isUpdate && shown ? shown.base : options.base)?.trim() || undefined;
+		const paths = isUpdate && shown ? shown.paths : options.paths;
+		const owner = isUpdate && shown ? shown.client : options.client;
 		let target: string | undefined;
 		try {
-			const repo = await openReviewRepository(folder);
-			target = (await selectedTarget(repo)) ?? await automaticTarget(repo, folder);
-			if (target === undefined && isUpdate) {
-				return fail('The repository has no target branch.');
-			}
-			if (target === undefined) {
-				// the repository has no default branch, no main and no master. The user selects the target branch
-				target = await pickTarget(repo) || undefined;
-				if (run !== reviewRun) {
-					return undefined;
+			let diff: ReviewDiff;
+			let root: string;
+			if (base?.startsWith(MARK_BASE)) {
+				// the changes since a mark of the client. A new file of the mark has no copy, so the diff editor shows an empty file
+				const changes = await markChanges(owner, base.slice(MARK_BASE.length), isCppFile);
+				if ('message' in changes) {
+					return fail(changes.message);
 				}
-				if (!target) {
-					return fail('Change Ripple needs a target branch: the branch that the active branch merges into. '
-						+ 'Click Target in the Change Ripple bar, and select the branch.');
+				const { info } = changes;
+				const copyOf = (uri: vscode.Uri) => marks.copyOf(info, uri.fsPath);
+				diff = { base: '', target: '', label: `mark ${info.name}`, ...changes.diff, baseUri: (uri) => (copyOf(uri) ? vscode.Uri.file(copyOf(uri)!) : uri.with({ scheme: 'untitled' })) };
+				root = info.root;
+			} else {
+				const repo = await openReviewRepository(folder);
+				root = repo.root;
+				if (!base || base === 'target') {
+					target = (await selectedTarget(repo)) ?? await automaticTarget(repo, folder);
+					if (target === undefined && (isUpdate || options.isTool)) {
+						return fail(isUpdate ? 'The repository has no target branch.'
+							: 'The repository has no target branch. Give "base": "uncommitted", a branch, a commit or "mark:<name>".');
+					}
+					if (target === undefined) {
+						// the repository has no default branch, no main and no master. The user selects the target branch
+						target = await pickTarget(repo) || undefined;
+						if (run !== reviewRun) {
+							return undefined;
+						}
+						if (!target) {
+							return fail('Change Ripple needs a target branch: the branch that the active branch merges into. '
+								+ 'Click Target in the Change Ripple bar, and select the branch.');
+						}
+						await saveTarget(repo, target);
+					}
+					diff = await repo.diff(target);
+				} else {
+					// the changes against HEAD, or since the merge base of HEAD and a commit, a tag or a branch
+					const ref = base === 'uncommitted' ? 'HEAD' : base;
+					if (!await repo.commitOf(ref)) {
+						return fail(`Git does not find the commit ${ref}.`);
+					}
+					const changes = await repo.diff(ref, { untracked: true });
+					diff = { ...changes, target: '', label: ref === 'HEAD' ? `HEAD (${changes.base.slice(0, 7)})` : changes.label };
 				}
-				await saveTarget(repo, target);
 			}
-			const diff = await repo.diff(target);
+			// with paths, only the changes under the paths
+			if (paths && paths.length > 0) {
+				const wanted = paths.map((p) => (path.isAbsolute(p) ? p : path.join(root, p)));
+				const isWanted = (file: string) => wanted.some((p) => fileKey(p) === fileKey(file) || isInside(file, p));
+				diff = { ...diff, files: diff.files.filter((f) => isWanted(f.uri.fsPath)), deleted: diff.deleted.filter(isWanted), other: diff.other.filter(isWanted) };
+			}
 			// the files go in parallel. Each one keeps a parse of the engine until its ripple is complete, and one parse
 			// stays free for the callers in other files
 			const cacheSize = Math.min(64, Math.max(1, vscode.workspace.getConfiguration('dataflow').get<number>('engine.cacheSize', 4)));
@@ -2179,7 +2278,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			if (run !== reviewRun) {
 				return undefined;
 			}
-			review = { model, diff, root: repo.root };
+			review = { model, diff, root, ...(base ? { base } : {}), ...(paths ? { paths } : {}), ...(owner ? { client: owner } : {}) };
 			showReview();
 			return model;
 		} catch (error) {
@@ -2297,10 +2396,19 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	// The changes of a diff walk: the C and C++ files that changed against a base, with their hunks and the functions of
 	// the engine. The base "uncommitted" gives the changes against HEAD. "target" gives the changes of the branch against
 	// the target branch of Change Ripple. A different base is a commit, a tag or a branch: the diff starts at its merge
-	// base with HEAD. Each diff goes to the working tree, with the text of the editors and the C and C++ files that git
-	// does not track yet. With paths, only the files under the paths. With allFiles, also the changed text files that are
-	// not C or C++ files, with no functions
-	const walkInput = async (base: string | undefined, paths?: string[], token?: vscode.CancellationToken, allFiles = false): Promise<WalkInput | { message: string }> => {
+	// base with HEAD. "mark:<name>" gives the changes since a mark of the client. Each diff goes to the working tree, with
+	// the text of the editors and the C and C++ files that git does not track yet. With paths, only the files under the
+	// paths. With allFiles, also the changed text files that are not C or C++ files, with no functions
+	const walkInput = async (base: string | undefined, paths?: string[], token?: vscode.CancellationToken, allFiles = false, client?: string):
+		Promise<WalkInput | { message: string }> => {
+		if (base?.trim().startsWith(MARK_BASE)) {
+			const changes = await markChanges(client, base.trim().slice(MARK_BASE.length), allFiles ? () => true : isCppFile);
+			if ('message' in changes) {
+				return changes;
+			}
+			// a mark has no commit, so the walk has no diff editor
+			return walkResult(changes.info.root, `Changes since the mark ${changes.info.name}`, `mark ${changes.info.name}`, '', changes.diff, paths, token);
+		}
 		const folder = reviewFolder();
 		if (!folder) {
 			return { message: 'Open a folder of a git repository, or select a project with "DataFlow: Open Project".' };
@@ -2339,10 +2447,18 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		} catch (error) {
 			return { message: error instanceof Error ? error.message : String(error) };
 		}
-		const wanted = paths?.map((p) => (path.isAbsolute(p) ? p : path.join(repo.root, p)));
+		const short = mergeBase.slice(0, 7);
+		return walkResult(repo.root, title, commit === mergeBase ? `${ref} (${short})` : `${ref} (merge base ${short})`, mergeBase, diff, paths, token);
+	};
+
+	// The input of a diff walk from the changes of a diff: the changed files under the paths with their hunks and the
+	// functions of the engine
+	const walkResult = async (root: string, title: string, base: string, baseCommit: string, diff: { files: ReviewDiff['files']; deleted: string[]; other: string[] },
+		paths: string[] | undefined, token: vscode.CancellationToken | undefined): Promise<WalkInput | { message: string }> => {
+		const wanted = paths?.map((p) => (path.isAbsolute(p) ? p : path.join(root, p)));
 		const isWanted = (file: string) => !wanted || wanted.some((p) => fileKey(p) === fileKey(file) || isInside(file, p));
 		// the files in the sequence of their paths in the repository: the files of git, the new files and the editors together
-		const sortKey = (file: string) => path.relative(repo.root, file).replace(/\\/g, '/').toLowerCase();
+		const sortKey = (file: string) => path.relative(root, file).replace(/\\/g, '/').toLowerCase();
 		const changed = diff.files.filter((f) => isWanted(f.uri.fsPath))
 			.sort((a, b) => (sortKey(a.uri.fsPath) < sortKey(b.uri.fsPath) ? -1 : sortKey(a.uri.fsPath) > sortKey(b.uri.fsPath) ? 1 : 0));
 
@@ -2367,12 +2483,11 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			const lineCount = doc ? doc.lineCount : (await readFile(file, 'utf8').catch(() => '')).split(/\r?\n/).length;
 			files.push({ file, lineCount, hunks: f.hunks, ...(f.isNew ? { isNew: true } : {}), ...(isCppChange ? {} : { isCpp: false }), ...(functions ? { functions } : {}) });
 		}
-		const short = mergeBase.slice(0, 7);
 		return {
-			root: repo.root,
+			root,
 			title,
-			base: commit === mergeBase ? `${ref} (${short})` : `${ref} (merge base ${short})`,
-			baseCommit: mergeBase,
+			base,
+			baseCommit,
 			files,
 			deleted: diff.deleted.filter(isWanted),
 			other: diff.other.filter(isWanted),
@@ -2832,7 +2947,12 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		client: (): string | undefined => mcp.clientName,
 		incomingCalls: (file, line, col) => editorIncomingCalls(file, line, col),
 		reviewFiles: (paths) => reviewFiles(paths),
-		walkInput: (base, paths, allFiles) => walkInput(base, paths, undefined, allFiles),
+		walkInput: (base, paths, allFiles, client) => walkInput(base, paths, undefined, allFiles, client),
+		marks: {
+			create: (client, name, paths) => createMark(client, name, paths),
+			remove: (client, name) => marks.remove(client, name),
+			list: (client) => marks.list(client),
+		},
 		definitionHeader: (name, place) => definitionHeaderOf(name, place),
 		heat: (doc) => {
 			const client = engine;
@@ -2879,7 +2999,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			return hadTrace;
 		},
 		ripple: () => ({ state: store.state.review, model: review?.model, root: review?.root }),
-		startRipple: () => runReview(),
+		startRipple: (options) => runReview(false, { ...options, isTool: true }),
 		clearRipple: () => {
 			const hadReview = !!store.state.review || store.state.lenses.review;
 			closeReview();

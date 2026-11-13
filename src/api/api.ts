@@ -8,7 +8,7 @@ import { createTools } from '../mcp/tools';
 import { guideFacts } from '../review/guide';
 import { guideChangeOf } from '../review/stack';
 import type { SideGuide } from '../side/protocol';
-import type { CallGraphView, DataFlowState, StateStore } from '../state/store';
+import type { CallGraphView, DataFlowState, ParseState, StateStore } from '../state/store';
 
 // The API of DataFlow for other extensions. The exports of the extension give getApi. Each API object has its own host
 // of the MCP tools with the name of its client, so the blocks, the notes and the guides of an extension show its name.
@@ -49,11 +49,13 @@ export class ApiEvents implements vscode.Disposable {
 	private readonly guide = new vscode.EventEmitter<Api.GuideEvent | null>();
 	private readonly callGraph = new vscode.EventEmitter<Api.CallGraphFacts>();
 	private readonly action = new vscode.EventEmitter<{ owner: string; event: Api.ActionEvent }>();
+	private readonly parse = new vscode.EventEmitter<Api.ParseEvent>();
 	private readonly clients = new Set<string>(); // the clients with an API object
 	readonly onDidChangeEngineState = this.engine.event;
 	readonly onDidChangeView = this.view.event;
 	readonly onDidChangeGuide = this.guide.event;
 	readonly onDidChangeCallGraph = this.callGraph.event;
+	readonly onDidParse = this.parse.event;
 
 	// The clicks on the buttons of one client
 	actionsOf(client: string): vscode.Event<Api.ActionEvent> {
@@ -78,6 +80,7 @@ export class ApiEvents implements vscode.Disposable {
 	private lastView: string;
 	private lastGuide: SideGuide | undefined;
 	private lastCallGraph: CallGraphView | undefined;
+	private lastParse: ParseState | undefined;
 	private readonly subscription: vscode.Disposable;
 
 	constructor(private readonly deps: ApiDeps) {
@@ -88,12 +91,13 @@ export class ApiEvents implements vscode.Disposable {
 		this.lastView = JSON.stringify(this.viewOf(state));
 		this.lastGuide = state.guide;
 		this.lastCallGraph = state.callGraph;
+		this.lastParse = state.lastParse;
 		this.subscription = deps.store.onDidChange((s) => this.onState(s));
 	}
 
 	dispose(): void {
 		this.subscription.dispose();
-		[this.engine, this.view, this.guide, this.callGraph, this.action].forEach((e) => e.dispose());
+		[this.engine, this.view, this.guide, this.callGraph, this.action, this.parse].forEach((e) => e.dispose());
 	}
 
 	private onState(state: DataFlowState): void {
@@ -129,6 +133,16 @@ export class ApiEvents implements vscode.Disposable {
 		if (state.callGraph !== this.lastCallGraph) {
 			this.lastCallGraph = state.callGraph;
 			this.callGraph.fire(callGraphFacts(state.callGraph));
+		}
+		// the end of a parse: each parse gives a new object
+		if (state.lastParse !== this.lastParse) {
+			this.lastParse = state.lastParse;
+			if (state.lastParse) {
+				const p = state.lastParse;
+				this.parse.fire({
+					file: p.file, ...(p.parseMs !== undefined ? { parseMs: p.parseMs } : {}), errorCount: p.errorCount, errors: [...p.errors], ...(p.isFailed ? { isFailed: true } : {}),
+				});
+			}
 		}
 	}
 
@@ -187,6 +201,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		onDidChangeGuide: events.onDidChangeGuide,
 		onDidChangeCallGraph: events.onDidChangeCallGraph,
 		onDidInvokeAction: events.actionsOf(client),
+		onDidParse: events.onDidParse,
 		callTool: (tool, args) => call<unknown>(tool, args),
 		registerTools: (list) => {
 			if (!deps.extensionTools) {
@@ -225,8 +240,10 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		remove: (args) => call('remove', args),
 		setLens: (args) => call('set_lens', args),
 		clearFlow: () => call('clear_flow'),
-		startRipple: () => call('start_ripple'),
+		startRipple: (args) => call('start_ripple', args),
 		clearRipple: () => call('clear_ripple'),
+		markBase: (args) => call('mark_base', args),
+		deleteMark: (args) => call('delete_mark', args),
 		scanCallGraph: () => call('scan_call_graph'),
 		stopCallGraph: () => call('stop_call_graph'),
 		showReviewPlan: (args) => call('show_review_plan', args),

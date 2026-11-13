@@ -22,6 +22,9 @@
 
 namespace DataFlow {
 
+  // the status ready of a parse gives the number of the errors and a maximum of this number of errors
+  inline constexpr size_t status_max_errors = 5;
+
   // runs jobs on a fixed number of threads
   class WorkerPool {
     std::vector<llvm::thread> threads_;
@@ -308,9 +311,19 @@ namespace DataFlow {
         Protocol::notify("dataflow/status", JsonObject{{"file", file}, {"state", "failed"}});
         return finish(std::unexpected(parsed.error()));
       }
-      if (*parsed)
-        Protocol::notify("dataflow/status",
-                         JsonObject{{"file", file}, {"state", "ready"}, {"parseMs", entry->parse_ms_}});
+      // a new parse: the status ready gives the number of the errors and the first errors
+      if (*parsed) {
+        JsonArray first;
+        for (const std::string& msg : entry->diags_->get_messages()) {
+          if (first.size() == status_max_errors) break;
+          first.push_back(msg);
+        }
+        Protocol::notify("dataflow/status", JsonObject{{"file", file},
+                                                       {"state", "ready"},
+                                                       {"parseMs", entry->parse_ms_},
+                                                       {"errorCount", int64_t(entry->diags_->get_count())},
+                                                       {"errors", std::move(first)}});
+      }
       if (cancelled->load()) return finish(Json(nullptr));
 
       const auto start = std::chrono::steady_clock::now();

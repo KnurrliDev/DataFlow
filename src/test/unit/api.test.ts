@@ -49,7 +49,7 @@ suite('API for other extensions', () => {
 		assert.strictEqual(api.version, 1);
 		assert.strictEqual(api.engineState, 'stopped');
 		assert.deepStrictEqual(api.compileDatabases, []);
-		assert.strictEqual(api.tools.length, 35);
+		assert.strictEqual(api.tools.length, 37);
 		assert.deepStrictEqual(api.tools.filter((t) => t.isDestructive).map((t) => t.name), ['close_guide']);
 		assert.ok(api.tools.find((t) => t.name === 'get_logic')?.isReadOnly);
 		assert.ok(!api.tools.find((t) => t.name === 'set_lens')?.isReadOnly);

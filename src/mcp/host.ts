@@ -24,6 +24,7 @@ import {
 import {
 	dropGuide, findGuide, guideOwner, guideRef, guidesText, MAX_GUIDES, nextGuideSeq, pushGuide, putGuide, setGuide, setStack, stackGuides, stackOf,
 } from '../review/stack';
+import type { MarkInfo } from '../review/marks';
 import type { RippleModel } from '../review/ripple';
 import { groupTitle, resolveWalkPlan, walkFacts, walkHunks, type WalkHunk, type WalkInput, type WalkPlanInput } from '../review/walk';
 import type { SideViewController } from '../side/controller';
@@ -64,7 +65,14 @@ export interface HostDeps {
 	reviewFiles(paths: string[]): Promise<ReviewFilesInput | { message: string }>;
 	// the changes of a diff walk against a base: "uncommitted", "target", or a commit, a tag or a branch. With paths, only
 	// the files under the paths. Or the reason why no diff is available
-	walkInput(base: string | undefined, paths?: string[], allFiles?: boolean): Promise<WalkInput | { message: string }>;
+	walkInput(base: string | undefined, paths?: string[], allFiles?: boolean, client?: string): Promise<WalkInput | { message: string }>;
+	// the marks of the clients: a mark keeps the text files under its paths. Paths are absolute, or relative to the
+	// repository of the project
+	marks: {
+		create(client: string, name: string, paths: string[]): Promise<MarkInfo>;
+		remove(client: string, name: string): Promise<boolean>;
+		list(client: string): Promise<MarkInfo[]>;
+	};
 	// the header with the definition of a type that a translation unit only declares: the definition provider of VS Code
 	// at the place of the name, if a place is known, else a search of the headers of the project
 	definitionHeader(name: string, place?: { doc: vscode.TextDocument; pos: vscode.Position }): Promise<string | undefined>;
@@ -86,7 +94,7 @@ export interface HostDeps {
 	// the last review of Change Ripple: its state in the side view, its result, and the root of its repository
 	ripple(): { state?: ReviewState; model?: RippleModel; root?: string };
 	// runs a review of Change Ripple, as the command Review Changes does, and gives its result. undefined if it failed
-	startRipple(): Promise<RippleModel | undefined>;
+	startRipple(options?: { base?: string; paths?: string[]; client?: string }): Promise<RippleModel | undefined>;
 	// closes Change Ripple, as the button Clear of its bar does. false if no review showed
 	clearRipple(): boolean;
 	// starts the scan of the call graph, or the scan of the changed files, as the button Scan of the tab Heat does
@@ -241,6 +249,7 @@ export class DataFlowMcpHost implements McpHost {
 			})) } : {}),
 			review: state.guide ? guideFacts(state.guide) : null,
 			guides: stackGuides(stackOf(state)).map(guideRef),
+			marks: (await this.deps.marks.list(this.owner()).catch(() => [])).map((m) => this.markFacts(m)),
 			engine: state.engine,
 			project: { folders: this.roots(), compileDatabases: state.databases.map((d) => d.makefile ?? d.path) },
 		};
@@ -916,7 +925,7 @@ export class DataFlowMcpHost implements McpHost {
 		if (paths !== undefined && (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.trim().length > 0))) {
 			throw new Error('"paths" must be a list of files and folders.');
 		}
-		const input = await this.deps.walkInput(base, (paths as string[] | undefined)?.map((p) => p.trim()), allFiles === true);
+		const input = await this.deps.walkInput(base, (paths as string[] | undefined)?.map((p) => p.trim()), allFiles === true, this.owner());
 		if ('message' in input) {
 			throw new Error(input.message);
 		}
@@ -1131,11 +1140,52 @@ export class DataFlowMcpHost implements McpHost {
 		return { state: 'ready', ...rippleFacts(model, state, rel), ...(state.message ? { message: state.message } : {}) };
 	}
 
-	// Runs a review of Change Ripple against the target branch, and gives its facts
-	async startRipple(): Promise<Api.RippleFacts> {
+	// Runs a review of Change Ripple, and gives its facts. The default base is the target branch. A tool never asks the
+	// user, so with no target branch the review fails
+	async startRipple(base?: string, paths?: unknown): Promise<Api.RippleFacts> {
 		this.ready();
-		await this.deps.startRipple();
+		if (paths !== undefined && (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.trim().length > 0))) {
+			throw new Error('"paths" must be a list of files and folders.');
+		}
+		await this.deps.startRipple({
+			...(base?.trim() ? { base: base.trim() } : {}), ...(paths ? { paths: (paths as string[]).map((p) => p.trim()) } : {}), client: this.owner(),
+		});
 		return this.ripple();
+	}
+
+	//-------------------
+	// Marks
+
+	// Keeps the text files under the paths in a mark of the client, so get_diff and start_ripple can compare the files
+	// with it later
+	async markBase(name: unknown, paths: unknown): Promise<Api.MarkResult> {
+		if (typeof name !== 'string' || !name.trim()) {
+			throw new Error('Give "name": the name of the mark, for example step-5.');
+		}
+		if (!Array.isArray(paths) || paths.length === 0 || !paths.every((p) => typeof p === 'string' && p.trim().length > 0)) {
+			throw new Error('Give "paths": the files and the folders of the mark.');
+		}
+		const info = await this.deps.marks.create(this.owner(), name.trim(), (paths as string[]).map((p) => p.trim()));
+		return {
+			...this.markFacts(info),
+			bytes: info.bytes,
+			note: `get_diff and start_ripple with the base "mark:${info.name}" give the changes since this mark. A new mark with the same name replaces it.`,
+		};
+	}
+
+	// Removes a mark of the client
+	async deleteMark(name: unknown): Promise<Api.DeleteMarkResult> {
+		if (typeof name !== 'string' || !name.trim()) {
+			throw new Error('Give "name": the name of the mark.');
+		}
+		const deleted = await this.deps.marks.remove(this.owner(), name.trim());
+		return { deleted, marks: (await this.deps.marks.list(this.owner())).map((m) => m.name) };
+	}
+
+	// A mark for the client: the paths relative to the folder of the mark
+	private markFacts(m: MarkInfo): Api.MarkFacts {
+		const rel = (f: string) => (isInside(f, m.root) ? path.relative(m.root, f).replace(/\\/g, '/') : f);
+		return { name: m.name, files: m.files.length, paths: m.paths.map(rel), time: new Date(m.time).toISOString() };
 	}
 
 	// Closes Change Ripple

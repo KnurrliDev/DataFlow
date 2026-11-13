@@ -256,4 +256,37 @@ suite('API for other extensions: Change Ripple and the guide', () => {
 			await vscode.commands.executeCommand('workbench.action.files.revert');
 		}
 	});
+
+	test('A mark keeps the files, and getDiff and startRipple with the mark give the changes since the mark', async function () {
+		this.timeout(120000);
+		const fire = lineOf('fire_transition(home_battery_ctl, "", true);');
+		const mark = await api.markBase({ name: 'step-1', paths: ['src'] });
+		assert.deepStrictEqual([mark.name, mark.paths], ['step-1', ['src']]);
+		assert.ok(mark.files >= 3 && mark.bytes > 0, JSON.stringify(mark));
+		assert.deepStrictEqual((await api.getView()).marks?.map((m) => m.name), ['step-1']);
+		const editor = await vscode.window.showTextDocument(vscode.Uri.file(source()));
+		await editor.edit((b) => b.insert(new vscode.Position(fire, 0), '  int cycle = 0;\n'));
+		try {
+			// only the change after the mark. The change of the branch is in the mark too
+			const diff = await api.getDiff({ base: 'mark:step-1' });
+			assert.deepStrictEqual(diff.files.map((f) => [f.file, f.hunks.map((h) => h.lines)]), [['src/battery.cpp', [[fire + 1, fire + 1]]]]);
+			assert.strictEqual(diff.base, 'mark step-1');
+			// Change Ripple of the same changes, then of a different base with paths
+			const ripple = await api.startRipple({ base: 'mark:step-1' });
+			assert.strictEqual(ripple.state, 'ready', JSON.stringify(ripple).slice(0, 400));
+			assert.deepStrictEqual(ripple.changes?.map((c) => [c.file, c.lines]), [['src/battery.cpp', [fire + 1]]]);
+			const uncommitted = await api.startRipple({ base: 'uncommitted', paths: ['src/battery.cpp'] });
+			assert.deepStrictEqual(uncommitted.changes?.map((c) => c.lines), [[fire + 1]]);
+			// a mark that the client does not have
+			await assert.rejects(api.getDiff({ base: 'mark:none' }), /Your client has no mark none\. Its marks are step-1\./);
+			const none = await api.startRipple({ base: 'mark:none' });
+			assert.deepStrictEqual([none.state, none.message], ['failed', 'Your client has no mark none. Its marks are step-1. mark_base makes a mark.']);
+		} finally {
+			await vscode.window.showTextDocument(editor.document);
+			await vscode.commands.executeCommand('workbench.action.files.revert');
+			await api.clearRipple();
+		}
+		await assert.rejects(api.markBase({ name: 'outside', paths: ['../elsewhere'] }), /These paths are not in a folder of the project: \.\.\/elsewhere\. No mark changed\./);
+		assert.deepStrictEqual(await api.deleteMark({ name: 'step-1' }), { deleted: true, marks: [] });
+	});
 });

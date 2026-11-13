@@ -129,7 +129,7 @@ suite('MCP server on the fixture', () => {
 		const list = await rpc('tools/list');
 		assert.deepStrictEqual(list.result.tools.map((t: { name: string }) => t.name), [
 			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_callers', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'get_heat', 'get_call_graph', 'get_logic', 'get_ripple',
-			'show_blocks', 'show_flow', 'show_logic_path', 'show_line', 'highlight', 'comment_lines', 'add_detail', 'clear', 'remove', 'set_lens', 'clear_flow', 'start_ripple', 'clear_ripple',
+			'show_blocks', 'show_flow', 'show_logic_path', 'show_line', 'highlight', 'comment_lines', 'add_detail', 'clear', 'remove', 'set_lens', 'clear_flow', 'start_ripple', 'clear_ripple', 'mark_base', 'delete_mark',
 			'scan_call_graph', 'stop_call_graph', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step', 'close_guide',
 		]);
 		// only close_guide removes data of the user: the marks and the notes of the steps

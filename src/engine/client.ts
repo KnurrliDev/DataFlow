@@ -670,6 +670,8 @@ export interface EngineStatus {
 	file: string;
 	state: 'parsing' | 'ready' | 'failed';
 	parseMs?: number;
+	errorCount?: number; // ready: the number of the errors of the parse
+	errors?: string[]; // ready: the first errors, a maximum of 5
 }
 
 export type EngineState = 'stopped' | 'starting' | 'ready' | 'failed';

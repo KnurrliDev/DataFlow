@@ -51,6 +51,9 @@ export interface DataFlowApi {
 	readonly onDidChangeCallGraph: vscode.Event<CallGraphFacts>;
 	// The user clicked a button of your extension on a note, a detail or a step of a guide
 	readonly onDidInvokeAction: vscode.Event<ActionEvent>;
+	// The engine parsed a file again, for example the active file 250 ms after the last key. Ask for new facts of the file
+	// after this event
+	readonly onDidParse: vscode.Event<ParseEvent>;
 
 	// Runs a tool of DataFlow, and gives its result. The typed methods below run the same tools
 	callTool(name: string, args?: Record<string, unknown>): Promise<unknown>;
@@ -91,8 +94,10 @@ export interface DataFlowApi {
 	remove(args: RemoveArgs): Promise<RemoveResult>; // remove
 	setLens(args: SetLensArgs): Promise<SetLensResult>; // set_lens
 	clearFlow(): Promise<ClearedResult>; // clear_flow
-	startRipple(): Promise<RippleFacts>; // start_ripple
+	startRipple(args?: RippleArgs): Promise<RippleFacts>; // start_ripple
 	clearRipple(): Promise<ClearedResult>; // clear_ripple
+	markBase(args: MarkArgs): Promise<MarkResult>; // mark_base
+	deleteMark(args: DeleteMarkArgs): Promise<DeleteMarkResult>; // delete_mark
 	scanCallGraph(): Promise<CallGraphFacts>; // scan_call_graph
 	stopCallGraph(): Promise<StopCallGraphResult>; // stop_call_graph
 	showReviewPlan(args: ReviewPlanArgs): Promise<ReviewPlanResult>; // show_review_plan
@@ -142,6 +147,16 @@ export interface ActionEvent {
 	file?: string;
 	line?: number;
 	step?: number;
+}
+
+// The end of a parse of a file. errorCount: the number of the errors. errors: the first errors, a maximum of 5.
+// isFailed: the engine could not parse the file
+export interface ParseEvent {
+	file: string;
+	parseMs?: number;
+	errorCount: number;
+	errors: string[];
+	isFailed?: boolean;
 }
 
 export interface ViewEvent {
@@ -264,6 +279,24 @@ export interface RemoveArgs extends FileArgs {
 	ids: string[];
 }
 
+// base: "target" (default), "uncommitted", a commit, a tag or a branch, or "mark:<name>", as for getDiff. paths: only
+// the changes under these paths
+export interface RippleArgs {
+	base?: string;
+	paths?: string[];
+}
+
+// name: 1 to 64 letters, digits, "_", "-" or ".". paths: files and folders of the project, relative to the repository or
+// absolute. The mark keeps the text of each text file under the paths, a maximum of 500 files and 20 MB
+export interface MarkArgs {
+	name: string;
+	paths: string[];
+}
+
+export interface DeleteMarkArgs {
+	name: string;
+}
+
 export interface SetLensArgs {
 	lens: LensName;
 	on: boolean;
@@ -341,6 +374,7 @@ export interface ViewFacts {
 	otherClients?: { client: string; blocks: number; notes: number; comments: number; details: number }[]; // the layers of the other clients
 	review: GuideFacts | null; // the guide that shows: the top guide of the stack
 	guides?: GuideRef[]; // the guides of the stack, the top guide first
+	marks?: MarkFacts[]; // the marks of your client, the newest first
 	engine: EngineState;
 	project: { folders: string[]; compileDatabases: string[] };
 }
@@ -829,6 +863,25 @@ export interface RemoveResult {
 
 export interface ClearedResult {
 	cleared: boolean;
+}
+
+// A mark of your client. files: the number of the text files in the mark. time: the time of the mark (ISO 8601)
+export interface MarkFacts {
+	name: string;
+	files: number;
+	paths: string[];
+	time: string;
+}
+
+export interface MarkResult extends MarkFacts {
+	bytes: number; // the size of the texts in the mark
+	note: string;
+}
+
+// deleted: false if your client has no mark with the name. marks: the names of the marks that stay
+export interface DeleteMarkResult {
+	deleted: boolean;
+	marks: string[];
 }
 
 export interface SetLensResult {

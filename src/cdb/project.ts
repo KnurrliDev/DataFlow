@@ -33,8 +33,10 @@ export function folderMatcher(patterns: readonly string[]): (name: string) => bo
 	return (name) => regex.test(name);
 }
 
-// The C and C++ files of a project, in the sequence of their paths. The search skips the folders of skipFolders.
-export async function findProjectFiles(root: string, limit = MAX_PROJECT_FILES, skipFolders: readonly string[] = SKIP_FOLDERS): Promise<string[]> {
+// The C and C++ files of a project, in the sequence of their paths. The search skips the folders of skipFolders. With
+// isWanted, the files with a name that isWanted accepts, for example all files for a mark
+export async function findProjectFiles(root: string, limit = MAX_PROJECT_FILES, skipFolders: readonly string[] = SKIP_FOLDERS,
+	isWanted: (name: string) => boolean = isCppFile): Promise<string[]> {
 	const isSkipped = folderMatcher(skipFolders);
 	const out: string[] = [];
 	const queue = [root];
@@ -52,7 +54,7 @@ export async function findProjectFiles(root: string, limit = MAX_PROJECT_FILES, 
 				if (!isSkipped(e.name) && !(isQmakeBuild && QMAKE_OUTPUT.test(e.name))) {
 					queue.push(path.join(dir, e.name));
 				}
-			} else if (e.isFile() && isCppFile(e.name)) {
+			} else if (e.isFile() && isWanted(e.name)) {
 				out.push(path.join(dir, e.name));
 			}
 		}

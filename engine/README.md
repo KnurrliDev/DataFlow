@@ -91,7 +91,7 @@ The engine parses each file with the command of its compile database, with these
 | `$/cancelRequest` | `id` | No reply. The request stops with the error code -32800. |
 | `shutdown`, `exit` | none | The engine stops. |
 
-Lines and columns start at 1. The replies for a file also contain `parsed`, `parseMs`, `parseCount`, `errorCount`, `errors` and `analysisMs`. `parseCount` is the number of the parse. Each parse of each file gets a new number. `preambleBuilds` is the number of preambles that the parses of the file built. During a parse, the engine sends the notification `dataflow/status`. During a scan of the call graph, it sends `dataflow/progress`.
+Lines and columns start at 1. The replies for a file also contain `parsed`, `parseMs`, `parseCount`, `errorCount`, `errors` and `analysisMs`. `parseCount` is the number of the parse. Each parse of each file gets a new number. `preambleBuilds` is the number of preambles that the parses of the file built. During a parse, the engine sends the notification `dataflow/status` with `file` and `state`: `parsing` at the start, then `ready` or `failed`. `ready` also has `parseMs`, `errorCount` and the first 5 `errors`. During a scan of the call graph, it sends `dataflow/progress`.
 
 A request with `function` finds the function by its name. A name can be qualified. If overloads have the name, `line` selects the overload that contains the line, or the overload that starts nearest to it.
 

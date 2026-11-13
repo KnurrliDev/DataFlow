@@ -508,7 +508,7 @@ The review works on more than one changed file at the same time. The number of f
 
 Change Ripple goes from a return value to the callers of the function. The engine finds the callers in the same file. For the callers in other files, Change Ripple uses the call hierarchy of the C/C++ extension or of clangd. If neither is active, the story tells you.
 
-The MCP tools `start_ripple` and `get_ripple` give the review to a language model: the code that each change reaches, also in the callers. See [Use the MCP tools](tools.md#get_ripple).
+The MCP tools `start_ripple` and `get_ripple` give the review to a language model: the code that each change reaches, also in the callers. `start_ripple` can also review the changes that are not committed, the changes since a commit, or the changes since a mark of the model. See [Use the MCP tools](tools.md#start_ripple).
 
 ### Select the target branch
 

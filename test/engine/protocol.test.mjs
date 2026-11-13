@@ -3124,6 +3124,12 @@ test('tells for each include if forward declarations can replace it, or the firs
 		assert.equal(bad.error, undefined, JSON.stringify(bad.error));
 		assert.ok(bad.result.errorCount > 0);
 		assert.ok(bad.result.nodes.every((n) => n.forward === undefined), JSON.stringify(bad.result.nodes.filter((n) => n.forward)));
+		// the status ready of the parse gives the number of the errors and the first errors
+		const ready = own.notifications.filter((n) => n.method === 'dataflow/status' && n.params.state === 'ready' && path.basename(n.params.file) === path.basename(source)).pop();
+		assert.ok(ready, JSON.stringify(own.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params)));
+		assert.equal(ready.params.errorCount, bad.result.errorCount);
+		assert.ok(ready.params.errors.length > 0 && ready.params.errors.length <= 5, JSON.stringify(ready.params.errors));
+		assert.match(ready.params.errors[0], /df_missing/);
 	} finally {
 		await own.close();
 		rmSync(dir, { recursive: true, force: true });
@@ -3505,6 +3511,11 @@ test('call graph: callers that the graph cannot see, qt connections, a long fram
 });
 
 test('sends status notifications', () => {
-	const states = engine.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params.state);
+	const statuses = engine.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params);
+	const states = statuses.map((s) => s.state);
 	assert.ok(states.includes('parsing') && states.includes('ready'), states.join(','));
+	// each status ready gives the time of the parse, the number of the errors and a maximum of 5 errors
+	const ready = statuses.filter((s) => s.state === 'ready');
+	assert.ok(ready.every((s) => Number.isFinite(s.parseMs) && Number.isInteger(s.errorCount) && Array.isArray(s.errors) && s.errors.length <= 5),
+		JSON.stringify(ready.filter((s) => !Array.isArray(s.errors) || s.errors.length > 5)));
 });

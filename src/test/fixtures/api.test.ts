@@ -43,7 +43,7 @@ suite('API for other extensions on the fixture', () => {
 		assert.throws(() => exports.getApi(2 as 1), /DataFlow has no API version 2/);
 		assert.strictEqual(api.engineState, 'ready');
 		assert.ok(api.compileDatabases.length > 0, JSON.stringify(api.compileDatabases));
-		assert.strictEqual(api.tools.length, 35);
+		assert.strictEqual(api.tools.length, 37);
 		assert.strictEqual(api.engineError, undefined);
 		const view = await api.getView();
 		assert.deepStrictEqual([view.file, view.engine], [file(), 'ready']);
@@ -211,6 +211,32 @@ suite('API for other extensions on the fixture', () => {
 				[{ kind: 'detail', action: 'open', item: 'd1', file: 'battery.cpp', line }]);
 		} finally {
 			await other.clear();
+		}
+	});
+
+	test('onDidParse tells the end of a parse of the active file, with the number of the errors and the first errors', async function () {
+		this.timeout(60000);
+		const editor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file()), vscode.ViewColumn.One);
+		const parsed = new Promise<Api.ParseEvent>((resolve) => {
+			const subscription = api.onDidParse((e) => {
+				if (path.basename(e.file) === 'battery.cpp' && e.errorCount > 0) {
+					subscription.dispose();
+					resolve(e);
+				}
+			});
+		});
+		await editor.edit((b) => b.insert(new vscode.Position(0, 0), 'int df_error = df_missing;\n'));
+		try {
+			const e = await parsed;
+			assert.ok(e.errors.length > 0 && e.errors.length <= 5, JSON.stringify(e));
+			assert.match(e.errors[0], /df_missing/);
+			assert.ok(typeof e.parseMs === 'number' && !e.isFailed, JSON.stringify(e));
+		} finally {
+			await vscode.window.showTextDocument(editor.document);
+			await vscode.commands.executeCommand('workbench.action.files.revert');
+			// the later suites start with the text of the file in the side view
+			await waitFor(() => internals.side.rows.length === editor.document.lineCount, 15000,
+				() => `${internals.side.rows.length} rows, ${editor.document.lineCount} lines`);
 		}
 	});
 });

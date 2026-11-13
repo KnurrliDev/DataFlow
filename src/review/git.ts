@@ -367,6 +367,28 @@ export class ReviewRepository {
 	}
 }
 
+// The unified diff of two texts with git diff --no-index, for example the text of a file in a mark and its text now. The
+// line ends of both texts become \n, as git does for the files on the disk. Undefined if git fails
+export async function diffTexts(before: string, after: string): Promise<string | undefined> {
+	const git = (await gitApi()).git.path;
+	const dir = await mkdtemp(path.join(os.tmpdir(), 'dataflow-mark-'));
+	try {
+		const a = path.join(dir, 'base');
+		const b = path.join(dir, 'now');
+		await writeFile(a, before.replace(/\r\n/g, '\n'));
+		await writeFile(b, after.replace(/\r\n/g, '\n'));
+		try {
+			return (await execFileAsync(git, ['diff', '--no-index', '--no-color', '--no-ext-diff', '--', a, b], { cwd: dir, windowsHide: true, maxBuffer: GIT_MAX_OUTPUT })).stdout;
+		} catch (error) {
+			// git diff --no-index ends with the code 1 for different texts
+			const e = error as { code?: unknown; stdout?: unknown };
+			return e.code === 1 && typeof e.stdout === 'string' ? e.stdout : undefined;
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+}
+
 // The text of a file at a commit, for the left side of the diff editor
 export async function commitUri(uri: vscode.Uri, commit: string): Promise<vscode.Uri> {
 	return (await gitApi()).toGitUri(uri, commit);

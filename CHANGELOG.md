@@ -24,6 +24,9 @@
 - The tab Guide has a field for the note of the user on the current step. `get_view` gives the note of the user and the text of the note of the model. The summary has the notes of the user.
 - API: `onDidChangeGuide` gives `change` and `by`: the cause of the change, and the user or the client.
 - A guided review has a maximum of 40 steps, as a diff walk. Before, the maximum was 20.
+- The new view tools `mark_base` and `delete_mark`: a mark keeps the text files under paths, with a maximum of 500 files and 20 MB. `get_diff` and `start_ripple` with the base `mark:<name>` give the changes since the mark, also with no commit. Each client has its own marks, with a maximum of 20. The marks stay after a reload of the window, and `get_view` gives them. The API gets `markBase` and `deleteMark`.
+- `start_ripple` gets `base` and `paths`, as `get_diff`. The tool never asks the user: with no target branch, the review fails, and the model gives a different base. An update after a save keeps the base and the paths.
+- API: the event `onDidParse` tells the end of a parse of a file, with the number of the errors and the first 5 errors. The status `ready` of the notification `dataflow/status` of the engine now has `errorCount` and `errors`.
 - API: `registerTools` adds tools of an extension to the MCP server. The MCP name of a tool starts with the name of the client, and its description too. The result removes the tools. After a change of the tools, the bridge tells its client that the list of the tools changed, and the agent mode of VS Code gets a new version of the server.
 
 ## 0.5.0

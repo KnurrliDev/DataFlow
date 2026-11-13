@@ -85,8 +85,10 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `remove({ file, ids })` | [`remove`](tools.md#remove) | view |
 | `setLens({ lens, on })` | [`set_lens`](tools.md#set_lens) | view |
 | `clearFlow()` | [`clear_flow`](tools.md#clear_flow) | view |
-| `startRipple()` | [`start_ripple`](tools.md#start_ripple) | view |
+| `startRipple({ base, paths })` | [`start_ripple`](tools.md#start_ripple) | view |
 | `clearRipple()` | [`clear_ripple`](tools.md#clear_ripple) | view |
+| `markBase({ name, paths })` | [`mark_base`](tools.md#mark_base) | view |
+| `deleteMark({ name })` | [`delete_mark`](tools.md#delete_mark) | view |
 | `scanCallGraph()` | [`scan_call_graph`](tools.md#scan_call_graph) | view |
 | `stopCallGraph()` | [`stop_call_graph`](tools.md#stop_call_graph) | view |
 | `showReviewPlan({ id, title, summary, steps })` | [`show_review_plan`](tools.md#show_review_plan) | view |
@@ -118,6 +120,7 @@ These properties give the state:
 | `onDidChangeGuide` | The guide that shows changes: the top guide of the stack. See [Guides](#guides). | The guide as `get_view` gives it in `review`, with `change` and `by`, or `null` if no guide shows |
 | `onDidChangeCallGraph` | The scan of the call graph starts, makes progress, stops or ends. | The data of `scan_call_graph` |
 | `onDidInvokeAction` | The user clicks a button of your extension. See [Buttons](#buttons). | `kind`, `action`, `item`, `file`, `line` and `step` |
+| `onDidParse` | The engine parsed a file again. After each edit of the active file, the engine parses it about 250 ms after the last key. Ask for new facts of the file after this event. | `file`, `parseMs`, `errorCount`, the first 5 `errors`, and `isFailed` if the engine could not parse the file |
 
 At the end of a scan of the call graph, the heat of the functions can change. Then call `getHeat` again.
 

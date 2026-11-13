@@ -43,8 +43,10 @@ export interface McpHost {
 	logic(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts>;
 	showLogicPath(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts>;
 	ripple(): Promise<Api.RippleFacts>;
-	startRipple(): Promise<Api.RippleFacts>;
+	startRipple(base?: string, paths?: unknown): Promise<Api.RippleFacts>;
 	clearRipple(): Promise<Api.ClearedResult>;
+	markBase(name: unknown, paths: unknown): Promise<Api.MarkResult>;
+	deleteMark(name: unknown): Promise<Api.DeleteMarkResult>;
 	setLens(lens: string, isOn: boolean): Promise<Api.SetLensResult>;
 	showLine(file: string | undefined, line: number): Promise<Api.ShowLineResult>;
 	clearFlow(): Promise<Api.ClearedResult>;
@@ -71,6 +73,7 @@ export const INSTRUCTIONS = [
 	'To walk the user through the changes of the working tree, of the branch or since a commit, for example the changes that you made, call get_diff, '
 	+ 'read the changed code, then call show_diff_walk with steps of hunks, and go on with review_step. The prompt diff-walk gives the steps.',
 	'get_review and get_diff give the heat of the changed functions. Start a plan with the hottest changes, unless a different order explains the change better.',
+	'To show only the changes of one step of a task with no commit, call mark_base before the step. After the step, get_diff and start_ripple with the base "mark:<name>" give its changes.',
 	'The side view keeps a stack of up to 5 guides, and the top guide shows. A new plan goes on the top. To change your plan, give its id to show_review_plan or show_diff_walk. '
 	+ 'review_step and close_guide change a guide of the user or of a different client only with "force": true, when the user asks you for it.',
 	'When the user asks you to close or delete the guided review or the diff walk, call close_guide.',
@@ -425,12 +428,41 @@ export function createTools(host: McpHost): McpTool[] {
 			{}, [], false, () => host.clearFlow()),
 		tool('start_ripple', 'Run Change Ripple',
 			'Runs a review of Change Ripple, as the command Review Changes does, waits for its end, and gives the same facts as get_ripple. '
-			+ 'The side view shows the story of the review. Change Ripple compares the working tree with the merge base of the target branch. '
-			+ 'If the repository has no target branch, VS Code asks the user for it.',
-			{}, [], false, () => host.startRipple()),
+			+ 'The side view shows the story of the review. By default, Change Ripple compares the working tree with the merge base of the target branch. '
+			+ 'If the repository has no target branch, the review fails: then give "base".',
+			{
+				base: {
+					type: 'string',
+					description: '"target" (default): the changes of the branch against its target branch. "uncommitted": the changes against HEAD. '
+						+ 'Else a commit, a tag or a branch: the changes since its merge base with HEAD. "mark:<name>": the changes since a mark of mark_base.',
+				},
+				paths: {
+					type: 'array', minItems: 1, items: { type: 'string' },
+					description: 'Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. Default: all changed files.',
+				},
+			},
+			[], false, (a) => host.startRipple(a.text('base'), a.raw('paths'))),
 		tool('clear_ripple', 'Close Change Ripple',
 			'Closes the review of Change Ripple in the DataFlow side view, as the button Clear of its bar does.',
 			{}, [], false, () => host.clearRipple()),
+		tool('mark_base', 'Mark the files',
+			'Keeps the text of the text files under the paths in a mark of your client, for example before you write the code of one step of a task. '
+			+ 'get_diff and start_ripple with the base "mark:<name>" then give the changes since the mark, also with no commit. '
+			+ 'A mark has a maximum of 500 files and 20 MB, and your client has a maximum of 20 marks. A new mark with the same name replaces the old mark. '
+			+ 'The marks stay after a reload of the window. get_view gives your marks.',
+			{
+				name: { type: 'string', description: 'The name of the mark: 1 to 64 letters, digits, "_", "-" or ".", for example step-5.' },
+				paths: {
+					type: 'array', minItems: 1, items: { type: 'string' },
+					description: 'The files and the folders of the mark, in the folders of the project: paths relative to the repository, or absolute paths. '
+						+ 'A folder gives its text files, also in its subfolders, except build folders.',
+				},
+			},
+			['name', 'paths'], false, (a) => host.markBase(a.raw('name'), a.raw('paths'))),
+		tool('delete_mark', 'Delete a mark',
+			'Removes a mark of your client that mark_base made.',
+			{ name: { type: 'string', description: 'The name of the mark.' } },
+			['name'], false, (a) => host.deleteMark(a.raw('name'))),
 		tool('scan_call_graph', 'Scan the call graph',
 			'Starts the scan of the call graph of the project for the heat, or the scan of the source files that changed after the last scan, as the button Scan of the tab Heat does. '
 			+ 'The scan does not block: the result gives the state and the progress. get_heat starts the scan too, but not after a stop of the user.',
@@ -495,7 +527,7 @@ export function createTools(host: McpHost): McpTool[] {
 				base: {
 					type: 'string',
 					description: '"uncommitted" (default): the changes against HEAD. "target": the changes of the branch against its target branch, as Change Ripple. '
-						+ 'Else a commit, a tag or a branch, for example HEAD~1: the changes since its merge base with HEAD. '
+						+ 'Else a commit, a tag or a branch, for example HEAD~1: the changes since its merge base with HEAD. "mark:<name>": the changes since a mark of mark_base. '
 						+ 'Each diff goes to the working tree, with the changes that are not saved and the C and C++ files that git does not track yet.',
 				},
 				paths: {

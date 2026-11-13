@@ -30,6 +30,15 @@ export interface GuideHeatState {
 	steps: (SideStepHeat | undefined)[];
 }
 
+// The end of the last parse of a file in the engine. A new parse gives a new object
+export interface ParseState {
+	file: string;
+	parseMs?: number;
+	errorCount: number;
+	errors: string[]; // the first errors, a maximum of 5
+	isFailed?: boolean; // the engine could not parse the file
+}
+
 // The cause of the last change of the guides: what changed, who changed it, and the top guide after the change. The
 // events of the API use it only while the top guide is that guide
 export interface GuideCause {
@@ -117,6 +126,7 @@ export interface DataFlowState {
 	isDatabaseSearchDone: boolean; // DataFlow looked for the compile databases at least one time
 	project?: { name: string; root: string }; // a project that is not open in VS Code
 	parsing: string[];
+	lastParse?: ParseState; // the end of the last parse of a file
 	file?: string;
 	fn?: EngineFunction | null;
 	parseMs?: number;

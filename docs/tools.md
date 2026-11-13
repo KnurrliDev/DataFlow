@@ -275,8 +275,10 @@ Other extensions can add their own tools to the server with the [API for extensi
 | [`remove`](#remove) | view | Removes notes, comments and details of the client by their ids |
 | [`set_lens`](#set_lens) | view | Turns a lens on or off, as its switch does |
 | [`clear_flow`](#clear_flow) | view | Removes the trace of Flow Lens |
-| [`start_ripple`](#start_ripple) | view | Runs a review of Change Ripple, and gives its data |
+| [`start_ripple`](#start_ripple) | view | Runs a review of Change Ripple against a base, and gives its data |
 | [`clear_ripple`](#clear_ripple) | view | Closes Change Ripple |
+| [`mark_base`](#mark_base) | view | Keeps the text files under paths in a mark, so `get_diff` and `start_ripple` can give the changes since the mark |
+| [`delete_mark`](#delete_mark) | view | Removes a mark |
 | [`scan_call_graph`](#scan_call_graph) | view | Starts the scan of the call graph for the heat score |
 | [`stop_call_graph`](#stop_call_graph) | view | Stops the scan of the call graph |
 | [`show_review_plan`](#show_review_plan) | view | Shows the plan of a guided review on the top of the stack of the guides, at its first step |
@@ -296,7 +298,7 @@ Lines start at 1. Many tools use these parameters:
 
 Gives what the user looks at in VS Code: the active C++ file, the function and the line at the cursor, and the selection. The selection can also be a selection in the side view. The result also gives the lenses of the side view and the layers of the model. The model calls this tool first when you write "this function", "here" or "the selection".
 
-`model` gives the layers of the client in the file. `otherClients` gives the number of blocks, notes, comments and details of each other client in the file. `review` gives the guide that shows, with the marks and the notes of the user. `guides` gives the guides of the stack with their ids and owners, the top guide first.
+`model` gives the layers of the client in the file. `otherClients` gives the number of blocks, notes, comments and details of each other client in the file. `review` gives the guide that shows, with the marks and the notes of the user. `guides` gives the guides of the stack with their ids and owners, the top guide first. `marks` gives the marks of the client of [`mark_base`](#mark_base).
 
 Parameters: none.
 
@@ -659,9 +661,14 @@ Example request: "Remove the trace."
 
 ### start_ripple
 
-Runs a review of Change Ripple, as **DataFlow: Review Changes** does, and gives the same data as `get_ripple`. Change Ripple compares the working tree with the merge base of the target branch. The side view shows the story of the review. The tool waits for the end of the review. If the repository has no target branch, VS Code asks you for it.
+Runs a review of Change Ripple, as **DataFlow: Review Changes** does, and gives the same data as `get_ripple`. By default, Change Ripple compares the working tree with the merge base of the target branch. The side view shows the story of the review. The tool waits for the end of the review.
 
-Parameters: none.
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `base` | text | `target` (the default): the changes of the branch against its target branch. `uncommitted`: the changes against HEAD. A different text is a commit, a tag or a branch: the changes since its merge base with HEAD. `mark:<name>`: the changes since a mark of `mark_base`. |
+| `paths` | list of texts | Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. The default is all changed files. |
+
+The tool never asks you. If the repository has no target branch, the review fails, and the model gives a different base. After a save of a file, the review runs again with the same base and paths.
 
 Example request: "Run Change Ripple, and tell me which callers my change reaches."
 
@@ -670,6 +677,31 @@ Example request: "Run Change Ripple, and tell me which callers my change reaches
 Closes Change Ripple in the side view, as **DataFlow: Clear Review** does. `cleared` is false if no review showed.
 
 Parameters: none.
+
+### mark_base
+
+Keeps the text of the text files under paths in a mark, for example before the model writes the code of one step of a task. `get_diff` and `start_ripple` with the base `mark:<name>` then give the changes since the mark, also with no commit. The mark keeps the text of the editors that are not saved.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `name` | text | Necessary. The name of the mark: 1 to 64 letters, digits, `_`, `-` or `.`, for example `step-5`. |
+| `paths` | list of texts | Necessary. The files and the folders of the mark, in the folders of the project: paths relative to the repository, or absolute paths. A folder gives its text files, also in its subfolders, except build folders. |
+
+A mark has a maximum of 500 files and 20 MB. Each client has its own marks, with a maximum of 20 marks. A new mark with the same name replaces the old mark. The marks are in the storage folder of the workspace, so they stay after a reload of the window. `get_view` gives the marks of the client.
+
+The diff since a mark compares the text of each file now with its text in the mark. A file under the paths that is not in the mark is a new file. A file of the mark that is not there now is a deleted file. A diff walk of a mark has no diff editor, because a mark has no commit.
+
+Example request: "Mark the folder src before you start the next step."
+
+### delete_mark
+
+Removes a mark of the client.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `name` | text | Necessary. The name of the mark. |
+
+The result gives `deleted`, false if the client has no such mark, and the names of the marks that stay.
 
 ### scan_call_graph
 
@@ -742,7 +774,7 @@ Gives the changes for a diff walk: the hunks of the changed C and C++ files agai
 
 | Parameter | Type | Function |
 | --- | --- | --- |
-| `base` | text | `uncommitted` (the default): the changes against HEAD. `target`: the changes of the branch against the target branch of Change Ripple. A different text is a commit, a tag or a branch, for example `HEAD~1`: the changes since its merge base with HEAD. Each diff goes to the working tree, with the text of the editors and the C and C++ files that git does not track yet. |
+| `base` | text | `uncommitted` (the default): the changes against HEAD. `target`: the changes of the branch against the target branch of Change Ripple. A different text is a commit, a tag or a branch, for example `HEAD~1`: the changes since its merge base with HEAD. `mark:<name>`: the changes since a mark of [`mark_base`](#mark_base). Each diff goes to the working tree, with the text of the editors and the C and C++ files that git does not track yet. |
 | `paths` | list of texts | Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. The default is all changed files. |
 | `allFiles` | true or false | `true`: also the hunks of the changed text files that are not C or C++ files, for example `CMakeLists.txt` or a `.ui` file. Such a file has `isCpp: false`, and its hunks have no functions and no heat. The default is `false`: only C and C++ files. |
 
