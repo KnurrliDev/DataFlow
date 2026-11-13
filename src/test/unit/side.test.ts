@@ -316,9 +316,10 @@ suite('Side view: indent guides', () => {
 });
 
 suite('Side view: lenses', () => {
-	test('All lenses but Change Ripple are on by default, and the lens that turns on last is the last lens', () => {
+	test('All lenses but Change Ripple and Heat are on by default, and the lens that turns on last is the last lens', () => {
 		const store = new StateStore();
-		assert.deepStrictEqual(store.state.lenses, { flow: true, logic: true, cost: true, review: false, includes: true, calls: true, threads: true });
+		// Change Ripple and Heat run git and more requests, so they start only on demand
+		assert.deepStrictEqual(store.state.lenses, { flow: true, logic: true, cost: true, review: false, includes: true, calls: true, threads: true, heat: false });
 		assert.strictEqual(store.state.lastLens, undefined);
 		store.toggleLens('review');
 		assert.strictEqual(store.state.lastLens, 'review');

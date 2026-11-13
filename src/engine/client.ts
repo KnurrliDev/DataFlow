@@ -328,6 +328,25 @@ export interface IncludeModel {
 	cached: boolean;
 }
 
+// The data of dataflow/metrics: the metrics of each function of a file, for the heat score. Lines start at 1.
+// engine/README.md describes the fields.
+export interface MetricsFunction extends EngineFunction {
+	decisions: number; // if, the loops, the case labels, catch, &&, || and ?:
+	depth: number; // the deepest nesting of the decisions
+	bodyLines: number;
+	loops: [number, number][]; // the first and the last line of each loop
+	writes: { path: string; scope: 'member' | 'global' | 'param' }[]; // the writes to shared state
+	allocationsInLoops: number;
+	copiesInLoops: number;
+	virtual?: boolean;
+	override?: boolean;
+	declaration: { file: string; line: number }; // the first declaration, for example in a header
+}
+
+export interface MetricsModel {
+	functions: MetricsFunction[];
+}
+
 // The data of dataflow/includers: the source files of the compile databases that include a file
 export interface IncludersResult {
 	file: string;
@@ -756,6 +775,11 @@ export class EngineClient implements vscode.Disposable {
 	// Thus the templates of the header get the items of their instantiations in the unit
 	cost(file: string, minCopyBytes: number, token?: vscode.CancellationToken, unit?: string): Promise<FileResult & CostModel> {
 		return this.request('dataflow/cost', { file, minCopyBytes, ...(unit ? { unit } : {}) }, token);
+	}
+
+	// The metrics of the functions of the file, for the heat score
+	metrics(file: string, token?: vscode.CancellationToken): Promise<FileResult & MetricsModel> {
+		return this.request('dataflow/metrics', { file }, token);
 	}
 
 	// The call graph of the functions of the file

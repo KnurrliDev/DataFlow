@@ -4,7 +4,7 @@ import { EngineClient, FileResult } from '../engine/client';
 import { toUtf16Column, toUtf8Column } from '../lenses/flow';
 import type { ReviewState } from '../lenses/ripple';
 import { guideSummary, withCurrent, withStatus } from '../review/guide';
-import { CostLayerState, LogicPathState, RippleLayerState, StateStore, TraceState } from '../state/store';
+import { CostLayerState, HeatLayerState, LogicPathState, RippleLayerState, StateStore, TraceState } from '../state/store';
 import { buildSideCost } from './costLayer';
 import { DefinitionPlace, otherPlaces, PlaceHistory, SidePlace } from './definition';
 import { buildSideFlow, buildSideMemberFlow } from './flowLayer';
@@ -14,8 +14,8 @@ import {
 	BRACKET_LEVELS, BRACKET_STYLE, LEXICAL_KEYS, plainRows, SEMANTIC_MODIFIERS, SEMANTIC_TYPES, semanticStyleIndex, shiftSpans, toRows,
 } from './model';
 import type {
-	FromSide, SideAction, SideBrackets, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideIncluders, SideIncludes,
-	SideLogic, SideModel, SideOutline, SideRipple, SideThreads, SideRow, SideSettings, SideStory, SideStyle, SideViewState, SideWhy, ToSide,
+	FromSide, SideAction, SideBrackets, SideCallList, SideCalls, SideCardKind, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideHeat, SideIncluders,
+	SideIncludes, SideLogic, SideModel, SideOutline, SideRipple, SideThreads, SideRow, SideSettings, SideStory, SideStyle, SideViewState, SideWhy, ToSide,
 } from './protocol';
 import { buildSideRipple, buildSideStory, fileKey, lineRanges, storyLines } from './storyLayer';
 import { editorLineHeight, fontFeatureSettings, ScrollGuard } from './sync';
@@ -122,6 +122,8 @@ export class SideViewController implements vscode.Disposable {
 	private lastLogic: SideLogic | null = null;
 	private lastCostLayer?: CostLayerState;
 	private lastCost: SideCost | null = null;
+	private lastHeatLayer?: HeatLayerState;
+	private lastHeat: SideHeat | null = null;
 	private lastIncludes: SideIncludes | null = null;
 	private lastIncludesLayer?: SideIncludes;
 	private lastIncluders?: SideIncluders;
@@ -234,6 +236,9 @@ export class SideViewController implements vscode.Disposable {
 				if (state.costLayer !== this.lastCostLayer) {
 					this.postCost();
 				}
+				if (state.heatLayer !== this.lastHeatLayer) {
+					this.postHeat();
+				}
 				if (state.includesLayer !== this.lastIncludesLayer) {
 					this.postIncludes();
 				}
@@ -276,6 +281,11 @@ export class SideViewController implements vscode.Disposable {
 	// The data of Hidden C++ that the side view got last, for the tests
 	get cost(): SideCost | null {
 		return this.lastCost;
+	}
+
+	// The heat that the side view got last, for the tests
+	get heat(): SideHeat | null {
+		return this.lastHeat;
 	}
 
 	// The include hierarchy that the side view got last, for the tests
@@ -723,6 +733,7 @@ export class SideViewController implements vscode.Disposable {
 		this.postFlow();
 		this.postLogic();
 		this.postCost();
+		this.postHeat();
 		this.postIncludes();
 		this.postCalls();
 		this.postThreads();
@@ -1162,6 +1173,17 @@ export class SideViewController implements vscode.Disposable {
 		this.lastCostLayer = costLayer;
 		this.lastCost = costLayer && this.model && costLayer.file === this.model.file ? buildSideCost(costLayer) : null;
 		this.post({ type: 'cost', cost: this.lastCost });
+	}
+
+	// The heat of the functions of the file of the side view. The heat of a different file shows nothing.
+	private postHeat(): void {
+		const { heatLayer } = this.store.state;
+		this.lastHeatLayer = heatLayer;
+		this.lastHeat = heatLayer && this.model && heatLayer.file === this.model.file ? {
+			file: heatLayer.file, isLoading: heatLayer.isLoading, functions: heatLayer.model?.functions ?? [],
+			notices: heatLayer.model?.notices ?? [], ...(heatLayer.error ? { error: heatLayer.error } : {}),
+		} : null;
+		this.post({ type: 'heat', heat: this.lastHeat });
 	}
 
 	// Change Ripple of the file of the side view

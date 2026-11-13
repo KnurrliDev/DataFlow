@@ -20,6 +20,7 @@ import {
 } from './engine/client';
 import { ALL_COST_CATEGORIES, buildCostMarks, CostCategory, costCounts, CostFilter, functionItems } from './lenses/cost';
 import { buildFlowView, findVariable, LineText, ordinalOf, toUtf16Column, toUtf8Column, variableAt } from './lenses/flow';
+import { Blame, buildHeat, HeatModel, parseBlame } from './lenses/heat';
 import { buildLogicView, logicWarnings } from './lenses/logic';
 import { addExternalCallers, buildSideCalls, callFunctionAt, callsOf, callTargetAt, ExternalCaller, graphLabels, wordAt } from './lenses/calls';
 import { buildSideIncluders, buildSideIncludes } from './lenses/includes';
@@ -128,6 +129,8 @@ const PROJECT_FILES_MS = 60000;
 
 // A save updates the review after this time, so that Save All starts one update
 const REVIEW_UPDATE_MS = 1000;
+// After an edit, the heat comes again after this pause, because the blame of git runs again
+const HEAT_EDIT_MS = 1000;
 
 // The connection to Claude Code. DataFlow offers it if the Claude Code extension is installed. After "Not now" it waits
 // this time before it offers it again. The global state keeps 'never' or the time of the last offer
@@ -280,6 +283,11 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 	let threads: { file: string; uri: string; model: ThreadsModel } | undefined;
 	let threadsRequest: vscode.CancellationTokenSource | undefined;
 
+	// Heat: the file of the lens, the running computation, and the timer of the computation after an edit
+	let heat: { file: string; uri: string } | undefined;
+	let heatRequest: vscode.CancellationTokenSource | undefined;
+	let heatTimer: NodeJS.Timeout | undefined;
+
 	// The first failure of the call hierarchy of VS Code in this window. DataFlow does not ask it again. runningHierarchy
 	// settles when the running request settles
 	let callHierarchyFailure: string | undefined;
@@ -381,6 +389,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		clearIncludes();
 		clearCalls();
 		clearThreads();
+		clearHeat();
 		headerUnits.clear();
 		if (isReviewShown) {
 			reviewRun++;
@@ -555,6 +564,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			clearIncludes();
 			clearCalls();
 			clearThreads();
+			clearHeat();
 			scheduleCursorUpdate(0);
 		}
 	};
@@ -627,6 +637,9 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			if (store.state.lenses.threads && threads?.file !== file) {
 				void loadThreads(doc);
 			}
+			if (store.state.lenses.heat && heat?.file !== file) {
+				void loadHeat(doc);
+			}
 		} catch (error) {
 			if (!request.token.isCancellationRequested) {
 				log.debug(`functionAt: ${error}`);
@@ -684,6 +697,10 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		}
 		if (threads?.file === file) {
 			void loadThreads(doc);
+		}
+		if (heat?.file === file) {
+			clearTimeout(heatTimer);
+			heatTimer = setTimeout(() => void loadHeat(doc), HEAT_EDIT_MS);
 		}
 	};
 
@@ -1608,6 +1625,70 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		}
 	};
 
+	// The blame of the text of a document. Undefined if the file is not in a git repository, or if git cannot blame it
+	const blameOf = async (doc: vscode.TextDocument): Promise<Blame | undefined> => {
+		const repo = await openReviewRepository(vscode.Uri.file(path.dirname(doc.uri.fsPath)));
+		const out = await repo.blame(doc.uri.fsPath, doc.isDirty ? doc.getText() : undefined);
+		return out === undefined ? undefined : parseBlame(out);
+	};
+
+	// The heat of the functions of a document: the metrics of the engine, the threads, the blame of git, and the include
+	// reach of each file with declarations of the functions
+	const computeHeat = async (client: EngineClient, doc: vscode.TextDocument, token?: vscode.CancellationToken): Promise<HeatModel> => {
+		flushChange(doc);
+		const file = doc.uri.fsPath;
+		const roots = projectRoots();
+		const [metrics, threadsModel, blame] = await Promise.all([
+			client.metrics(file, token),
+			client.threads(file, { asyncFunctions: asyncFunctionsOf(doc.uri), roots }, token).catch(() => undefined),
+			blameOf(doc).catch(() => undefined),
+		]);
+		const reach = new Map<string, { units: number; total: number }>();
+		for (const decl of new Set(metrics.functions.map((f) => f.declaration.file).filter((f) => f))) {
+			const res = await client.includers(decl, roots, token).catch(() => undefined);
+			if (res) {
+				reach.set(fileKey(decl), { units: res.units.length, total: res.unitCount });
+			}
+		}
+		return buildHeat({ file, functions: metrics.functions, includeReach: (f) => reach.get(fileKey(f)), threads: threadsModel, blame, now: Date.now() });
+	};
+
+	// Computes the heat of the file for the lens Heat. A newer computation cancels the older one. While a computation
+	// runs, the side view shows a busy mark and the last heat of the same file
+	const loadHeat = async (doc: vscode.TextDocument): Promise<void> => {
+		const client = engine;
+		if (!client || client.currentState !== 'ready' || !store.state.lenses.heat) {
+			return;
+		}
+		heatRequest?.cancel();
+		clearTimeout(heatTimer);
+		const request = new vscode.CancellationTokenSource();
+		heatRequest = request;
+		const file = doc.uri.fsPath;
+		heat = { file, uri: doc.uri.toString() };
+		const old = store.state.heatLayer;
+		store.update({ heatLayer: { file, isLoading: true, ...(old?.file === file && old.model ? { model: old.model } : {}) } });
+		try {
+			const model = await computeHeat(client, doc, request.token);
+			if (!request.token.isCancellationRequested && store.state.lenses.heat) {
+				store.update({ heatLayer: { file, isLoading: false, model } });
+			}
+		} catch (error) {
+			if (!request.token.isCancellationRequested && store.state.lenses.heat) {
+				store.update({ heatLayer: { file, isLoading: false, error: `The engine gave no metrics: ${error instanceof Error ? error.message : String(error)}` } });
+			}
+		}
+	};
+
+	const clearHeat = (): void => {
+		heatRequest?.cancel();
+		clearTimeout(heatTimer);
+		heat = undefined;
+		if (store.state.heatLayer) {
+			store.update({ heatLayer: undefined });
+		}
+	};
+
 	// "Not useful" hides the pattern of an item, for example all copies of one type, in this workspace
 	const setHiddenPatterns = async (patterns: string[]): Promise<void> => {
 		await context.workspaceState.update(HIDDEN_PATTERNS, patterns);
@@ -2356,6 +2437,13 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 				clearThreads();
 			}
 		}
+		if (lens === 'heat') {
+			if (store.state.lenses.heat) {
+				scheduleCursorUpdate(0);
+			} else {
+				clearHeat();
+			}
+		}
 		if (lens === 'review') {
 			if (store.state.lenses.review) {
 				void runReview();
@@ -2572,6 +2660,13 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		reviewFiles: (paths) => reviewFiles(paths),
 		walkInput: (base, paths) => walkInput(base, paths),
 		definitionHeader: (name, place) => definitionHeaderOf(name, place),
+		heat: (doc) => {
+			const client = engine;
+			if (!client || client.currentState !== 'ready') {
+				return Promise.reject(new Error('The DataFlow engine is not ready.'));
+			}
+			return computeHeat(client, doc);
+		},
 	});
 	const mcp: McpManager = new McpManager(context, store, log, createTools(mcpHost), createPrompts(), () => projectRoots());
 	context.subscriptions.push(mcp);
@@ -2742,6 +2837,8 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 		vscode.commands.registerCommand('dataflow.toggleIncludes', () => toggleLens('includes')),
 		vscode.commands.registerCommand('dataflow.toggleThreads', () => toggleLens('threads')),
 		vscode.commands.registerCommand('dataflow.toggleCalls', () => toggleLens('calls')),
+		vscode.commands.registerCommand('dataflow.toggleHeat', () => toggleLens('heat')),
+		{ dispose: () => clearTimeout(heatTimer) },
 		// the menu of the side view gives the place of the click as the argument
 		vscode.commands.registerCommand('dataflow.showCalls', (arg?: unknown) => showCallList(arg)),
 		vscode.commands.registerCommand('dataflow.showOutline', (arg?: unknown) => showOutline(arg)),
@@ -2840,6 +2937,9 @@ export function activate(context: vscode.ExtensionContext): DataFlowApi {
 			}
 			if (cost?.uri === doc.uri.toString()) {
 				clearCost();
+			}
+			if (heat?.uri === doc.uri.toString()) {
+				clearHeat();
 			}
 		}),
 		vscode.window.onDidChangeTextEditorSelection((e) => {

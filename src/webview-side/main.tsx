@@ -1,8 +1,8 @@
 import { render } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type {
-	FromSide, SideCallList, SideCalls, SideCommand, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideIncluders, SideIncludes, SideLens,
-	SideLogic, SideModel, SideOutline, SideRipple, SideRow, SideSettings, SideStory, SideThreads, SideWhy, ToSide,
+	FromSide, SideCallList, SideCalls, SideCommand, SideCost, SideDetailsTab, SideFlow, SideForwardCheck, SideFrame, SideGuide, SideHeat, SideIncluders, SideIncludes,
+	SideLens, SideLogic, SideModel, SideOutline, SideRipple, SideRow, SideSettings, SideStory, SideThreads, SideWhy, ToSide,
 } from '../side/protocol';
 import { CallListPanel } from './calllist';
 import { OutlinePanel } from './outline';
@@ -11,6 +11,7 @@ import { CodeView } from './CodeView';
 import { CostDetails, CostGroup } from './cost';
 import { FlowDetails, VariableChips } from './flow';
 import { GuideBar, GuideDetails, sameFileName, walkMarks } from './guide';
+import { HeatDetails } from './heat';
 import { IncludeDetails } from './includes';
 import { BAR_WARNINGS, LogicDetails, LogicGroup, PLAY_STEP_MS, PlayProps } from './logic';
 import { ModelBar, ModelDetails } from './model';
@@ -45,6 +46,7 @@ interface ViewState {
 	calls: SideCalls | null;
 	threads: SideThreads | null;
 	threadSel?: string; // the selected item of Threads and races
+	heat: SideHeat | null;
 	callView: CallView; // the function in the center of Call Hierarchy, the levels and the library calls
 	isCallGraphOpen: boolean;
 	ripple: SideRipple | null;
@@ -65,10 +67,10 @@ interface ViewState {
 }
 
 // The lenses with a details column, in the sequence of the tabs
-const DETAIL_LENSES: SideLens[] = ['flow', 'logic', 'cost', 'includes', 'calls', 'threads'];
+const DETAIL_LENSES: SideLens[] = ['flow', 'logic', 'cost', 'includes', 'calls', 'threads', 'heat'];
 const LENS_NAMES: Record<SideDetailsTab, string> = {
 	flow: 'Flow Lens', logic: 'Logic Map', cost: 'Hidden C++', review: 'Change Ripple', includes: 'Includes', calls: 'Calls', threads: 'Threads',
-	model: 'Model', guide: 'Guide',
+	heat: 'Heat', model: 'Model', guide: 'Guide',
 };
 
 // The model has blocks or notes in the file
@@ -152,6 +154,7 @@ function Toolbar({ state, isStory, isDetailsShown, onDetails }: { state: ViewSta
 				{lensButton('includes', 'c-read')}
 				{lensButton('calls', 'c-check')}
 				{lensButton('threads', 'c-ripple')}
+				{lensButton('heat', 'c-heat', 'The heat of each function: how much a change of the function can break.')}
 				{lensButton('review', 'c-ripple ring', 'Review the changes of the branch: the code that the changes can affect, as a story.')}
 			</div>
 			{!isStory && (DETAIL_LENSES.some((lens) => lenses?.[lens]) || hasModelLayers(state.model) || !!state.guide) && (
@@ -248,7 +251,7 @@ function App() {
 	const saved = vscode.getState();
 	const [state, setState] = useState<ViewState>({
 		lineCount: 0, rows: [], maxColumns: 0, settings: DEFAULT_SETTINGS, flow: null, logic: null, cost: null, includes: null, ripple: null,
-		story: null, calls: null, threads: null, model: null, guide: null, callView: { focus: -1, depth: 1, showLibrary: false }, isCallGraphOpen: false,
+		story: null, calls: null, threads: null, heat: null, model: null, guide: null, callView: { focus: -1, depth: 1, showLibrary: false }, isCallGraphOpen: false,
 		traceable: new Set(), callable: new Set(), navigable: new Set(), includeFile: -1, callList: null, outline: null, typeNames: new Set(),
 		isDetailsOpen: saved?.isDetailsOpen ?? true, detailsLens: saved?.detailsLens ?? 'flow',
 	});
@@ -353,6 +356,9 @@ function App() {
 				case 'cost':
 					setState((s) => ({ ...s, cost: message.cost }));
 					break;
+				case 'heat':
+					setState((s) => ({ ...s, heat: message.heat }));
+					break;
 				case 'calls':
 					// the function in the center follows the cursor. A function that the user put in the center stays while the
 					// cursor stays in the same function
@@ -444,6 +450,7 @@ function App() {
 	const isIncludesOn = !!state.frame?.lenses.includes;
 	const isCallsOn = !!state.frame?.lenses.calls;
 	const isThreadsOn = !!state.frame?.lenses.threads;
+	const isHeatOn = !!state.frame?.lenses.heat;
 	const isReviewOn = !!state.frame?.lenses.review;
 	// the side view shows the story of the review, or the file of the editor
 	const isStory = isReviewOn && state.frame?.mode === 'story';
@@ -455,6 +462,7 @@ function App() {
 	const includes = isIncludesOn ? state.includes : null;
 	const calls = isCallsOn ? state.calls : null;
 	const threads = isThreadsOn ? state.threads : null;
+	const heat = isHeatOn ? state.heat : null;
 	const threadItem = selectedItem(threads, state.threadSel);
 	// the text of a line of the file of the side view, for the lanes of Threads and races
 	const lineTextOf = (file: string, line: number) => (sameFileName(file, state.file) ? state.rows[line - 1]?.text : undefined);
@@ -477,14 +485,14 @@ function App() {
 
 	// When a lens turns on, the details column shows its tab. At the start, the column shows the saved tab, or the tab of
 	// the lens that turned on last, for example the lens that opened the side view.
-	const lensesBefore = useRef<Record<'flow' | 'logic' | 'cost' | 'includes' | 'calls' | 'threads', boolean> | undefined>(undefined);
+	const lensesBefore = useRef<Record<'flow' | 'logic' | 'cost' | 'includes' | 'calls' | 'threads' | 'heat', boolean> | undefined>(undefined);
 	const hasFrame = !!state.frame;
 	useEffect(() => {
 		if (!hasFrame) {
 			return;
 		}
 		const before = lensesBefore.current;
-		const now = { flow: isFlowOn, logic: isLogicOn, cost: isCostOn, includes: isIncludesOn, calls: isCallsOn, threads: isThreadsOn };
+		const now = { flow: isFlowOn, logic: isLogicOn, cost: isCostOn, includes: isIncludesOn, calls: isCallsOn, threads: isThreadsOn, heat: isHeatOn };
 		lensesBefore.current = now;
 		const last = state.frame?.lastLens;
 		if (!before) {
@@ -493,11 +501,11 @@ function App() {
 			}
 			return;
 		}
-		const turnedOn = (['threads', 'calls', 'includes', 'cost', 'logic', 'flow'] as const).find((lens) => now[lens] && !before[lens]);
+		const turnedOn = (['heat', 'threads', 'calls', 'includes', 'cost', 'logic', 'flow'] as const).find((lens) => now[lens] && !before[lens]);
 		if (turnedOn) {
 			showDetails(turnedOn);
 		}
-	}, [hasFrame, isFlowOn, isLogicOn, isCostOn, isIncludesOn, isCallsOn, isThreadsOn]);
+	}, [hasFrame, isFlowOn, isLogicOn, isCostOn, isIncludesOn, isCallsOn, isThreadsOn, isHeatOn]);
 	const detailLenses: SideDetailsTab[] = [
 		...DETAIL_LENSES.filter((lens) => state.frame?.lenses[lens]),
 		...(hasModelLayers(state.model) ? ['model' as const] : []),
@@ -585,6 +593,7 @@ function App() {
 						calls={calls}
 						threads={threads}
 						threadItem={threadItem}
+						heat={heat}
 						ripple={ripple}
 						model={shownModel}
 						guideLines={guideLines}
@@ -617,6 +626,7 @@ function App() {
 							openDetails('calls');
 						}}
 						onThreadHint={() => openDetails('threads')}
+						onHeatHint={() => openDetails('heat')}
 						onModelTag={(block) => {
 							if (block) {
 								setState((s) => ({ ...s, modelSel: block }));
@@ -662,6 +672,7 @@ function App() {
 							<ThreadDetails threads={threads} selected={threadItem?.key} text={lineTextOf} onSelect={(key) => setState((s) => ({ ...s, threadSel: key }))} />
 						)}
 						{detailsLens === 'guide' && <GuideDetails guide={state.guide} file={state.file} rows={state.rows} settings={state.settings} />}
+						{detailsLens === 'heat' && <HeatDetails heat={heat} cursor={state.cursor} />}
 						{detailsLens === 'model' && (
 							<ModelDetails model={state.model} isShown={!!shownModel} fn={state.frame?.fn} fnRange={state.frame?.fnRange} mcp={state.frame?.mcp}
 								selected={state.modelSel}

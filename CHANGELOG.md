@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Heat: the new lens shows how much a change of each function can break. Each function gets a score from 0 to 100, 1 to 5 flames before the line number of its name, and a strip in the color of its band.
+- The score adds points of reach, risk and history. The reach comes from the source files that include the declaration. The risk comes from the decisions, the nesting, the writes to shared state, the data that threads share, the costs in loops and the length. The history comes from the commits of git. The reach does not count the callers yet.
+- The tab Heat shows each point of the function at the cursor with its reason, and the functions of the file, the hottest first.
+- The command **DataFlow: Toggle Heat**, and the theme colors `dataflow.heatCool`, `dataflow.heatWarm`, `dataflow.heatHot` and `dataflow.heatVeryHot`.
+- The engine has the new request `dataflow/metrics`, and the MCP server has the new tool `get_heat`.
+
 ## 0.4.0
 
 - Diff walk: the side view goes through the changes of a diff, one step after the other. The changes are the changes that are not committed, the changes against a branch, or the changes since a commit. The C and C++ files that git does not track yet are new files.

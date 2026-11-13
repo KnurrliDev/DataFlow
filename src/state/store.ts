@@ -3,6 +3,7 @@ import { CompileDbInfo } from '../cdb/manager';
 import { EngineFunction, EngineState, MemberModel } from '../engine/client';
 import type { CostCategory, CostItemInfo, CostMark } from '../lenses/cost';
 import type { FlowView } from '../lenses/flow';
+import type { HeatModel } from '../lenses/heat';
 import type { LogicView, LogicWarning } from '../lenses/logic';
 import type { ReviewState } from '../lenses/ripple';
 import type { PathStep } from '../logic/paths';
@@ -10,7 +11,15 @@ import type { DiffLine } from '../review/git';
 import type { SideCalls, SideGuide, SideIncluders, SideIncludes, SideMcp, SideModel, SideThreads } from '../side/protocol';
 import type { RippleModel } from '../review/ripple';
 
-export type Lens = 'flow' | 'logic' | 'cost' | 'review' | 'includes' | 'calls' | 'threads';
+export type Lens = 'flow' | 'logic' | 'cost' | 'review' | 'includes' | 'calls' | 'threads' | 'heat';
+
+// The heat of the functions of the file. While a computation runs, the old model of the same file stays
+export interface HeatLayerState {
+	file: string;
+	isLoading: boolean;
+	model?: HeatModel;
+	error?: string;
+}
 
 // The variable or the data member that Flow Lens traces. Lines start at 0.
 export interface TraceState {
@@ -95,6 +104,7 @@ export interface DataFlowState {
 	includersLayer?: SideIncluders; // the source files of the compile databases that include a file, for Included by
 	callsLayer?: SideCalls; // the call graph of the file
 	threadsLayer?: SideThreads; // the threads and the shared data of the file
+	heatLayer?: HeatLayerState; // the heat of the functions of the file
 	review?: ReviewState; // the state of the last review
 	rippleLayer?: RippleLayerState; // the ripple of the last review
 	modelLayers: SideModel[]; // the blocks and the notes of a language model, one layer for each file
@@ -110,7 +120,7 @@ export class StateStore implements vscode.Disposable {
 		engine: 'stopped',
 		databases: [],
 		parsing: [],
-		lenses: { flow: true, logic: true, cost: true, review: false, includes: true, calls: true, threads: true },
+		lenses: { flow: true, logic: true, cost: true, review: false, includes: true, calls: true, threads: true, heat: false },
 		modelLayers: [],
 		isModelShown: true,
 		mcp: { state: 'off' },

@@ -158,6 +158,11 @@
         "category": "DataFlow"
       },
       {
+        "command": "dataflow.toggleHeat",
+        "title": "Toggle Heat",
+        "category": "DataFlow"
+      },
+      {
         "command": "dataflow.reviewChanges",
         "title": "Review Changes",
         "category": "DataFlow"
@@ -707,6 +712,46 @@
           "dark": "charts.blue",
           "highContrast": "charts.blue",
           "highContrastLight": "charts.blue"
+        }
+      },
+      {
+        "id": "dataflow.heatCool",
+        "description": "DataFlow: the color of a cool function (a score under 25) in the lens Heat: the strip next to the function and its flames.",
+        "defaults": {
+          "light": "charts.blue",
+          "dark": "charts.blue",
+          "highContrast": "charts.blue",
+          "highContrastLight": "charts.blue"
+        }
+      },
+      {
+        "id": "dataflow.heatWarm",
+        "description": "DataFlow: the color of a warm function (a score from 25 to 49) in the lens Heat: the strip next to the function and its flames.",
+        "defaults": {
+          "light": "charts.yellow",
+          "dark": "charts.yellow",
+          "highContrast": "charts.yellow",
+          "highContrastLight": "charts.yellow"
+        }
+      },
+      {
+        "id": "dataflow.heatHot",
+        "description": "DataFlow: the color of a hot function (a score from 50 to 74) in the lens Heat: the strip next to the function and its flames.",
+        "defaults": {
+          "light": "charts.orange",
+          "dark": "charts.orange",
+          "highContrast": "charts.orange",
+          "highContrastLight": "charts.orange"
+        }
+      },
+      {
+        "id": "dataflow.heatVeryHot",
+        "description": "DataFlow: the color of a very hot function (a score from 75) in the lens Heat: the strip next to the function and its flames.",
+        "defaults": {
+          "light": "charts.red",
+          "dark": "charts.red",
+          "highContrast": "charts.red",
+          "highContrastLight": "charts.red"
         }
       }
     ]

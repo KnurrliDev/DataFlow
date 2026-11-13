@@ -218,6 +218,33 @@ test('Diff walk: the command with the list of branches, the marks of the diff in
 	assert.equal(r.closed, true);
 });
 
+test('Heat: the flames and the strips of the functions, the tab Heat with the reasons of the function at the cursor, a click in the list and Heat off', { timeout: 600000 }, async () => {
+	const r = await run('side-heat-snapshot.mjs');
+	const h = r.heat;
+	// the tab lists the 6 functions of the file, the hottest first, each with 1 to 5 flames
+	assert.equal(h.items.length, 6, JSON.stringify(h.items));
+	const scores = h.items.map((i) => i.score);
+	assert.deepEqual(scores, [...scores].sort((a, b) => b - a));
+	assert.ok(h.items.every((i) => i.flames >= 1 && i.flames <= 5), JSON.stringify(h.items));
+	// the code: flames in the color of the band on the line of the name of each rendered function, and the strips
+	assert.ok(h.flames.length > 0, JSON.stringify(h));
+	for (const f of h.flames) {
+		assert.ok(f.count >= 1 && f.count <= 5 && /^b-(cool|warm|hot|veryHot)$/.test(f.band), JSON.stringify(f));
+		assert.match(f.title, /^Heat \d+ of 100: (cool|warm|hot|very hot)\. Show the reasons in the tab Heat\.$/);
+	}
+	assert.ok(h.bars > 0);
+	// the function at the cursor: process() with the points of reach, risk and history
+	assert.equal(h.current.name, 'electricity::power_ctrl::process');
+	assert.deepEqual(h.current.groups, ['Reach', 'Risk', 'History']);
+	assert.ok(h.current.reasons.includes('+8 types.hpp with the declaration is in 2 of 2 source files'), JSON.stringify(h.current.reasons));
+	assert.ok(h.current.reasons.some((t) => /^\+\d+ \d+ decisions$/.test(t)), JSON.stringify(h.current.reasons));
+	assert.ok(h.current.reasons.includes('+2 Changed in 1 commit') && h.current.reasons.includes('+2 Changed in the last 30 days'), JSON.stringify(h.current.reasons));
+	assert.ok(h.notices.some((n) => /does not count the callers/.test(n)), JSON.stringify(h.notices));
+	// a click in the list shows the function in the code, and Heat off removes the flames and the strips
+	assert.equal(typeof r.revealed, 'number');
+	assert.equal(r.off, true);
+});
+
 test('Flow Lens: the rails, the dimmed lines, the hover card with its curve, a click trace and the details column', { timeout: 600000 }, async () => {
 	const r = await run('side-flow-snapshot.mjs');
 	assert.ok(r.bestFit.rails > 0 && r.bestFit.dim > 0, JSON.stringify(r.bestFit).slice(0, 300));

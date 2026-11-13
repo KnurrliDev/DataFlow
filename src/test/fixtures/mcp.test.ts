@@ -128,7 +128,7 @@ suite('MCP server on the fixture', () => {
 	test('The server lists its tools, and get_view gives the file of the editor', async () => {
 		const list = await rpc('tools/list');
 		assert.deepStrictEqual(list.result.tools.map((t: { name: string }) => t.name), [
-			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'show_blocks', 'show_flow',
+			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'get_heat', 'show_blocks', 'show_flow',
 			'highlight', 'comment_lines', 'add_detail', 'clear', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step', 'close_guide',
 		]);
 		// only close_guide removes data of the user: the marks and the notes of the steps

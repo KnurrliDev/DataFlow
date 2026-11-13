@@ -1,14 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { activeGuide, ActiveGuide, GuideText, indentGuides } from '../side/guides';
 import type {
-	SideCalls, SideCardKind, SideCost, SideFlow, SideFlowColor, SideFlowMark, SideFlowTag, SideIncludes, SideLogic, SideModel, SideNoteKind,
-	SideRange, SideRipple, SideRow, SideSettings, SideThreadItem, SideThreads, SideWhy,
+	SideCalls, SideCardKind, SideCost, SideFlow, SideFlowColor, SideFlowMark, SideFlowTag, SideHeat, SideHeatFunction, SideIncludes, SideLogic, SideModel,
+	SideNoteKind, SideRange, SideRipple, SideRow, SideSettings, SideThreadItem, SideThreads, SideWhy,
 } from '../side/protocol';
 import { CallHint, callHints } from './calls';
 import { codeParts } from './code';
 import { CostCard, CostChip, costDecorations, LookupConnector, RangePoint } from './cost';
 import { Decoration, FlowCard, FlowCurves, flowDecorations, FlowLane, laneWidth, MarkPoint } from './flow';
 import { chipText, chipTitle, type DiffChip, type WalkMarks } from './guide';
+import { Flames, heatTitle } from './heat';
 import { lexSpans } from '../side/model';
 import { IncludeHint, includeHints } from './includes';
 import { LogicHint, logicDecorations, WhyCard } from './logic';
@@ -29,6 +30,8 @@ const WHY_DELAY_MS = 250;
 const BAR_STEP = 5;
 // The width of the symbol of a detail of a model at the end of a line in px, as .detail-mark gives it
 const DETAIL_MARK_PX = 16;
+// The line numbers get this width in px for the flames of the lens Heat, while the lens shows
+const HEAT_EXTRA = 48;
 
 export interface CodeViewProps {
 	file?: string;
@@ -47,6 +50,7 @@ export interface CodeViewProps {
 	calls: SideCalls | null;
 	threads: SideThreads | null;
 	threadItem?: SideThreadItem; // the selected item of Threads and races
+	heat: SideHeat | null;
 	ripple: SideRipple | null;
 	model: SideModel | null; // the blocks and the notes of a language model
 	guideLines?: { first: number; last: number; label: string; isWalk: boolean }; // the lines of the current step of a guide
@@ -72,8 +76,23 @@ export interface CodeViewProps {
 	onIncludeHint: (node: number) => void; // the user clicked a hint of Include Hierarchy
 	onCallHint: (fn: number) => void; // the user clicked a hint of Call Hierarchy. fn is the called function
 	onThreadHint: () => void; // the user clicked a tag of Threads and races
+	onHeatHint: () => void; // the user clicked the flames of a function
 	onModelTag: (block?: string) => void; // the user clicked a title or a note of the model
 	onRendered: (rows: number) => void; // called after each render, for the time of the render
+}
+
+// The lens Heat: the band of each line of a function, and the function on the line of its name, for the flames. The
+// larger functions come first, so an inner function, for example of a local class, gets its own band
+function heatDecorations(heat: SideHeat | null): { bands: Map<number, SideHeatFunction['band']>; flames: Map<number, SideHeatFunction> } {
+	const bands = new Map<number, SideHeatFunction['band']>();
+	const flames = new Map<number, SideHeatFunction>();
+	for (const fn of [...(heat?.functions ?? [])].sort((a, b) => (b.last - b.first) - (a.last - a.first))) {
+		for (let line = fn.first; line <= fn.last; line++) {
+			bands.set(line, fn.band);
+		}
+		flames.set(fn.nameLine, fn);
+	}
+	return { bands, flames };
 }
 
 // The place of a line in the current step of a guided review, for the border around the lines of the step
@@ -110,6 +129,9 @@ interface RowProps {
 	threadLane?: 'worker' | 'both'; // the line runs on a worker thread
 	threadHints?: ThreadHint[];
 	onThreadHint: () => void;
+	heatBand?: SideHeatFunction['band']; // the line is in a function with a heat score
+	heatFn?: SideHeatFunction; // the function whose name is on the line, for its flames
+	onHeatHint: () => void;
 	ripple?: string; // the classes of the line for Change Ripple
 	rippleHints?: string[];
 	modelBars?: ModelBarMark[]; // the bars of the blocks of the model on the line, one for each level
@@ -160,6 +182,13 @@ function Row(props: RowProps) {
 		<div class={classes} data-line={line}>
 			<span class="ln">
 				{props.modelBars?.map((b) => <span class={`mbar lv-${Math.min(b.level, 4)}${b.isFirst ? ' first' : ''}${b.isLast ? ' last' : ''}`} />)}
+				{props.heatBand && <span class={`heat-bar b-${props.heatBand}`} aria-hidden="true" />}
+				{props.heatFn && (
+					<button type="button" class={`heat-hint b-${props.heatFn.band}`} title={`${heatTitle(props.heatFn)}. Show the reasons in the tab Heat.`}
+						aria-label={heatTitle(props.heatFn)} onClick={props.onHeatHint}>
+						<Flames count={props.heatFn.flames} />
+					</button>
+				)}
 				{line}
 			</span>
 			{flow && width > 0 && (
@@ -607,7 +636,7 @@ export function CodeView(props: CodeViewProps) {
 		}
 		if (e.button !== 0 || (selection && !selection.isCollapsed) || target.closest('.card') || target.closest('.flow-tag')
 			|| target.closest('.inc-hint') || target.closest('.call-hint') || target.closest('.thread-hint') || target.closest('.model-tag')
-			|| target.closest('.end-mark')) {
+			|| target.closest('.heat-hint') || target.closest('.end-mark')) {
 			return;
 		}
 		const rowEl = target.closest('.row') as HTMLElement | null;
@@ -927,6 +956,7 @@ export function CodeView(props: CodeViewProps) {
 	const rippleDecos = useMemo(() => rippleDecorations(props.ripple), [props.ripple]);
 	const threadDecos = useMemo(() => threadDecorations(props.threads, props.threadItem), [props.threads, props.threadItem]);
 	const modelDecos = useMemo(() => modelDecorations(props.model), [props.model]);
+	const heatDecos = useMemo(() => heatDecorations(props.heat), [props.heat]);
 	const detailDecos = useMemo(() => detailBoxes(props.model, (line) => rows[line - 1]?.text, detailAt?.id), [props.model, rows, detailAt?.id]);
 	// the boxes of Logic Map and of Hidden C++ on each line, in the sequence for codeParts
 	const wraps = useMemo(() => {
@@ -946,9 +976,11 @@ export function CodeView(props: CodeViewProps) {
 	const lanes = laneWidth(flow);
 	// the line numbers have space for the bars of two levels of blocks. Each level after the second makes them wider
 	const barsExtra = Math.max(0, modelDecos.levels - 2) * BAR_STEP;
+	// the flames of Heat get their own width before the line numbers, also while the first heat of the file is not ready
+	const heatExtra = props.heat ? HEAT_EXTRA : 0;
 	// the position of a reference for the curves: the middle of the name, and the top and the bottom of its row
 	// the left edge of the code in the content of the view: the line numbers and the lane come first
-	const codeLeft = gutter * (charWidth - settings.letterSpacing) + 26 + barsExtra + lanes;
+	const codeLeft = gutter * (charWidth - settings.letterSpacing) + 26 + barsExtra + heatExtra + lanes;
 	const pointOfRange = (r: SideRange): RangePoint => {
 		const rowText = rows[r.line - 1]?.text ?? '';
 		const start = visualColumn(rowText, r.start, settings.tabSize);
@@ -1000,6 +1032,9 @@ export function CodeView(props: CodeViewProps) {
 				threadLane={threadDecos.lanes.get(line)}
 				threadHints={threadDecos.hints.get(line)}
 				onThreadHint={props.onThreadHint}
+				heatBand={heatDecos.bands.get(line)}
+				heatFn={heatDecos.flames.get(line)}
+				onHeatHint={props.onHeatHint}
 				ripple={rippleDecos.lines.get(line)}
 				rippleHints={rippleDecos.hints.get(line)}
 				modelBars={modelDecos.bars.get(line)}
@@ -1045,6 +1080,7 @@ export function CodeView(props: CodeViewProps) {
 				'--row-height': `${rowHeight}px`,
 				'--gutter': `${gutter}ch`,
 				'--bars-extra': `${barsExtra}px`,
+				'--heat-extra': `${heatExtra}px`,
 				'tabSize': String(settings.tabSize),
 				'fontFeatureSettings': settings.ligatures,
 				'letterSpacing': `${settings.letterSpacing}px`,
@@ -1055,7 +1091,7 @@ export function CodeView(props: CodeViewProps) {
 			<div
 				class="spacer"
 				ref={spacer}
-				style={{ height: `${contentHeight}px`, minWidth: `calc(${gutter + props.maxColumns}ch + ${lanes + barsExtra + 56}px)` }}
+				style={{ height: `${contentHeight}px`, minWidth: `calc(${gutter + props.maxColumns}ch + ${lanes + barsExtra + heatExtra + 56}px)` }}
 			>
 				<div class="rows" style={{ transform: `translateY(${(firstLine - 1) * rowHeight}px)` }}>{items}</div>
 				{flow && hover && hover.mark < flow.marks.length && (

@@ -230,6 +230,21 @@ export class ReviewRepository {
 		return heads.find((h) => h.startsWith('origin/')) ?? heads[0];
 	}
 
+	// The blame of a file in the porcelain format of git. With text, git blames the text of an editor, and the lines that
+	// are not committed have the commit 0000000. Undefined if git cannot blame the file, for example a file that git does
+	// not track
+	async blame(file: string, text?: string): Promise<string | undefined> {
+		const relative = path.relative(this.root, file).replace(/\\/g, '/');
+		const args = ['blame', '--porcelain', ...(text !== undefined ? ['--contents', '-'] : []), '--', relative];
+		try {
+			const run = execFileAsync(this.api.git.path, args, { cwd: this.root, windowsHide: true, maxBuffer: GIT_MAX_OUTPUT });
+			run.child.stdin?.end(text ?? '');
+			return (await run).stdout;
+		} catch {
+			return undefined;
+		}
+	}
+
 	// The commit of a ref, for example HEAD~2, a tag or a branch. Undefined if git does not find a commit for the ref. A
 	// ref that starts with "-" is not a ref, because git reads it as an option
 	async commitOf(ref: string): Promise<string | undefined> {

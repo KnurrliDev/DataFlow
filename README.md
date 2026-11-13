@@ -16,6 +16,7 @@ The side view shows the file of the active C++ editor with the colors of your th
 | Include Hierarchy | The lines that each include adds, the includes that the file possibly does not use, and the includes that forward declarations can replace |
 | Call Hierarchy | The callers and the called functions, with the data of each call |
 | Threads and races | The code that runs on a different thread, the shared data, and the protection of each access |
+| Heat | How much a change of each function can break: a score from 0 to 100 with 1 to 5 flames, and the reason of each point |
 | Change Ripple | The code that the changes of your branch affect, as a story for a review |
 
 Ctrl+click on a name in the side view goes to its definition, and Alt+Left goes back. [Go to a definition](docs/usage.md#go-to-a-definition)

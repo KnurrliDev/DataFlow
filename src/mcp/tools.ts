@@ -25,6 +25,7 @@ export interface McpHost {
 	hidden(file: string | undefined, fn: FunctionArg): Promise<object>;
 	includes(file?: string): Promise<object>;
 	outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<object>;
+	heat(file: string | undefined, fn: string | undefined): Promise<object>;
 	showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<object>;
 	highlight(file: string | undefined, ranges: ModelNoteInput[], append: boolean): Promise<object>;
 	comment(file: string | undefined, comments: ModelCommentInput[], append: boolean): Promise<object>;
@@ -40,7 +41,8 @@ export interface McpHost {
 
 export const INSTRUCTIONS = [
 	'DataFlow analyzes the C++ code that is open in VS Code with the Clang compiler, and it shows the results in its side view beside the editor.',
-	'The read tools (get_*, list_functions) give facts of the engine: statements, data flow, calls, threads and races, hidden operations, includes and the outline of a type.',
+	'The read tools (get_*, list_functions) give facts of the engine: statements, data flow, calls, threads and races, hidden operations, includes, the outline of a type '
+	+ 'and the heat of the functions: how much a change of each function can break.',
 	'The view tools (show_blocks, show_flow, highlight, comment_lines, add_detail, clear) change the side view that the user looks at.',
 	'Lines start at 1. If you omit "file", a tool uses the file of the active editor, or else the file of the side view. Call get_view first to see what the user looks at.',
 	'If no C++ editor shows, the cursor of get_view is the cursor of the side view, where the user clicked, and the view tools move only the side view.',
@@ -201,6 +203,13 @@ export function createTools(host: McpHost): McpTool[] {
 				line: { type: 'integer', minimum: 1, description: 'A line with the name of the type, for example the line of its definition. Use it instead of "name".' },
 			},
 			[], true, (a) => host.outline(a.text('file'), a.text('name'), a.line('line'))),
+		tool('get_heat', 'Get the heat of the functions',
+			'The heat score of the functions of a C++ file: how much a change of a function can break, from 0 to 100, the hottest first. The score adds points of reach '
+			+ '(the source files that include the header of the declaration, and a virtual function), risk (decisions, nesting, writes to shared state, data that threads share, '
+			+ 'allocations and copies in loops, a long body) and history (the commits, the fixes and the recent changes in git). Each point has a reason. '
+			+ 'For a review, start with the hottest changed functions.',
+			{ file: FILE, function: { ...FUNCTION, description: 'One function: its qualified name or its name. Default: all functions of the file.' } },
+			[], true, (a) => host.heat(a.text('file'), a.text('function'))),
 		tool('show_blocks', 'Show logical blocks',
 			'Shows logical blocks of one function in the DataFlow side view: a bar beside the lines of each block, its title at the end of its first line, and a list with the summaries and the data of the blocks. '
 			+ `Give the blocks in the sequence of the lines, with no overlap. A block can have children, for example one child for each branch of an if chain, and a child can have children too: ${MAX_BLOCK_LEVELS} levels at most. `

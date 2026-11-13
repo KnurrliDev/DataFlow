@@ -122,7 +122,8 @@ select.choice option { color: var(--vscode-dropdown-foreground); background: var
 .row { display: flex; height: var(--row-height); line-height: var(--row-height); white-space: pre; cursor: text; }
 .row.cursor { background: var(--vscode-editor-lineHighlightBackground, transparent);
   box-shadow: inset 0 1px 0 var(--vscode-editor-lineHighlightBorder, transparent), inset 0 -1px 0 var(--vscode-editor-lineHighlightBorder, transparent); }
-.ln { position: sticky; left: 0; z-index: 1; flex: none; box-sizing: border-box; width: calc(var(--gutter) + 26px + var(--bars-extra, 0px));
+.ln { position: sticky; left: 0; z-index: 1; flex: none; box-sizing: border-box;
+  width: calc(var(--gutter) + 26px + var(--bars-extra, 0px) + var(--heat-extra, 0px));
   padding: 0 16px 0 10px;
   text-align: right; user-select: none; color: var(--vscode-editorLineNumber-foreground); background: var(--vscode-editor-background); }
 .row.cursor .ln { color: var(--vscode-editorLineNumber-activeForeground); }
@@ -141,10 +142,11 @@ select.choice option { color: var(--vscode-dropdown-foreground); background: var
 .c-problem { --c: var(--vscode-dataflow-problem); }
 .c-path { --c: var(--vscode-dataflow-pathLine); }
 .c-ripple { --c: var(--vscode-dataflow-event); }
+.c-heat { --c: var(--vscode-dataflow-heatHot); }
 .c-muted { --c: var(--vscode-descriptionForeground); }
 
 /* the rails at the left of the code. They stay next to the line numbers in a horizontal scroll */
-.lane { position: sticky; left: calc(var(--gutter) + 26px + var(--bars-extra, 0px)); z-index: 1; flex: none; height: var(--row-height);
+.lane { position: sticky; left: calc(var(--gutter) + 26px + var(--bars-extra, 0px) + var(--heat-extra, 0px)); z-index: 1; flex: none; height: var(--row-height);
   background: var(--vscode-editor-background); }
 .lane svg { display: block; overflow: visible; }
 .rail { fill: none; stroke: var(--c); stroke-width: 1.6; stroke-linecap: round; }
@@ -829,6 +831,41 @@ button.mnote { cursor: pointer; }
 .df-minus { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-dataflow-problem)); }
 .rg-body > .rg-diff { margin: 0 -8px 0 -32px; border-top: 1px solid var(--vscode-panel-border, transparent);
   border-bottom: 1px solid var(--vscode-panel-border, transparent); }
+
+/* the lens Heat: the color of each band, the strip next to the line numbers, the flames and the tab Heat */
+.b-cool { --hc: var(--vscode-dataflow-heatCool); }
+.b-warm { --hc: var(--vscode-dataflow-heatWarm); }
+.b-hot { --hc: var(--vscode-dataflow-heatHot); }
+.b-veryHot { --hc: var(--vscode-dataflow-heatVeryHot); }
+.heat-bar { position: absolute; top: 0; bottom: 0; right: 5px; width: 3px; background: var(--hc); opacity: 0.85; pointer-events: none; }
+/* the flames in the line numbers, after the bars of the blocks of a model */
+.heat-hint { position: absolute; top: 0; bottom: 0; left: calc(12px + var(--bars-extra, 0px)); display: inline-flex; align-items: center;
+  padding: 0 2px; border: 0; border-radius: 3px; font: inherit; color: var(--hc); background: transparent; cursor: pointer; }
+.heat-hint:hover { background: color-mix(in srgb, var(--hc) 20%, transparent); }
+.heat-hint .flame { width: 0.62em; height: 0.82em; }
+.flames { display: inline-flex; align-items: center; gap: 1px; }
+.flame { width: 0.72em; height: 0.94em; fill: currentColor; }
+.heat-busy { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; color: var(--vscode-descriptionForeground); }
+.spinner { flex: none; box-sizing: border-box; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+  border-top-color: var(--vscode-progressBar-background, var(--vscode-focusBorder)); animation: df-spin 0.9s linear infinite; }
+@keyframes df-spin { to { transform: rotate(360deg); } }
+.no-motion .spinner { animation: none; }
+.heat-current { margin-bottom: 14px; padding-left: 8px; border-left: 3px solid var(--hc); }
+.heat-score-line { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; color: var(--hc); }
+.heat-score-line > span:last-child { color: var(--vscode-foreground); }
+.heat-group { margin: 6px 0; }
+.heat-group-title { font-weight: 600; }
+.heat-reasons { margin: 2px 0 0; padding: 0; list-style: none; }
+.heat-reasons li { display: flex; gap: 8px; padding: 1px 0; }
+.heat-points { flex: none; min-width: 2.5em; text-align: right; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
+.heat-list { margin: 4px 0 10px; padding: 0; list-style: none; }
+.heat-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 4px; border: 0; border-radius: 4px; font: inherit;
+  text-align: left; color: var(--vscode-foreground); background: transparent; cursor: pointer; }
+.heat-item:hover, .heat-item.current { background: var(--vscode-list-hoverBackground); }
+.heat-item .flames { flex: none; min-width: 4.4em; color: var(--hc); }
+.heat-score { flex: none; min-width: 2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
+.heat-item .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
 
 // The number of levels with their own rule for the indent guides, as in the text editor

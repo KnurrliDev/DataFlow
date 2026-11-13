@@ -8,6 +8,7 @@
 #include <dataflow/includes.hpp>
 #include <dataflow/logic.hpp>
 #include <dataflow/member.hpp>
+#include <dataflow/metrics.hpp>
 #include <dataflow/outline.hpp>
 #include <dataflow/protocol.hpp>
 #include <dataflow/slice.hpp>
@@ -604,6 +605,13 @@ namespace DataFlow {
                                  out["function"] = function_to_json(**fn, _ast.getSourceManager());
                                  return out;
                                });
+    // the metrics of the functions of the file for the heat score: decisions, depth, loops, writes and costs in loops
+    if (_method == "dataflow/metrics")
+      return post_file_request(_srv, *_id, *file, [](clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
+        const std::vector<const clang::FunctionDecl*> fns = main_file_functions(_ast);
+        return metrics_to_json(build_metrics(fns, main_file_instantiations(_ast), _ast.getASTContext()),
+                               _ast.getSourceManager());
+      });
     // with a unit, the hidden c++ of a header in the translation unit of a source file that includes it. thus the
     // templates of the header get the items of their instantiations in the source file
     if (_method == "dataflow/cost") {

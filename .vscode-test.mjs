@@ -37,7 +37,7 @@ export default defineConfig([
 	// scripts/prepare-fixtures.mjs makes it from the CMake fixture.
 	{
 		label: 'review',
-		files: ['out/test/fixtures/ripple.test.js', 'out/test/fixtures/side-ripple.test.js', 'out/test/fixtures/walk.test.js'],
+		files: ['out/test/fixtures/ripple.test.js', 'out/test/fixtures/side-ripple.test.js', 'out/test/fixtures/walk.test.js', 'out/test/fixtures/heat.test.js'],
 		workspaceFolder: 'build/fixtures/battery-review',
 		...common,
 	},

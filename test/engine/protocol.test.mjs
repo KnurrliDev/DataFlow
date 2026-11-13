@@ -681,6 +681,75 @@ test('finds new and make_unique as allocations, but not a placement new', async 
 	]);
 });
 
+test('metrics: the decisions, the depth, the loops, the shared writes, the costs in loops and the first declaration', async () => {
+	const added = [
+		'#include <memory>',
+		'int df_metrics(int& _out, int* _ptr, int _n) {',
+		'  static int calls = 0;',
+		'  ++calls;',
+		'  int sum = 0;',
+		'  for (int i = 0; i < _n; ++i) {',
+		'    if (i % 2 == 0 && i > 2) {',
+		'      sum += i;',
+		'    } else if (i > 5) {',
+		'      sum -= i;',
+		'    }',
+		'    const auto p = std::make_unique<int>(i);',
+		'    sum += *p;',
+		'  }',
+		'  switch (_n) {',
+		'    case 1: sum = 1; break;',
+		'    case 2: sum = 2; break;',
+		'    default: break;',
+		'  }',
+		'  _ptr = nullptr;',
+		'  _out = sum > 0 ? sum : 0;',
+		'  return sum;',
+		'}',
+		'struct DfBase {',
+		'  virtual ~DfBase() = default;',
+		'  virtual int value() const { return 1; }',
+		'};',
+		'struct DfDerived : DfBase {',
+		'  int value() const override { return 2; }',
+		'};',
+	];
+	const base = readFileSync(fixture, 'utf8').replace(/\r?\n?$/, '\n');
+	const text = base + added.join('\n') + '\n';
+	engine.notify('textDocument/didOpen', { file: fixture, text, version: 3 });
+	const res = await engine.send('dataflow/metrics', { file: fixture });
+	engine.notify('textDocument/didClose', { file: fixture });
+	assert.equal(res.error, undefined, JSON.stringify(res.error));
+	assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+
+	// the line of an added line, and a path in a form for a comparison
+	const lineOf = (s) => base.split('\n').length + added.findIndex((l) => l.includes(s));
+	const where = (d) => ({ file: d.file.toLowerCase(), line: d.line });
+	const fn = (name) => res.result.functions.find((f) => f.qualifiedName === name);
+	const m = fn('df_metrics');
+	// for, if, &&, else if, 2 case labels and ?:. the else if has the depth of its if
+	assert.deepEqual([m.decisions, m.depth], [7, 2]);
+	assert.deepEqual(m.loops, [[lineOf('i < _n'), lineOf('sum += *p;') + 1]]);
+	assert.equal(m.bodyLines, lineOf('return sum;') + 2 - lineOf('int df_metrics('));
+	// the static local and the reference parameter are shared state. sum is local, and _ptr = nullptr changes only the
+	// pointer
+	assert.deepEqual(m.writes, [{ path: 'calls', scope: 'global' }, { path: '_out', scope: 'param' }]);
+	assert.deepEqual([m.allocationsInLoops, m.copiesInLoops], [1, 0]);
+	assert.deepEqual(where(m.declaration), { file: fixture.toLowerCase(), line: lineOf('int df_metrics(') });
+
+	// virtual and override
+	const values = res.result.functions.filter((f) => f.name === 'value').map((f) => [f.qualifiedName, f.virtual ?? false, f.override ?? false]);
+	assert.deepEqual(values, [['DfBase::value', true, false], ['DfDerived::value', true, true]]);
+
+	// process() and the overload of stable_readings with three parameters have their first declarations in the header
+	const process = fn('electricity::power_ctrl::process');
+	assert.deepEqual(where(process.declaration), { file: header.toLowerCase(), line: 171 });
+	assert.ok(process.decisions > 5, JSON.stringify(process));
+	const readings = res.result.functions.find((f) => f.name === 'stable_readings');
+	const headerLine = readFileSync(header, 'utf8').split(/\r?\n/).findIndex((l) => l.startsWith('std::vector<MeterRead> stable_readings(const MeterFeeds')) + 1;
+	assert.deepEqual(where(readings.declaration), { file: header.toLowerCase(), line: headerLine });
+});
+
 test('templates: no instantiations in the function list, and Hidden C++ gets the items of the instantiations', async () => {
 	const base = readFileSync(fixture, 'utf8').replace(/\r?\n?$/, '\n');
 	const first = base.split('\n').length;

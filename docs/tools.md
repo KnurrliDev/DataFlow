@@ -229,6 +229,7 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`get_hidden`](#get_hidden) | read | The data of Hidden C++ |
 | [`get_includes`](#get_includes) | read | The data of Include Hierarchy, with the translation units of the compile database that include the file |
 | [`get_outline`](#get_outline) | read | The outline of a type: the members, the annotations and the memory layout |
+| [`get_heat`](#get_heat) | read | The heat score of each function of a file: how much a change of the function can break, with the reason of each point |
 | [`get_review`](#get_review) | read | The C and C++ files under the paths of a guided review, with the diff of each changed file against the target branch |
 | [`get_diff`](#get_diff) | read | The hunks of the changed C and C++ files against a base, with their functions and their diff, for a diff walk |
 | [`show_blocks`](#show_blocks) | view | Shows the logical blocks of a function, with a maximum of five levels. A new call replaces the blocks of its function. The blocks of the other functions of the file stay. |
@@ -353,6 +354,19 @@ A type that the translation unit only declares gets the outline from the header 
 | `line` | integer | A line with the name of the type, for example the line of its definition. Use it instead of `name`. |
 
 Example request: "Explain the members of HomeBatteryCtrl, and tell me how to make it smaller in memory."
+
+### get_heat
+
+Gives the heat score of each function of a file, as the lens Heat shows it: how much a change of the function can break. The functions come in the sequence of their scores, the hottest first.
+
+Each function has its lines, its score from 0 to 100, its band and its flames. It also has the points of reach, risk and history, and the reasons with their points. The notices tell which signals are not available, for example the callers, or the history with no git repository.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `file` | | See the common parameters. |
+| `function` | string | One function: its qualified name or its name. The default is all functions of the file. |
+
+Example request: "Which functions of this file are the most dangerous to change, and why?"
 
 ### show_blocks
 

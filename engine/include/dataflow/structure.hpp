@@ -25,6 +25,7 @@ namespace DataFlow {
   struct StructureOptions {
     std::vector<std::string> event_functions_;  // functions that send an event, for example of a state machine
     std::vector<std::string> async_functions_;  // functions that run a callable on a different thread
+    bool hasReaches_ = true;                    // the lines of the reads that each write reaches. the metrics skip them
   };  // StructureOptions
 
   struct StructureExit {
@@ -225,7 +226,7 @@ namespace DataFlow {
         if (const auto* co = llvm::dyn_cast<clang::CoroutineBodyStmt>(top)) top = co->getBody();
         out.statements_ = statements_of(top);
         out.accesses_   = accesses_of(scanner);
-        add_reaches(out.accesses_);
+        if (opts_.hasReaches_) add_reaches(out.accesses_);
         return out;
       }  // run
 

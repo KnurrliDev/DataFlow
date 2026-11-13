@@ -1,0 +1,72 @@
+import * as assert from 'assert';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import type { DataFlowApi } from '../../extension';
+import { activateDataFlow, waitFor } from './helpers';
+
+// The heat score on the review fixture: a git copy of the CMake fixture with the commit of the branch main and the
+// commit of the branch review. The commit of review changes one line of solve_power_plan(). battery.cpp and main.cpp
+// include types.hpp.
+suite('Heat', () => {
+	const root = () => vscode.workspace.workspaceFolders![0].uri.fsPath;
+	const source = () => path.join(root(), 'src', 'battery.cpp');
+
+	interface HeatResult {
+		functions: { name: string; score: number; band: string; flames: number; reach: number; risk: number; history: number; reasons: string[] }[];
+		notices: string[];
+	}
+
+	let api: DataFlowApi;
+	suiteSetup(async function () {
+		this.timeout(120000);
+		api = await activateDataFlow(source());
+		if (api.store.state.lenses.review) {
+			api.side.receive({ type: 'toggleLens', lens: 'review' });
+		}
+	});
+
+	test('get_heat gives the score of each function with the reasons of reach, risk and history, the hottest first', async function () {
+		this.timeout(60000);
+		const res = await api.mcpHost.heat(source(), undefined) as HeatResult;
+		assert.strictEqual(res.functions.length, 6);
+		const scores = res.functions.map((f) => f.score);
+		assert.deepStrictEqual(scores, [...scores].sort((a, b) => b - a));
+		for (const f of res.functions) {
+			assert.strictEqual(f.score, f.reach + f.risk + f.history, JSON.stringify(f));
+			assert.ok(f.flames >= 1 && f.flames <= 5, JSON.stringify(f));
+		}
+
+		// the lines of solve_power_plan() come from the commit of main and from the commit of review. Both are new
+		const plan = res.functions.find((f) => f.name === 'electricity::power_ctrl::solve_power_plan')!;
+		assert.ok(plan.reasons.includes('Changed in 2 commits (+3 history)'), JSON.stringify(plan));
+		assert.ok(plan.reasons.includes('Changed in the last 30 days (+2 history)'), JSON.stringify(plan));
+		// types.hpp has the declaration of process(), and both source files include it
+		const process = res.functions.find((f) => f.name === 'electricity::power_ctrl::process')!;
+		assert.ok(process.reasons.includes('types.hpp with the declaration is in 2 of 2 source files (+8 reach)'), JSON.stringify(process));
+		assert.ok(process.reasons.some((r) => /^\d+ decisions \(\+\d+ risk\)$/.test(r)), JSON.stringify(process));
+		assert.match(res.notices[0], /does not count the callers and the frame path yet/);
+
+		// one function by its name, and a name that the file does not have
+		const one = await api.mcpHost.heat(source(), 'process') as HeatResult;
+		assert.deepStrictEqual(one.functions.map((f) => f.name), ['electricity::power_ctrl::process']);
+		await assert.rejects(api.mcpHost.heat(source(), 'no_such_function'), /No function no_such_function in battery\.cpp/);
+	});
+
+	test('The lens Heat gives the side view the heat of each function, and the lens off removes it', async function () {
+		this.timeout(60000);
+		assert.strictEqual(api.store.state.lenses.heat, false);
+		api.side.receive({ type: 'toggleLens', lens: 'heat' });
+		try {
+			await waitFor(() => !!api.side.heat && !api.side.heat.isLoading && api.side.heat.functions.length === 6, 30000,
+				() => JSON.stringify(api.side.heat)?.slice(0, 300));
+			const heat = api.side.heat!;
+			assert.deepStrictEqual(heat.functions.map((f) => f.name), ['best_preset', 'log_info', 'initial_power', 'solve_power_plan', 'process', 'stable_readings']);
+			assert.ok(heat.functions.every((f) => f.first <= f.nameLine && f.nameLine <= f.last), JSON.stringify(heat.functions));
+			assert.strictEqual(heat.error, undefined);
+		} finally {
+			api.side.receive({ type: 'toggleLens', lens: 'heat' });
+		}
+		await waitFor(() => api.side.heat === null, 5000, () => JSON.stringify(api.side.heat)?.slice(0, 200));
+		assert.strictEqual(api.store.state.heatLayer, undefined);
+	});
+});

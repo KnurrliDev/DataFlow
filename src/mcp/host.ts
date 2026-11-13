@@ -9,6 +9,7 @@ import {
 } from '../lenses/blocks';
 import { callFunctionAt, ExternalCaller } from '../lenses/calls';
 import { findingText, LineText, toUtf8Column, variableAt } from '../lenses/flow';
+import type { HeatModel } from '../lenses/heat';
 import { buildSideIncludes } from '../lenses/includes';
 import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../lenses/member';
 import { buildSideThreads } from '../lenses/threads';
@@ -58,6 +59,8 @@ export interface HostDeps {
 	// the header with the definition of a type that a translation unit only declares: the definition provider of VS Code
 	// at the place of the name, if a place is known, else a search of the headers of the project
 	definitionHeader(name: string, place?: { doc: vscode.TextDocument; pos: vscode.Position }): Promise<string | undefined>;
+	// the heat of the functions of a document. The side view does not change
+	heat(doc: vscode.TextDocument): Promise<HeatModel>;
 }
 
 const CPP_LANGUAGES = new Set(['c', 'cpp', 'cuda-cpp']);
@@ -378,6 +381,28 @@ export class DataFlowMcpHost implements McpHost {
 
 	// The outline of a type by its name, or at a line with its name. A type that the translation unit only declares gets
 	// the outline of the header with its definition, as the menu "Outline" does
+	// The heat of the functions of a file, the hottest first. With a function, only that function
+	async heat(file: string | undefined, fn: string | undefined): Promise<object> {
+		const { doc, file: f } = await this.prepare(file);
+		const model = await this.deps.heat(doc);
+		let functions = [...model.functions].sort((a, b) => b.score - a.score || a.first - b.first);
+		if (fn) {
+			functions = functions.filter((h) => h.qualifiedName === fn || h.name === fn || h.qualifiedName.endsWith(`::${fn}`));
+			if (functions.length === 0) {
+				throw new Error(`No function ${fn} in ${path.basename(f)}. Call list_functions.`);
+			}
+		}
+		return {
+			file: f,
+			functions: functions.slice(0, MAX_ITEMS).map((h) => ({
+				name: h.qualifiedName || h.name, lines: [h.first, h.last], score: h.score, band: h.band === 'veryHot' ? 'very hot' : h.band, flames: h.flames,
+				reach: h.reach, risk: h.risk, history: h.history, reasons: h.reasons.map((r) => `${r.text} (+${r.points} ${r.group})`),
+			})),
+			...(functions.length > MAX_ITEMS ? { more: functions.length - MAX_ITEMS } : {}),
+			notices: model.notices,
+		};
+	}
+
 	async outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<object> {
 		if (!name && line === undefined) {
 			throw new Error('Give the name of the type, or a line with its name.');

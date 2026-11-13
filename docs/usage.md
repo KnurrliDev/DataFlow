@@ -421,6 +421,30 @@ The engine cannot see these items:
 - a lock that a function takes on a different object
 - the callers in other files
 
+## Heat
+
+Heat shows how much a change of each function can break. Each function gets a score from 0 to 100. Flames in the code show the score.
+
+1. Open a C++ file. Heat is off by default. To turn it on or off, click **Heat** in the toolbar of the side view, or run **DataFlow: Toggle Heat**. The side view shows a busy mark until the heat of the file is ready.
+2. Look at the code. Each function has a strip in the color of its band next to the line numbers. The line of its name has 1 to 5 flames before the line number. To see the score, move the mouse on the flames.
+3. To see the reasons of the score, click the flames, or click **Details**, then the tab **Heat**. The tab shows each point of the function at the cursor with its reason. It also shows the functions of the file, the hottest first. To show a function in the code, click it.
+
+The score adds the points of three groups:
+
+| Group | Maximum | Points |
+| --- | --- | --- |
+| Reach | 60 | The part of the source files of the project that include the file with the declaration of the function, and a virtual function or an override |
+| Risk | 25 | The decisions, the nesting of the decisions, the writes to shared state, the data that two threads share, the allocations and the copies in loops, and a long body |
+| History | 15 | The commits of the lines of the function, the commits that fix bugs, and a change in the last 30 days or a change that is not committed |
+
+The color of the strip and of the flames shows the band: cool under 25, warm from 25, hot from 50 and very hot from 75. Each 20 points add one flame: 1 flame under 20, and 5 flames from 80.
+
+The reach does not count the callers of the function yet. Thus most scores are under 50.
+
+The history needs a git repository. For a file with changes that are not saved, git uses the text of the editor.
+
+The theme colors `dataflow.heatCool`, `dataflow.heatWarm`, `dataflow.heatHot` and `dataflow.heatVeryHot` give the colors of the bands. The MCP tool `get_heat` gives the scores and their reasons to a language model.
+
 ## Change Ripple
 
 Change Ripple shows the code that the changes of your branch affect, as a story for a review.
@@ -495,6 +519,7 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | **DataFlow: Toggle Include Hierarchy** | | Turns Include Hierarchy on or off. |
 | **DataFlow: Toggle Call Hierarchy** | | Turns Call Hierarchy on or off. |
 | **DataFlow: Toggle Threads and Races** | | Turns Threads and races on or off. |
+| **DataFlow: Toggle Heat** | | Turns Heat on or off. |
 | **DataFlow: Show Calls** | | Shows all calls of the function at the cursor in a list. |
 | **DataFlow: Outline** | | Shows the outline of the class, the struct, the union or the enum at the cursor. See [Outline of a type](#outline-of-a-type). |
 | **DataFlow: Go to Definition in the Side View** | F12 in the side view | Goes to the definition of the name at the cursor of the side view. See [Go to a definition](#go-to-a-definition). |

@@ -44,7 +44,7 @@ export interface SideBrackets {
 
 export type SideEngineState = 'stopped' | 'starting' | 'ready' | 'failed';
 
-export type SideLens = 'flow' | 'logic' | 'cost' | 'review' | 'includes' | 'calls' | 'threads';
+export type SideLens = 'flow' | 'logic' | 'cost' | 'review' | 'includes' | 'calls' | 'threads' | 'heat';
 
 // The toolbar and the status line
 export interface SideFrame {
@@ -246,6 +246,39 @@ export interface SideCost {
 	fn?: string; // the function at the cursor
 	items: { line: number; category: string; text: string; detail: string; pattern: string; heuristic: boolean }[]; // its items
 	hidden: number; // the patterns that the user marked as not useful
+}
+
+// A reason of the heat score of a function, with its points
+export interface SideHeatReason {
+	group: 'reach' | 'risk' | 'history';
+	points: number;
+	text: string;
+}
+
+// The heat score of a function. Lines start at 1
+export interface SideHeatFunction {
+	name: string;
+	qualifiedName: string;
+	first: number;
+	last: number;
+	nameLine: number; // the line of the name, for the flames
+	score: number; // 0 to 100
+	band: 'cool' | 'warm' | 'hot' | 'veryHot';
+	flames: number; // 1 to 5
+	reach: number;
+	risk: number;
+	history: number;
+	reasons: SideHeatReason[];
+}
+
+// The heat of the functions of the file. isLoading: a computation runs. The functions of the last computation of the
+// same file stay until the new result comes
+export interface SideHeat {
+	file: string;
+	isLoading: boolean;
+	functions: SideHeatFunction[];
+	notices: string[]; // the signals that are not available
+	error?: string;
 }
 
 // The call graph of the file of the side view: the functions, the links between them with the data of the calls, the
@@ -726,6 +759,7 @@ export type ToSide =
 	| { type: 'flow'; flow: SideFlow | null }
 	| { type: 'logic'; logic: SideLogic | null }
 	| { type: 'cost'; cost: SideCost | null }
+	| { type: 'heat'; heat: SideHeat | null }
 	| { type: 'includes'; includes: SideIncludes | null }
 	| { type: 'forwardCheck'; check: SideForwardCheck | null } // the result of the button Check of the forward declarations
 	| { type: 'includers'; includers: SideIncluders | null }
