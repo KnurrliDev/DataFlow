@@ -2,7 +2,7 @@ import { existsSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { isInside } from '../cdb/project';
-import type { CallersModel, EngineClient, EngineFunction, FileResult, LogicModel, LogicOptions, StructureModel } from '../engine/client';
+import type { CallersModel, EngineClient, EngineFunction, FileResult, LogicModel, LogicOptions, PlaceModel, StructureModel } from '../engine/client';
 import {
 	addDetail, functionLines, MAX_DETAILS, mergeComments, ModelBlockInput, ModelCommentInput, ModelDetailInput, ModelNoteInput, moveModelLayer, ownerOf,
 	resolveComments, resolveDetail, resolveNotes, snapBlocks, structureSummary, TextChange, withIds,
@@ -81,6 +81,9 @@ export interface HostDeps {
 	// the callers of a function from the call graph of the engine, at a position with UTF-8 columns from 1. A call graph
 	// that is not complete starts its scan, as for the heat
 	callers(doc: vscode.TextDocument, at: { line: number; col: number }, depth: number): Promise<FileResult & CallersModel>;
+	// the facts of a line from the engine, with the reach of its function in the call graph. Lines from 1. A call graph
+	// that is not complete starts its scan, as for the heat
+	place(doc: vscode.TextDocument, line: number): Promise<FileResult & PlaceModel>;
 	// the options of Logic Map for a document: the settings of the event functions, of the functions that can give null,
 	// and of the null checks
 	logicOptions(doc: vscode.TextDocument): LogicOptions;
@@ -514,6 +517,67 @@ export class DataFlowMcpHost implements McpHost {
 			...(res.isCapped ? { more: true } : {}),
 			framePaths: (res.framePaths ?? []).map((p) => ({ reason: p.reason, calls: p.calls, path: [...p.path] })),
 			...(res.unknownCallers ? { reachUnknown: { cause: res.unknownCallers.cause, text: unknownCallersText(res.unknownCallers) } } : {}),
+			...(note ? { callGraph: note } : {}),
+			...parseNote(res),
+		};
+	}
+
+	// The facts of a line for a hook in the code: the function, the statements around the line, the locks at its start,
+	// the worker threads that run the line from the lanes of Threads and races, and the reach of the function in the call
+	// graph. A call graph that is not complete starts its scan, as for the heat
+	async place(file: string | undefined, line: number): Promise<Api.PlaceFacts> {
+		const { client, doc, file: f } = await this.prepare(file);
+		if (line > doc.lineCount) {
+			throw new Error(`${path.basename(f)} has ${doc.lineCount} lines.`);
+		}
+		const res = await this.deps.place(doc, line);
+		const fn = res.function;
+
+		// the innermost lane with the line: the code of a function or of a lambda that worker threads run
+		let threads: Api.PlaceFacts['threads'] = [];
+		let isOnCallerThread = true;
+		if (fn && res.isInBody) {
+			const model = await client.threads(f, { asyncFunctions: this.deps.asyncFunctions(doc.uri), roots: this.roots() }).catch(() => undefined);
+			if (model) {
+				const side = buildSideThreads(model, f, (l) => (l >= 0 && l < doc.lineCount ? doc.lineAt(l).text : undefined));
+				const lane = side.lanes.filter((l) => l.first <= line && line <= l.last).sort((a, b) => (a.last - a.first) - (b.last - b.first))[0];
+				if (lane) {
+					isOnCallerThread = lane.isCaller;
+					threads = lane.threads.flatMap((i) => (side.threads[i] ? [side.threads[i]] : []))
+						.map((t) => ({ label: t.label, via: t.via, file: t.file, line: t.line }));
+				}
+			}
+		}
+
+		const isReady = res.callGraph.state === 'ready';
+		const reach = res.reach;
+		const note = !fn ? undefined
+			: !isReady ? this.scanNote() ?? 'The call graph is not complete. Call get_place again later for the callers and the frame path.'
+				: !reach ? 'The call graph has no data for the function, for example a function that is newer than the scan.' : undefined;
+		const frame = reach?.frame;
+		return {
+			file: f,
+			line,
+			function: fn ? { name: fn.qualifiedName || fn.name, lines: [fn.range.begin.line, fn.range.end.line] } : null,
+			isInBody: res.isInBody,
+			around: res.around.map((s) => ({
+				kind: s.kind, lines: [s.first, s.last] as [number, number],
+				...(s.text ? { text: s.text } : {}), ...(s.branch ? { branch: s.branch } : {}),
+				...(s.isOpenLoop !== undefined ? { isOpenLoop: s.isOpenLoop } : {}),
+				...(s.isSynchronous !== undefined ? { isSynchronous: s.isSynchronous } : {}),
+			})),
+			locks: [...res.locks],
+			threads,
+			isOnCallerThread,
+			isReachComplete: isReady && !!reach,
+			...(reach ? { callers: { direct: reach.callers, transitive: reach.transitiveCallers, isCapped: !!reach.isCapped } } : {}),
+			...(frame ? {
+				framePath: {
+					reason: frame.reason, path: [...frame.path], calls: frame.calls ?? 0, isInLoop: frame.isInLoop,
+					...(frame.isPastLimit ? { isPastLimit: true } : {}),
+				},
+			} : {}),
+			...(reach?.unknownCallers ? { reachUnknown: { cause: reach.unknownCallers.cause, text: unknownCallersText(reach.unknownCallers) } } : {}),
 			...(note ? { callGraph: note } : {}),
 			...parseNote(res),
 		};

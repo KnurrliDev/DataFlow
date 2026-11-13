@@ -82,6 +82,7 @@ The engine parses each file with the command of its compile database, with these
 | `dataflow/structure` | `file`, `function` or `line` and `col`, `eventFunctions`, `asyncFunctions` | The statements of the function with their lines, branches and items, and the accesses with their paths, roles and scopes |
 | `dataflow/cost` | `file`, `minCopyBytes`, `unit` | The hidden C++ of all functions of the file: copies, conversions, temporaries, destructors, lookups and more. With `unit`, a source file that includes the header `file`, the engine parses the unit. Then the templates of the header get the items of their instantiations in the unit. The reply then has the parse of the unit. |
 | `dataflow/callers` | `file`, `function` or `line` and `col`, `depth`, `frameFunctions` | The callers of a function in the call graph up to `depth` calls (1 to 6, default 3), and its frame paths. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
+| `dataflow/place` | `file`, `line`, `frameFunctions` | The facts of a line: the function, the statements around the line, the locks at its start, and the reach of the function. See [The result of `dataflow/place`](#the-result-of-dataflowplace). |
 | `dataflow/metrics` | `file`, `frameFunctions`, `testFolders` | The metrics of each function of the file, for the heat score: the decisions (`if`, the loops, the `case` labels, `catch`, `&&`, `\|\|` and `?:`), the deepest nesting of the decisions, the first and the last line of each loop, the lines of the body, the writes to data members, globals, static locals and data through reference or pointer parameters, the allocations and the copies in loops, `virtual` and `override`, and the file and the line of the first declaration. With a complete call graph, each function also has `reach`. `callGraph` gives the state of the call graph. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
 | `dataflow/callGraph` | `roots`, `frameFunctions` | Makes the call graph of the project current, for the heat score: the size of the graph and the frame functions. The request needs no `file`. |
 | `dataflow/slice` | `file`, and `lines` and `deleted`, or `call`; `asyncFunctions`, `confidence` | The forward slice of changed lines or of a call: the steps and the exits in each function and lambda, and the callers in the same file |
@@ -249,6 +250,20 @@ The reply:
 - `callers`: the callers in the sequence of their depth, the first 200. Each caller has `name`, `file`, `first`, `last`, `depth`, `calls` (the function that it calls on the way) and `lines` (the lines of these calls). A signal has `isSignal`, and a connection to its slot has `isConnection` with the line of the call of `connect`. After 200 callers, `isCapped` is true.
 - `framePaths`: one path from each frame function that reaches the function, a maximum of 5, with `reason`, `calls` and `path` from the frame function to the function.
 - `unknownCallers`, as in `reach`.
+
+## The result of `dataflow/place`
+
+The engine finds the innermost function of the main file whose lines contain the line. Then it goes down from the body to the innermost statement at the start of the line. If more than one child of a statement has the line, the first child is the next statement.
+
+- `function`: the function, as in `dataflow/functions`, or null. `isInBody` is false for a line of the head of the function, for example a line of the parameters.
+- `around`: the statements around the line, from the outside in. Each statement has `kind`, `first`, `last` and `text`. A statement that starts on the line is not around the line, because code at the start of the line runs before the statement.
+  - `for`, `while` and `do`, with `isOpenLoop` as in the frame paths: a loop with no fixed number of iterations. `text` is the condition, or the loop variable and the range. The init of a `for` is not in the loop.
+  - `if` and `switch`, with `text`, the condition, and `branch`: `then`, `else` or `condition` for an `if`, and the case labels of the group before the line or `condition` for a `switch`, for example `case 1, case 3`.
+  - `conditional`, an operator `?:`, with `branch`: `true`, `false` or `condition`.
+  - `try` for the try block, and `catch` with `text`, the declaration of the exception or `...`.
+  - `lambda` for the body of a lambda, with `text`, the captures and the parameters, and `isSynchronous`: true if the call runs the lambda before it returns, for example `std::for_each`.
+- `locks`: the mutexes that the code holds at the start of the line, as the locks of `dataflow/member`. A line between the statements of a block gets the locks before the next statement, and a line after the last statement gets the locks at the end of the block. The locks of a function do not go into a lambda that is not synchronous.
+- `reach`: the reach of the function in the call graph, as in `dataflow/metrics`, or null with no complete call graph. `callGraph` gives the state of the call graph.
 
 ## The result of `dataflow/threads`
 

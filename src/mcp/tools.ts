@@ -54,6 +54,7 @@ export interface McpHost {
 	stopCallGraph(): Promise<Api.StopCallGraphResult>;
 	callGraph(): Promise<Api.CallGraphFacts>;
 	callers(file: string | undefined, fn: FunctionArg, depth: number | undefined): Promise<Api.CallersFacts>;
+	place(file: string | undefined, line: number): Promise<Api.PlaceFacts>;
 }
 
 export const INSTRUCTIONS = [
@@ -266,6 +267,14 @@ export function createTools(host: McpHost): McpTool[] {
 				depth: { type: 'integer', minimum: 1, maximum: 6, description: 'The callers up to this number of calls from the function. Default: 3.' },
 			},
 			[], true, (a) => host.callers(a.text('file'), a.fn(), a.number('depth'))),
+		tool('get_place', 'Get the facts of a line',
+			'The facts of a line, for example before you add code at the line: the function that contains the line, the statements around the line from the outside in '
+			+ '(the loops, with isOpenLoop for a loop with no fixed number of iterations; the decisions if, switch and ?:, with the branch of the line; try, catch and the lambdas, '
+			+ 'with isSynchronous: false for a lambda that runs after the call, for example on a thread), the mutexes that the code holds at the start of the line, '
+			+ 'the worker threads that run the line, and the callers and the frame path of the function from the call graph. A statement that starts on the line is not around '
+			+ 'the line, because code at the start of the line runs before the statement. The first call starts the scan of the call graph and does not wait: callGraph tells the progress.',
+			{ file: FILE, line: { type: 'integer', minimum: 1, description: 'The line, from 1.' } },
+			['line'], true, (a) => host.place(a.text('file'), a.requiredLine('line'))),
 		tool('get_threads', 'Get the threads and races',
 			'The thread starts of a file, the data that two threads share, the protection of each access (lock, order, check), and a verdict for each item: race, check or safe.',
 			{ file: FILE }, [], true, (a) => host.threads(a.text('file'))),

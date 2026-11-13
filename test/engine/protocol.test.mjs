@@ -3510,6 +3510,124 @@ test('call graph: callers that the graph cannot see, qt connections, a long fram
 	}
 });
 
+test('place: the function of a line, the statements around it, the locks at its start and the reach of the function', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-place-'));
+	const lines = [
+		'#include <exception>',
+		'#include <mutex>',
+		'#include <thread>',
+		'std::mutex g_mutex;',
+		'int g_total = 0;',
+		'void step(int k) {',
+		'  for (int i = 0; i < k; ++i) {',
+		'    const std::lock_guard lock(g_mutex);',
+		'    if (i % 2 == 0) {',
+		'      g_total += i;',
+		'    } else {',
+		'      switch (i) {',
+		'        case 1:',
+		'        case 3:',
+		'          g_total -= 1;',
+		'          break;',
+		'        default:',
+		'          g_total = i > 5 ? 0',
+		'                          : g_total;',
+		'      }',
+		'    }',
+		'',
+		'  }',
+		'  try {',
+		'    const std::lock_guard lock(g_mutex);',
+		'    std::thread t([&]() {',
+		'      g_total += k;',
+		'    });',
+		'    t.join();',
+		'  } catch (const std::exception& e) {',
+		'    g_total = 0;',
+		'  }',
+		'}',
+		'void stop(bool now,',
+		'          int code) {',
+		'  if (now) g_total = code;',
+		'}',
+		'int main() {',
+		'  bool running = true;',
+		'  while (running) {',
+		'    step(3);',
+		'    stop(false, 0);',
+		'  }',
+		'  return 0;',
+		'}',
+	];
+	const source = path.join(dir, 'place.cpp');
+	writeFileSync(source, lines.join('\n') + '\n');
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file: source, arguments: ['clang++', '-std=c++20', '-c', source] }]));
+	const line = (text) => lines.findIndex((l) => l.includes(text)) + 1;
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	const place = async (at) => {
+		const res = await own.send('dataflow/place', { file: source, line: typeof at === 'number' ? at : line(at) });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		return res.result;
+	};
+	// one text for each statement around the line: the kind, the text, the branch, an open loop and a lambda that runs later
+	const around = (r) => r.around.map((s) => [s.kind, s.text && `(${s.text})`, s.branch, s.isOpenLoop && 'open', s.isSynchronous === false && 'later']
+		.filter((x) => x).join(' '));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 4, cacheSize: 4 })).error, undefined);
+
+		// the loops and the decisions from the outside in, with the branch of the line, and the lock of the loop body
+		const inThen = await place('g_total += i;');
+		assert.deepEqual([inThen.function.qualifiedName, inThen.isInBody], ['step', true]);
+		assert.deepEqual(around(inThen), ['for (i < k)', 'if (i % 2 == 0) then']);
+		assert.deepEqual([inThen.around[0].first, inThen.around[0].last, inThen.around[0].isOpenLoop], [line('for (int i'), line('for (int i') + 16, false]);
+		assert.deepEqual(inThen.locks, ['g_mutex']);
+		// with no call graph: no reach
+		assert.deepEqual([inThen.reach, inThen.callGraph.state], [null, 'none']);
+		assert.deepEqual(around(await place('g_total -= 1;')), ['for (i < k)', 'if (i % 2 == 0) else', 'switch (i) case 1, case 3']);
+		assert.deepEqual(around(await place(': g_total;')),
+			['for (i < k)', 'if (i % 2 == 0) else', 'switch (i) default', 'conditional (i > 5) false']);
+
+		// a line after the last statement of a block has the locks at the end of the block
+		const blank = await place(line('g_total = i > 5') + 4);
+		assert.deepEqual([around(blank), blank.locks], [['for (i < k)'], ['g_mutex']]);
+		// a statement that starts on the line is not around the line, and its lock comes after the start of the line
+		const loop = await place('for (int i');
+		assert.deepEqual([around(loop), loop.locks], [[], []]);
+
+		// the body of a thread does not hold the lock of the function. a catch has the declaration of the exception
+		const inThread = await place('g_total += k;');
+		assert.deepEqual([around(inThread), inThread.locks], [['try', 'lambda ([&]()) later'], []]);
+		const join = await place('t.join();');
+		assert.deepEqual([around(join), join.locks], [['try'], ['g_mutex']]);
+		assert.deepEqual(around(await place('    g_total = 0;')), ['catch (const std::exception& e)']);
+
+		// the head of a function is not in the body. a line out of all functions has no function
+		const head = await place('void stop(bool now,');
+		assert.deepEqual([head.function.name, head.isInBody, head.around, head.locks], ['stop', false, [], []]);
+		assert.deepEqual(around(await place('if (now)')), []);
+		const outside = await place('int g_total = 0;');
+		assert.deepEqual([outside.function, outside.isInBody, outside.around, outside.reach], [null, false, [], null]);
+
+		// with the call graph: the callers and the frame path of the function
+		const scan = await own.send('dataflow/callGraph', { roots: [dir] });
+		assert.equal(scan.error, undefined, JSON.stringify(scan.error));
+		const inLoop = await place('step(3);');
+		assert.deepEqual(around(inLoop), ['while (running) open']);
+		const reached = await place('g_total += i;');
+		assert.equal(reached.callGraph.state, 'ready');
+		assert.equal(reached.reach.callers, 1);
+		assert.deepEqual(reached.reach.frame, { reason: 'called in the main loop of main', path: [], isInLoop: false, calls: 0 });
+
+		// a request with no line fails
+		const none = await own.send('dataflow/place', { file: source });
+		assert.match(none.error.message, /needs a line/);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('sends status notifications', () => {
 	const statuses = engine.notifications.filter((n) => n.method === 'dataflow/status').map((n) => n.params);
 	const states = statuses.map((s) => s.state);

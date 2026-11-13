@@ -601,10 +601,11 @@ namespace DataFlow {
 
     // the mutexes that a statement holds: the lock actions of the statements before it in each block around it, from
     // the outermost block. _same tells if two expressions name the same mutex, for an unlock(). the walk goes out of
-    // the body of a lambda only if the call runs the lambda before it returns
+    // the body of a lambda only if the call runs the lambda before it returns. _isAtEnd: _s is a block, and the
+    // mutexes are the mutexes at its end, after the lock actions of all its statements
     template <class Same>
     [[nodiscard]] std::vector<const clang::Expr*> held_mutexes(const clang::Stmt* _s, const clang::ParentMap& _pm,
-                                                               Same&& _same) {
+                                                               Same&& _same, const bool _isAtEnd = false) {
       std::vector<std::pair<const clang::Stmt*, const clang::Stmt*>> chain;  // a statement and its child on the way
       const clang::Stmt* child = _s;
       for (const clang::Stmt* p = _pm.getParent(child); p; child = p, p = _pm.getParent(p)) {
@@ -640,6 +641,8 @@ namespace DataFlow {
           if (s->getInit() && s->getInit() != c) apply(s->getInit());
         }
       }
+      if (const auto* cs = llvm::dyn_cast<clang::CompoundStmt>(_s); cs && _isAtEnd)
+        for (const clang::Stmt* s : cs->body()) apply(s);
       return out;
     }  // held_mutexes
 
@@ -651,14 +654,14 @@ namespace DataFlow {
       return text;
     }  // mutex_text
 
-    // the texts of the mutexes that a statement holds
+    // the texts of the mutexes that a statement holds. _isAtEnd: the mutexes at the end of the block _s
     [[nodiscard]] inline std::vector<std::string> locks_at(const clang::Stmt* _s, const clang::ParentMap& _pm,
-                                                           const clang::ASTContext& _ctx) {
+                                                           const clang::ASTContext& _ctx, const bool _isAtEnd = false) {
       std::vector<std::string> out;
       const auto same = [&](const clang::Expr* _a, const clang::Expr* _b) {
         return mutex_text(_a, _ctx) == mutex_text(_b, _ctx);
       };
-      for (const clang::Expr* m : held_mutexes(_s, _pm, same))
+      for (const clang::Expr* m : held_mutexes(_s, _pm, same, _isAtEnd))
         if (std::string text = mutex_text(m, _ctx); !text.empty()) out.push_back(std::move(text));
       std::ranges::sort(out);
       out.erase(std::unique(out.begin(), out.end()), out.end());

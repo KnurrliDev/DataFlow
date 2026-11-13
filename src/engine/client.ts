@@ -380,6 +380,27 @@ export interface CallersModel {
 	callGraph: MetricsModel['callGraph'];
 }
 
+// The data of dataflow/place: the facts of a line for a hook in the code. Lines start at 1
+export interface PlaceModel {
+	function: EngineFunction | null; // the innermost function that contains the line
+	isInBody: boolean; // false for a line of the head of the function, for example a parameter
+	around: PlaceScope[]; // the statements around the line, from the outside in
+	locks: string[]; // the mutexes that the code holds at the start of the line
+	reach: MetricsReach | null; // null: no complete call graph, or no node for the function
+	callGraph: MetricsModel['callGraph'];
+}
+
+// A statement around a line. A statement that starts on the line is not around it
+export interface PlaceScope {
+	kind: 'for' | 'while' | 'do' | 'if' | 'switch' | 'conditional' | 'try' | 'catch' | 'lambda';
+	first: number;
+	last: number;
+	text?: string; // the condition, the loop variable and the range, the exception or the captures of a lambda
+	branch?: string; // a decision: then, else, condition, true, false, or the case labels of a switch
+	isOpenLoop?: boolean; // a loop: no fixed number of iterations
+	isSynchronous?: boolean; // a lambda: the call runs the lambda before it returns
+}
+
 // none: no scan. partial: a first scan that stopped. ready: a complete graph, maybe from before the last changes
 export type CallGraphState = 'none' | 'scanning' | 'partial' | 'ready';
 
@@ -864,6 +885,12 @@ export class EngineClient implements vscode.Disposable {
 	// The callers of a function in the call graph up to a depth from 1 to 6, and its frame paths
 	callers(file: string, fn: FunctionSelector, depth: number, frameFunctions: string[], token?: vscode.CancellationToken): Promise<FileResult & CallersModel> {
 		return this.request('dataflow/callers', { file, ...fn, depth, frameFunctions }, token);
+	}
+
+	// The facts of a line: the function, the statements around the line, the locks at its start, and the reach of the
+	// function in the call graph. line starts at 1
+	place(file: string, line: number, frameFunctions: string[], token?: vscode.CancellationToken): Promise<FileResult & PlaceModel> {
+		return this.request('dataflow/place', { file, line, frameFunctions }, token);
 	}
 
 	// Makes the call graph of the project current: the first request scans all source files in the roots, a later request

@@ -254,6 +254,7 @@ Other extensions can add their own tools to the server with the [API for extensi
 | [`get_flow`](#get_flow) | read | The trace of a variable or a data member, without a change of the view. For a member also the threads, the locks and a verdict about races |
 | [`get_calls`](#get_calls) | read | The data of Call Hierarchy |
 | [`get_callers`](#get_callers) | read | The callers of a function in all files of the project, from the call graph, and its frame paths |
+| [`get_place`](#get_place) | read | The facts of a line: the function, the loops and the decisions around the line, the locks, the threads and the frame path |
 | [`get_threads`](#get_threads) | read | The data of Threads and races |
 | [`get_hidden`](#get_hidden) | read | The data of Hidden C++ |
 | [`get_includes`](#get_includes) | read | The data of Include Hierarchy, with the translation units of the compile database that include the file |
@@ -364,6 +365,30 @@ The first call starts the scan of the call graph, as for `get_heat`, and does no
 | `depth` | integer | The callers up to this number of calls from the function, from 1 to 6. The default is 3. |
 
 Example request: "Which code paths reach clamp_rate(), and does a frame function reach it?"
+
+### get_place
+
+Gives the facts of a line, for example before the model or an extension adds code at the line:
+
+- `function`: the innermost function that contains the line, or null. `isInBody` is false for a line of the head of the function, for example a line of the parameters.
+- `around`: the statements around the line, from the outside in. Each statement has `kind`, `lines` and `text`, for example the condition:
+  - the loops `for`, `while` and `do`, with `isOpenLoop`: true if the loop has no fixed number of iterations
+  - the decisions `if`, `switch` and `conditional` (`?:`), with `branch`: `then`, `else`, `condition`, `true`, `false`, or the case labels of a `switch`
+  - `try`, `catch`, and `lambda` with `isSynchronous`: false if the lambda runs after the call, for example on a thread
+- `locks`: the mutexes that the code holds at the start of the line.
+- `threads`: the worker threads that run the line, from Threads and races, with the start of each thread. `isOnCallerThread` is true if the thread of the caller of the function also runs the line.
+- `callers` and `framePath`: the reach of the function in the call graph, as `get_heat` gives it. `reachUnknown` tells if the function has callers that the call graph cannot see.
+
+A statement that starts on the line is not around the line, because code at the start of the line runs before the statement. Thus the line of `for (...) {` is not in the loop, and the line after it is in the loop.
+
+The first call starts the scan of the call graph, as for `get_heat`, and does not wait for it. Until the scan is complete, `isReachComplete` is false, and `callGraph` tells the progress.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `file` | string | See the common parameters. |
+| `line` | integer | Required. The line, from 1. |
+
+Example request: "I want to log the value on line 65. Which thread runs that line, and does it hold a lock?"
 
 ### get_threads
 

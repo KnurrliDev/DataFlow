@@ -224,6 +224,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		getHeat: (args) => call('get_heat', args),
 		getCallGraph: () => call('get_call_graph'),
 		getCallers: (args) => call('get_callers', args),
+		getPlace: (args) => call('get_place', args),
 		getLogic: (args) => call('get_logic', args),
 		getRipple: () => call('get_ripple'),
 		getReview: (args) => call('get_review', args),

@@ -128,7 +128,7 @@ suite('MCP server on the fixture', () => {
 	test('The server lists its tools, and get_view gives the file of the editor', async () => {
 		const list = await rpc('tools/list');
 		assert.deepStrictEqual(list.result.tools.map((t: { name: string }) => t.name), [
-			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_callers', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'get_heat', 'get_call_graph', 'get_logic', 'get_ripple',
+			'get_view', 'list_functions', 'get_structure', 'get_flow', 'get_calls', 'get_callers', 'get_place', 'get_threads', 'get_hidden', 'get_includes', 'get_outline', 'get_heat', 'get_call_graph', 'get_logic', 'get_ripple',
 			'show_blocks', 'show_flow', 'show_logic_path', 'show_line', 'highlight', 'comment_lines', 'add_detail', 'clear', 'remove', 'set_lens', 'clear_flow', 'start_ripple', 'clear_ripple', 'mark_base', 'delete_mark',
 			'scan_call_graph', 'stop_call_graph', 'get_review', 'show_review_plan', 'get_diff', 'show_diff_walk', 'review_step', 'close_guide',
 		]);
@@ -449,6 +449,14 @@ suite('MCP server on the fixture', () => {
 		assert.ok(variable.data.refs.length >= 2, variable.text);
 		assert.ok(!(await tool('get_hidden', { function: 'process' })).isError);
 		assert.ok((await tool('get_includes')).data.includes.length > 0);
+		// the facts of a line in the loop of solve_power_plan(), which process() runs on a worker thread
+		const place = await tool('get_place', { line: lineOf('opt.schedule.kw = *kw;') });
+		assert.deepStrictEqual([place.data.function?.name, place.data.isInBody, place.data.around.map((s: any) => [s.kind, s.text, s.branch, s.isOpenLoop])],
+			['electricity::power_ctrl::solve_power_plan', true, [['while', 'charge.is_dirty', undefined, true], ['if', 'kw', 'then', undefined]]], place.text);
+		assert.deepStrictEqual([place.data.locks, place.data.isOnCallerThread, place.data.threads.map((t: any) => t.via)], [[], false, ['tf::Executor::async']], place.text);
+		const head = await tool('get_place', { line: 1 });
+		assert.deepStrictEqual([head.isError, head.data?.function, head.data?.around], [false, null, []], head.text);
+		assert.match((await tool('get_place', { line: 0 })).text, /"line" must be a line number from 1\./);
 		// the outline of a type by its name, and at the line of its definition in the header
 		const header = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'include', 'battery', 'types.hpp');
 		const byName = await tool('get_outline', { file: header, name: 'HomeBatteryCtrl' });

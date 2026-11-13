@@ -11,6 +11,7 @@
 #include <dataflow/member.hpp>
 #include <dataflow/metrics.hpp>
 #include <dataflow/outline.hpp>
+#include <dataflow/place.hpp>
 #include <dataflow/protocol.hpp>
 #include <dataflow/slice.hpp>
 #include <dataflow/structure.hpp>
@@ -821,6 +822,22 @@ namespace DataFlow {
                                  out["callGraph"] = JsonObject(view.state_);
                                  return out;
                                });
+    // the facts of a line for a hook in the code: the function, the statements around the line, the locks at the start
+    // of the line, and the reach of the function in the call graph. params: line (from 1); frameFunctions
+    if (_method == "dataflow/place")
+      return post_file_request(
+          _srv, *_id, *file,
+          [&srv = _srv, line = params.getInteger("line"), names = Detail::get_strings(&params, "frameFunctions")](
+              clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
+            if (!line || *line < 1) return std::unexpected("dataflow/place needs a line");
+            const Place place            = build_place(_ast, uint32_t(*line));
+            JsonObject out               = place_to_json(place, _ast.getSourceManager());
+            const Detail::GraphView view = Detail::graph_view(srv, names);
+            out["reach"] =
+                place.fn_ && view.graph_ ? reach_to_json(*view.graph_, *view.paths_, *place.fn_) : Json(nullptr);
+            out["callGraph"] = JsonObject(view.state_);
+            return out;
+          });
     // with a unit, the hidden c++ of a header in the translation unit of a source file that includes it. thus the
     // templates of the header get the items of their instantiations in the source file
     if (_method == "dataflow/cost") {

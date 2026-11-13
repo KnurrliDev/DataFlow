@@ -64,6 +64,7 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `getFlow({ file, line, name })` | [`get_flow`](tools.md#get_flow) | read |
 | `getCalls({ file, function, line })` | [`get_calls`](tools.md#get_calls) | read |
 | `getCallers({ file, function, line, depth })` | [`get_callers`](tools.md#get_callers) | read |
+| `getPlace({ file, line })` | [`get_place`](tools.md#get_place) | read |
 | `getThreads({ file })` | [`get_threads`](tools.md#get_threads) | read |
 | `getHidden({ file, function, line })` | [`get_hidden`](tools.md#get_hidden) | read |
 | `getIncludes({ file })` | [`get_includes`](tools.md#get_includes) | read |

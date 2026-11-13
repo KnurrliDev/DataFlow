@@ -2971,6 +2971,16 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 			requestCallGraph(client, res.callGraph.state, doc.uri);
 			return res;
 		},
+		place: async (doc, line) => {
+			const client = engine;
+			if (!client || client.currentState !== 'ready') {
+				throw new Error('The DataFlow engine is not ready.');
+			}
+			flushChange(doc);
+			const res = await client.place(doc.uri.fsPath, line, frameFunctionsOf(doc.uri));
+			requestCallGraph(client, res.callGraph.state, doc.uri);
+			return res;
+		},
 		logicOptions: (doc) => logicOptions(doc),
 		showLogicPath: (doc, model, chosen, line) => {
 			if (!store.state.lenses.logic) {

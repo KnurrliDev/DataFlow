@@ -77,6 +77,7 @@ export interface DataFlowApi {
 	getHeat(args?: HeatArgs): Promise<HeatFacts>; // get_heat
 	getCallGraph(): Promise<CallGraphFacts>; // get_call_graph
 	getCallers(args?: CallersArgs): Promise<CallersFacts>; // get_callers
+	getPlace(args: PlaceArgs): Promise<PlaceFacts>; // get_place
 	getLogic(args?: LogicArgs): Promise<LogicFacts>; // get_logic
 	getRipple(): Promise<RippleFacts>; // get_ripple
 	getReview(args: ReviewArgs): Promise<ReviewFacts>; // get_review
@@ -203,6 +204,11 @@ export interface HeatArgs extends FileArgs {
 // The callers up to depth calls from the function: 1 to 6, default 3
 export interface CallersArgs extends FunctionArgs {
 	depth?: number;
+}
+
+// A line of a file, from 1
+export interface PlaceArgs extends FileArgs {
+	line: number;
 }
 
 // The choices of the path: the key of a decision from getLogic, and one of its options, for example
@@ -615,6 +621,37 @@ export interface CallersFacts extends ParseNote {
 	framePaths: { reason: string; calls: number; path: string[] }[]; // from the frame function to the function
 	reachUnknown?: { cause: UnknownCallersCause; text: string };
 	callGraph?: string; // the state of the scan of the call graph
+}
+
+// The facts of a line, for example before an extension adds code at the line. Lines start at 1
+export interface PlaceFacts extends ParseNote {
+	file: string;
+	line: number;
+	function: { name: string; lines: [number, number] } | null; // the innermost function with the line
+	isInBody: boolean; // false for a line of the head of the function, for example a parameter
+	around: PlaceStatement[]; // the statements around the line, from the outside in
+	locks: string[]; // the mutexes that the code holds at the start of the line
+	// the worker threads that run the line, from Threads and races. file and line: the start of the thread
+	threads: { label: string; via: string; file: string; line: number }[];
+	isOnCallerThread: boolean; // the thread of the caller of the function runs the line, also if worker threads run it
+	isReachComplete: boolean; // false until the scan of the call graph is complete. Then callers and framePath are empty
+	callers?: { direct: number; transitive: number; isCapped: boolean }; // the functions that reach the function
+	// the frame function, the functions from it to the caller before the function, and the number of calls from the
+	// frame function. isPastLimit: more than 8 calls
+	framePath?: { reason: string; path: string[]; calls: number; isInLoop: boolean; isPastLimit?: boolean };
+	reachUnknown?: { cause: UnknownCallersCause; text: string };
+	callGraph?: string; // the state of the scan of the call graph
+}
+
+// A statement around a line. A statement that starts on the line is not around the line, because code at the start of
+// the line runs before the statement
+export interface PlaceStatement {
+	kind: 'for' | 'while' | 'do' | 'if' | 'switch' | 'conditional' | 'try' | 'catch' | 'lambda';
+	lines: [number, number];
+	text?: string; // the condition, the loop variable and the range, the exception or the captures of a lambda
+	branch?: string; // a decision: then, else, condition, true, false, or the case labels of a switch
+	isOpenLoop?: boolean; // a loop: true if the loop has no fixed number of iterations
+	isSynchronous?: boolean; // a lambda: true if the call runs the lambda before it returns. false, for example, for a thread
 }
 
 export interface LogicDecision {

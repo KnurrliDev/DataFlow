@@ -28,6 +28,7 @@
 - `start_ripple` gets `base` and `paths`, as `get_diff`. The tool never asks the user: with no target branch, the review fails, and the model gives a different base. An update after a save keeps the base and the paths.
 - API: the event `onDidParse` tells the end of a parse of a file, with the number of the errors and the first 5 errors. The status `ready` of the notification `dataflow/status` of the engine now has `errorCount` and `errors`.
 - API: `registerTools` adds tools of an extension to the MCP server. The MCP name of a tool starts with the name of the client, and its description too. The result removes the tools. After a change of the tools, the bridge tells its client that the list of the tools changed, and the agent mode of VS Code gets a new version of the server.
+- The new read tool `get_place` gives the facts of a line: the function, the loops with `isOpenLoop`, the decisions with the branch of the line, `try`, `catch` and the lambdas around the line, the mutexes that the code holds at the start of the line, the worker threads that run the line, and the callers and the frame path of the function. The API gets `getPlace`, and the engine has the new request `dataflow/place`.
 
 ## 0.5.0
 

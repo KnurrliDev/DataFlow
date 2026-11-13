@@ -43,7 +43,7 @@ suite('API for other extensions on the fixture', () => {
 		assert.throws(() => exports.getApi(2 as 1), /DataFlow has no API version 2/);
 		assert.strictEqual(api.engineState, 'ready');
 		assert.ok(api.compileDatabases.length > 0, JSON.stringify(api.compileDatabases));
-		assert.strictEqual(api.tools.length, 37);
+		assert.strictEqual(api.tools.length, 38);
 		assert.strictEqual(api.engineError, undefined);
 		const view = await api.getView();
 		assert.deepStrictEqual([view.file, view.engine], [file(), 'ready']);
@@ -162,6 +162,14 @@ suite('API for other extensions on the fixture', () => {
 		assert.deepStrictEqual(solve.callers.map((c) => [c.function, c.depth, c.calls, c.callLines, path.basename(c.file)]),
 			[[PROCESS, 1, 'electricity::power_ctrl::solve_power_plan', [lineOf('return solve_power_plan(charge);')], 'battery.cpp']]);
 		await assert.rejects(api.getCallers({ function: 'process', depth: 9 }), /"depth" must be a whole number from 1 to 6\./);
+
+		// the facts of a line: solve_power_plan() has one caller, and no frame path, because the compile database has no
+		// main.cpp
+		const place = await api.getPlace({ line: lineOf('opt.schedule.kw = *kw;') });
+		assert.deepStrictEqual([place.function?.name, place.isReachComplete, place.callers, place.framePath, place.callGraph],
+			['electricity::power_ctrl::solve_power_plan', true, { direct: 1, transitive: 1, isCapped: false }, undefined, undefined]);
+		assert.deepStrictEqual(place.around.map((s) => [s.kind, s.lines[0]]), [['while', lineOf('while (charge.is_dirty)')], ['if', lineOf('if (kw) {')]]);
+		await assert.rejects(api.getPlace({ line: 100000 }), /battery\.cpp has \d+ lines\./);
 	});
 
 	test('Each client has its own layer: the ids of its items, remove, and the clicks on its buttons', async function () {
