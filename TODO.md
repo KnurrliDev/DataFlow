@@ -170,10 +170,6 @@ The user decided to skip the beta. The first items of the side view and of the M
 
 ## Compile databases
 
-- [ ] **A test of a database in a new build folder next to the folder fails sometimes.**
-  The test of the group late-db makes the folder `build-late-db-Desktop-Debug` immediately after the engine stops. After the search, the watcher of the parent folder starts some time later, and a folder that comes before that time gives no event. Then the engine does not start in 60 s. On 2026-11-13, the test failed in 2 of 8 runs with the changes of phase C of the heat, and in 0 of 3 runs before them. These changes do not touch the search, thus the race is probably older.
-  Possible fix: a second search of the build folders some seconds after the watchers start.
-
 - [ ] **No test covers the CMake Tools API.**
   The test build of VS Code has no CMake Tools extension. DataFlow asks CMake Tools for its build folder only if CMake Tools already runs, because an activation of CMake Tools can make it configure the project. A manual check with copies of CMake Tools 1.24.42 and the Qt extensions 1.16.0 in the test build showed: with the old code, a folder with only a `.pro` file started CMake Tools. With the new code, it does not, and a project that is not open starts no CMake Tools and no Qt extension.
   Possible fix: an automatic test with a copy of CMake Tools in a folder of the tests.

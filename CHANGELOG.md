@@ -13,6 +13,7 @@
 - `get_review` and `get_diff` give the heat of the changed functions, and `hottestChanges` lists them, the hottest first. The model starts its plan with the hottest changes.
 - The command **DataFlow: Toggle Heat**, and the theme colors `dataflow.heatCool`, `dataflow.heatWarm`, `dataflow.heatHot` and `dataflow.heatVeryHot`.
 - The engine has the new requests `dataflow/metrics` and `dataflow/callGraph`, and the MCP server has the new tool `get_heat`.
+- Fix: a compile database in a new build folder next to the project folder sometimes did not start the engine. A watcher of a folder out of the workspace starts some time after DataFlow makes it, and a build folder that came in this time gave no event. DataFlow now looks for the compile databases again 2 s and 6 s after it makes its watchers.
 
 ## 0.4.0
 

@@ -33,11 +33,15 @@ const SELECTION_KEY = 'dataflow.compileCommands.selection';
 const PROJECT_KEY = 'dataflow.project';
 const RECENT_KEY = 'dataflow.recentProjects';
 const MAX_RECENT = 5;
+// A watcher of a folder out of the workspace starts some time after DataFlow makes it. A build folder that comes in this
+// time gives no event, thus DataFlow looks for the compile databases again after these times
+const SEARCH_AGAIN_MS = [2000, 6000];
 
 export class CompileDbManager implements vscode.Disposable {
 	private watchers: vscode.FileSystemWatcher[] = [];
 	private searchWatchers: vscode.FileSystemWatcher[] = [];
 	private searchFolders: vscode.WorkspaceFolder[] = []; // the workspace folders with no compile database
+	private searchAgain: NodeJS.Timeout[] = []; // the second searches after the start of the search watchers
 	private searchDebounce?: NodeJS.Timeout;
 	private debounce?: NodeJS.Timeout;
 	private readonly changeEmitter = new vscode.EventEmitter<void>();
@@ -170,9 +174,12 @@ export class CompileDbManager implements vscode.Disposable {
 		this.changeEmitter.dispose();
 		clearTimeout(this.debounce);
 		clearTimeout(this.searchDebounce);
+		this.searchAgain.forEach(clearTimeout);
 	}
 
-	private async forFolder(folder: vscode.WorkspaceFolder): Promise<CompileDbInfo[]> {
+	// The compile databases of a workspace folder. isQuiet: no log of a missing database of the setting and of the number
+	// of databases, for a second search
+	private async forFolder(folder: vscode.WorkspaceFolder, isQuiet = false): Promise<CompileDbInfo[]> {
 		const root = folder.uri.fsPath;
 
 		// 1. the setting: a file, a folder with compile_commands.json, or a qmake build folder
@@ -184,7 +191,7 @@ export class CompileDbManager implements vscode.Disposable {
 				const info = await this.fromPath(entry, root);
 				if (info) {
 					out.push({ ...info, source: 'setting' });
-				} else {
+				} else if (!isQuiet) {
 					this.log.warn(`dataflow.compileCommands: no compile database at ${entry}`);
 				}
 			}
@@ -208,7 +215,7 @@ export class CompileDbManager implements vscode.Disposable {
 
 		// 4. the build folders. The newest database wins.
 		const candidates = newestFirst(await this.fromBuildFolders(root));
-		if (candidates.length > 1) {
+		if (candidates.length > 1 && !isQuiet) {
 			this.log.info(`${candidates.length} compile databases for ${root}. DataFlow uses the newest. Run "DataFlow: Select Compile Database" to change it.`);
 		}
 		return candidates.slice(0, 1);
@@ -439,6 +446,23 @@ export class CompileDbManager implements vscode.Disposable {
 					});
 				}, 500);
 			}, true);
+		}
+
+		// a database that comes before the watchers start gives no event. A second search finds it
+		this.searchAgain.forEach(clearTimeout);
+		this.searchAgain = folders.length === 0 ? [] : SEARCH_AGAIN_MS.map((ms) => setTimeout(() => void this.searchFoldersAgain(folders), ms));
+	}
+
+	// The second search of the workspace folders with no compile database. A database that no watcher reported starts the
+	// engine again. The search is the search of the start, thus a folder with a setting finds only the database of the
+	// setting
+	private async searchFoldersAgain(folders: vscode.WorkspaceFolder[]): Promise<void> {
+		for (const folder of folders) {
+			if ((await this.forFolder(folder, true)).length > 0) {
+				this.log.info(`${folder.uri.fsPath} has a compile database that no watcher reported. DataFlow starts the engine again.`);
+				this.fireChange();
+				return;
+			}
 		}
 	}
 
