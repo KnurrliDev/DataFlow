@@ -25,7 +25,7 @@ You need VS Code 1.120 or later.
 3. In VS Code, open the Extensions view. Click **…** at the top of the view, then click **Install from VSIX…**, and select the file. You can also install the file with a command in a terminal:
 
    ```bat
-   code --install-extension dataflow-win32-x64-0.4.0.vsix
+   code --install-extension dataflow-win32-x64-0.5.0.vsix
    ```
 
 4. Open a C++ project. [Open your first project](#open-your-first-project) tells how.

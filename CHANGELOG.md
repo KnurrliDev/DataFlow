@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - Heat: the new lens shows how much a change of each function can break. Each function gets a score from 0 to 100, 1 to 5 flames before the line number of its name, and a strip in the color of its band.
 - The score adds points of reach, risk and history. The reach comes from the frame path, the callers and their files, and the source files that include the declaration. The callers are all functions that reach the function through calls. The risk comes from the decisions, the nesting, the writes to shared state, the data that threads share, the costs in loops and the length. The history comes from the commits of git.
