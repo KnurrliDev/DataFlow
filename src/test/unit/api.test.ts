@@ -46,7 +46,7 @@ suite('API for other extensions', () => {
 		assert.strictEqual(api.version, 1);
 		assert.strictEqual(api.engineState, 'stopped');
 		assert.deepStrictEqual(api.compileDatabases, []);
-		assert.strictEqual(api.tools.length, 32);
+		assert.strictEqual(api.tools.length, 33);
 		assert.deepStrictEqual(api.tools.filter((t) => t.isDestructive).map((t) => t.name), ['close_guide']);
 		assert.ok(api.tools.find((t) => t.name === 'get_logic')?.isReadOnly);
 		assert.ok(!api.tools.find((t) => t.name === 'set_lens')?.isReadOnly);
@@ -58,6 +58,13 @@ suite('API for other extensions', () => {
 
 	test('The methods run the tools, and a wrong call rejects with the reason', async () => {
 		const api = createApi(deps, events, 1, { client: 'my-extension' });
+		// the state of the call graph, with no scan
+		assert.deepStrictEqual(await api.getCallGraph(), { state: 'none' });
+		store.update({ callGraph: { state: 'scanning', done: 1, total: 4 } });
+		assert.deepStrictEqual(await api.getCallGraph(), {
+			state: 'scanning', done: 1, total: 4, note: 'The scan runs. get_heat gives the callers and the frame paths after its end.',
+		});
+		store.update({ callGraph: undefined });
 		assert.deepStrictEqual(await api.getRipple(), {
 			state: 'none', note: 'No review of Change Ripple shows. Call start_ripple, or ask the user to run "DataFlow: Review Changes".',
 		});
@@ -70,6 +77,26 @@ suite('API for other extensions', () => {
 		await assert.rejects(api.callTool('get_colors'), /DataFlow has no tool get_colors\./);
 		await assert.rejects(api.callTool('get_view', ['a'] as unknown as Record<string, unknown>), /The arguments of get_view must be an object\./);
 		await assert.rejects(api.getStructure({ function: 'process' }), /The DataFlow engine is not ready\./);
+	});
+
+	test('The engine error gives the reason of a failed engine, and of a stopped engine with no compile database after the search', () => {
+		const api = createApi(deps, events, 1);
+		const errors: (string | undefined)[] = [];
+		const subscription = api.onDidChangeEngineState((e) => errors.push(e.error));
+		// before the first search of the compile databases, the stopped engine has no error
+		assert.strictEqual(api.engineError, undefined);
+		store.update({ isDatabaseSearchDone: true });
+		const noDatabase = 'No compile database. Run "DataFlow: Select Compile Database", or set dataflow.compileCommands.';
+		assert.strictEqual(api.engineError, noDatabase);
+		store.update({ engine: 'failed', message: 'The engine did not start: no engine' });
+		assert.strictEqual(api.engineError, 'The engine did not start: no engine');
+		store.update({ engine: 'failed', message: undefined });
+		assert.strictEqual(api.engineError, 'The engine stopped. See the DataFlow log.');
+		const db: CompileDbInfo = { path: 'C:/p/build/compile_commands.json', source: 'found', folder: 'C:/p/build' };
+		store.update({ engine: 'starting', databases: [db] });
+		assert.strictEqual(api.engineError, undefined);
+		subscription.dispose();
+		assert.deepStrictEqual(errors, [noDatabase, 'The engine did not start: no engine', 'The engine stopped. See the DataFlow log.', undefined]);
 	});
 
 	test('The events: the state of the engine, the cursor, the guide and the scan of the call graph', () => {

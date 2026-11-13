@@ -105,6 +105,7 @@ export interface DataFlowState {
 	engineVersion?: string;
 	clangVersion?: string;
 	databases: CompileDbInfo[];
+	isDatabaseSearchDone: boolean; // DataFlow looked for the compile databases at least one time
 	project?: { name: string; root: string }; // a project that is not open in VS Code
 	parsing: string[];
 	file?: string;
@@ -138,6 +139,7 @@ export class StateStore implements vscode.Disposable {
 	private current: DataFlowState = {
 		engine: 'stopped',
 		databases: [],
+		isDatabaseSearchDone: false,
 		parsing: [],
 		lenses: { flow: true, logic: true, cost: true, review: false, includes: true, calls: true, threads: true, heat: false },
 		modelLayers: [],

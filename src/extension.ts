@@ -328,7 +328,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		const databases = await cdb.discover();
 		const project = cdb.project;
 		watchProjectSettings();
-		store.update({ databases, project: project && { name: project.name, root: project.root }, message: undefined });
+		store.update({ databases, isDatabaseSearchDone: true, project: project && { name: project.name, root: project.root }, message: undefined });
 		for (const doc of vscode.workspace.textDocuments) {
 			adoptIncludeFile(doc);
 		}

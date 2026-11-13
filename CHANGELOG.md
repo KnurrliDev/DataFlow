@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `get_heat` gives `signals`: each reason of a function with the id and the measure of its signal, for example the frame path as a list of functions. A client can use the signals with no need to read the texts.
+- Each function of `get_heat` has `isReachComplete`: false until the call graph gives its reach. Then the score can be too low or too high. The changed functions of `get_review` and `get_diff` also give it.
+- `get_heat` accepts `lines`: it then gives only the functions with a line in these lines, the hottest first.
+- `show_diff_walk` accepts `allHunks`. With `false`, the walk shows only the hunks of the plan, and the result gives the other hunks in `notShown`.
+- The new read tool `get_call_graph` gives the state of the scan of the call graph and the frame functions of the project. It does not start or stop a scan. The API gets `getCallGraph`.
+- API: `engineError` and the field `error` of `onDidChangeEngineState` give the reason of a failed engine, or of a stopped engine with no compile database.
+
 ## 0.5.0
 
 - Heat: the new lens shows how much a change of each function can break. Each function gets a score from 0 to 100, 1 to 5 flames before the line number of its name, and a strip in the color of its band.

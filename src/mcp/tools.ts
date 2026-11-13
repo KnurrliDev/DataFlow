@@ -27,7 +27,7 @@ export interface McpHost {
 	hidden(file: string | undefined, fn: FunctionArg): Promise<Api.HiddenFacts>;
 	includes(file?: string): Promise<Api.IncludeFacts>;
 	outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<Api.OutlineFacts>;
-	heat(file: string | undefined, fn: string | undefined): Promise<Api.HeatFacts>;
+	heat(file: string | undefined, fn: string | undefined, lines?: [number, number]): Promise<Api.HeatFacts>;
 	showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<Api.ShowBlocksResult>;
 	highlight(file: string | undefined, ranges: ModelNoteInput[], append: boolean): Promise<Api.HighlightResult>;
 	comment(file: string | undefined, comments: ModelCommentInput[], append: boolean): Promise<Api.CommentLinesResult>;
@@ -49,6 +49,7 @@ export interface McpHost {
 	clearFlow(): Promise<Api.ClearedResult>;
 	scanCallGraph(): Promise<Api.CallGraphFacts>;
 	stopCallGraph(): Promise<Api.StopCallGraphResult>;
+	callGraph(): Promise<Api.CallGraphFacts>;
 }
 
 export const INSTRUCTIONS = [
@@ -175,6 +176,23 @@ class Args {
 		}
 		return this.flag(key);
 	}
+
+	// true or false, or undefined if the client gives no value
+	optionalFlag(key: string): boolean | undefined {
+		return this.args[key] === undefined || this.args[key] === null ? undefined : this.flag(key);
+	}
+
+	// the first and the last line, from 1
+	range(key: string): [number, number] | undefined {
+		const v = this.args[key];
+		if (v === undefined || v === null) {
+			return undefined;
+		}
+		if (!Array.isArray(v) || v.length !== 2 || !v.every((n) => Number.isInteger(n) && n >= 1) || v[0] > v[1]) {
+			throw new Error(`"${key}" must be two line numbers from 1: the first and the last line.`);
+		}
+		return [v[0], v[1]];
+	}
 }
 
 const json = (value: object) => ({ text: JSON.stringify(value) });
@@ -239,9 +257,19 @@ export function createTools(host: McpHost): McpTool[] {
 			+ 'allocations and copies in loops, a long body) and history (the commits, the fixes and the recent changes in git). Each point has a reason. '
 			+ 'A siloed function (reach less than 10) gets half of its risk and history. The callers and the frame path come from a scan of the call graph of the project. '
 			+ 'The first call starts the scan and does not wait: the result tells the progress, and a later call gets the callers. '
+			+ 'isReachComplete is false until the scan is complete: the score can then be too low or too high. '
+			+ 'signals gives each reason with its id and its measure (value), for example the frame path as a list of functions. '
 			+ 'For a review, start with the hottest changed functions.',
-			{ file: FILE, function: { ...FUNCTION, description: 'One function: its qualified name or its name. Default: all functions of the file.' } },
-			[], true, (a) => host.heat(a.text('file'), a.text('function'))),
+			{
+				file: FILE,
+				function: { ...FUNCTION, description: 'One function: its qualified name or its name. Default: all functions of the file.' },
+				lines: { ...LINES, description: 'Only the functions with a line in these lines: the first and the last line, from 1. Default: all lines.' },
+			},
+			[], true, (a) => host.heat(a.text('file'), a.text('function'), a.range('lines'))),
+		tool('get_call_graph', 'Get the state of the call graph',
+			'The state of the scan of the call graph for the heat (none, scanning, stopped, ready or failed), its progress, and the counts and the frame functions of the last complete scan. '
+			+ 'It does not start or stop a scan.',
+			{}, [], true, () => host.callGraph()),
 		tool('get_logic', 'Get the logic of a function',
 			'The logic of a function, as Logic Map of DataFlow finds it, but does not change the view: the decisions of the function (if, loop, do, switch, conditional operator, '
 			+ 'and else-if chains on one value) with their options, one path through the function, and the steps of the path: the decisions, the events, the effects '
@@ -424,8 +452,8 @@ export function createTools(host: McpHost): McpTool[] {
 			[], true, (a) => host.diff(a.text('base'), a.raw('paths'))),
 		tool('show_diff_walk', 'Show a diff walk',
 			'Shows a diff walk in the DataFlow side view: a plan of steps that walks the user through the changes of get_diff, in the order that explains them best. Each step names its hunks. '
-			+ 'The side view goes to the lines of step 1, marks the added and the removed lines, and shows the diff and the text of the step. DataFlow adds a step at the end for each hunk that no step names. '
-			+ 'A new plan replaces the old plan or the guided review. Call get_diff first.',
+			+ 'The side view goes to the lines of step 1, marks the added and the removed lines, and shows the diff and the text of the step. DataFlow adds a step at the end for each hunk that no step names, '
+			+ 'except with allHunks false. A new plan replaces the old plan or the guided review. Call get_diff first.',
 			{
 				title: { type: 'string', description: 'A short title of the walk, for example "The new charge limit". Maximum 80 characters.' },
 				summary: { type: 'string', description: 'One to three sentences: what the changes do. Maximum 1000 characters.' },
@@ -451,8 +479,13 @@ export function createTools(host: McpHost): McpTool[] {
 						},
 					}, ['title', 'hunks', 'text']),
 				},
+				allHunks: {
+					type: 'boolean',
+					description: 'true (default): DataFlow adds a step for each hunk that no step names, so the walk shows all changes. '
+						+ 'false: the walk shows only the hunks of the steps, and the result names the other hunks in notShown.',
+				},
 			},
-			['steps'], false, (a) => host.showDiffWalk({ title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps') })),
+			['steps'], false, (a) => host.showDiffWalk({ title: a.raw('title'), summary: a.raw('summary'), steps: a.raw('steps'), allHunks: a.optionalFlag('allHunks') })),
 		tool('review_step', 'Go to a step',
 			'Shows a step of the guided review or of the diff walk in the DataFlow side view, as the buttons of the user do. Give "note" to add your explanation, an answer or a finding to the step: '
 			+ 'the side view shows it under the text of the step. Give "status" to mark the step. get_view gives the step that the user looks at and the marks of the user.',

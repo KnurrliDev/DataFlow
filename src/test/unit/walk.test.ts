@@ -204,6 +204,13 @@ suite('Diff walk', () => {
 		assert.deepStrictEqual(guide.steps[1].checks, ['Is 100 the limit?']);
 		assert.match(guide.steps[2].text, /^1 line added\. The plan of the model has no step for this change, so DataFlow added this step\.$/);
 		assert.deepStrictEqual(added.map((g) => g.map((h) => h.id)), [['h1'], ['h3']]);
+
+		// with allHunks false, the walk has only the steps of the plan, and notShown names the other hunks
+		const only = resolveWalkPlan({ ...plan, allHunks: false }, hunks, { input: input([rateFile()]), seq: 4 });
+		assert.deepStrictEqual(only.problems, []);
+		assert.deepStrictEqual(only.guide?.steps.map((s) => s.title), ['Add the helper', 'Clamp the rate']);
+		assert.deepStrictEqual([only.added, only.notShown], [[], ['h1', 'h3']]);
+		assert.deepStrictEqual(resolveWalkPlan(plan, hunks, { input: input([rateFile()]), seq: 5 }).notShown, []);
 	});
 
 	test('A wrong plan gives one problem for each wrong step, and no guide', () => {
@@ -257,12 +264,16 @@ suite('Diff walk', () => {
 
 	test('With the heat of the files, each hunk has the heat of its changed functions, and hottestChanges gives them, the hottest first', () => {
 		const fn = (name: string, first: number, last: number, score: number, band: HeatBand, reasons: HeatReason[] = []): HeatFunction => ({
-			name, qualifiedName: `rate::${name}`, first, last, nameLine: first, score, band, flames: 1, reach: 0, risk: 0, history: 0, isSiloed: false, reasons,
+			name, qualifiedName: `rate::${name}`, first, last, nameLine: first, score, band, flames: 1, reach: 0, risk: 0, history: 0, isSiloed: false,
+			isReachComplete: true, reasons,
 		});
-		const frame: HeatReason = { group: 'reach', points: 40, text: 'Runs in each frame: called in the main loop of main' };
+		const frame: HeatReason = {
+			group: 'reach', points: 40, text: 'Runs in each frame: called in the main loop of main',
+			id: 'framePath', value: { reason: 'called in the main loop of main', path: [], calls: 0, isInLoop: false },
+		};
 		const model: HeatModel = {
 			file: CPP, notices: [], isReachComplete: true,
-			functions: [fn('clamp_rate', 5, 7, 72, 'hot', [{ group: 'risk', points: 3, text: '1 decision' }, frame]), fn('process', 9, 12, 30, 'warm'), fn('helper', 14, 16, 10, 'cool')],
+			functions: [fn('clamp_rate', 5, 7, 72, 'hot', [{ group: 'risk', points: 3, text: '1 decision', id: 'decisions', value: 1 }, frame]), fn('process', 9, 12, 30, 'warm'), fn('helper', 14, 16, 10, 'cool')],
 		};
 		const files = [rateFile()];
 		const facts = walkFacts(input(files), walkHunks(files), new Map([[CPP, model]])) as {
@@ -276,7 +287,7 @@ suite('Diff walk', () => {
 		]);
 		// the reasons with the most points come first
 		assert.deepStrictEqual(facts.hottestChanges[0], {
-			function: 'rate::clamp_rate', lines: [5, 7], score: 72, band: 'hot', file: 'src/rate.cpp', hunks: ['h2'],
+			function: 'rate::clamp_rate', lines: [5, 7], score: 72, band: 'hot', isReachComplete: true, file: 'src/rate.cpp', hunks: ['h2'],
 			reasons: ['Runs in each frame: called in the main loop of main (+40 reach)', '1 decision (+3 risk)'],
 		});
 		assert.deepStrictEqual(facts.hottestChanges.map((c) => c.function), ['rate::clamp_rate', 'rate::process', 'rate::helper']);

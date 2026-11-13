@@ -74,4 +74,28 @@ suite('API for other extensions: Change Ripple and the guide', () => {
 			subscription.dispose();
 		}
 	});
+
+	test('showDiffWalk with allHunks false shows only the hunks of the plan, and names the other hunks', async function () {
+		this.timeout(90000);
+		const fire = lineOf('fire_transition(home_battery_ctl, "", true);');
+		const editor = await vscode.window.showTextDocument(vscode.Uri.file(source()));
+		await editor.edit((b) => b.insert(new vscode.Position(fire, 0), '  int cycle = 0;\n'));
+		try {
+			const diff = await api.getDiff({ base: 'target', paths: ['src'] });
+			const ids = diff.files.flatMap((f) => f.hunks.map((h) => h.id));
+			assert.deepStrictEqual(ids, ['h1', 'h2'], JSON.stringify(diff.files));
+			// the heat of the changed functions tells if their reach is complete
+			assert.ok(diff.files.flatMap((f) => f.hunks).every((h) => (h.heat ?? []).every((x) => typeof x.isReachComplete === 'boolean')));
+			const walk = await api.showDiffWalk({
+				title: 'Only the counter', steps: [{ title: 'Count the cycle', text: 'A new counter.', hunks: ['h2'] }], allHunks: false,
+			});
+			assert.deepStrictEqual([walk.steps.map((s) => s.title), walk.notShown, walk.addedSteps], [['Count the cycle'], ['h1'], undefined]);
+			assert.deepStrictEqual(internals.store.state.guide?.steps.map((s) => s.title), ['Count the cycle']);
+			assert.deepStrictEqual(await api.closeGuide({ kind: 'diff walk' }),
+				{ closed: true, kind: 'diff walk', title: 'Only the counter', steps: 1, progress: '0 of 1 steps reviewed' });
+		} finally {
+			await vscode.window.showTextDocument(editor.document);
+			await vscode.commands.executeCommand('workbench.action.files.revert');
+		}
+	});
 });

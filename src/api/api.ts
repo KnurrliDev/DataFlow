@@ -22,9 +22,22 @@ export interface ApiDeps {
 	log(message: string): void;
 }
 
-const engineEvent = (state: DataFlowState): Api.EngineStateEvent => ({
-	state: state.engine, compileDatabases: state.databases.map((d) => d.makefile ?? d.path),
-});
+// The reason of a state of the engine with no work, as the status bar tells it. Before the first search of the compile
+// databases, the state stopped has no reason
+export function engineError(state: DataFlowState): string | undefined {
+	if (state.engine === 'failed') {
+		return state.message ?? 'The engine stopped. See the DataFlow log.';
+	}
+	if (state.engine === 'stopped' && state.isDatabaseSearchDone && state.databases.length === 0) {
+		return 'No compile database. Run "DataFlow: Select Compile Database", or set dataflow.compileCommands.';
+	}
+	return undefined;
+}
+
+const engineEvent = (state: DataFlowState): Api.EngineStateEvent => {
+	const error = engineError(state);
+	return { state: state.engine, compileDatabases: state.databases.map((d) => d.makefile ?? d.path), ...(error ? { error } : {}) };
+};
 
 // The events of the API. All API objects share them. They come from the changes of the state of DataFlow
 export class ApiEvents implements vscode.Disposable {
@@ -131,6 +144,9 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		get engineState() {
 			return deps.store.state.engine;
 		},
+		get engineError() {
+			return engineError(deps.store.state);
+		},
 		get compileDatabases() {
 			return deps.store.state.databases.map((d) => d.makefile ?? d.path);
 		},
@@ -153,6 +169,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		getIncludes: (args) => call('get_includes', args),
 		getOutline: (args) => call('get_outline', args),
 		getHeat: (args) => call('get_heat', args),
+		getCallGraph: () => call('get_call_graph'),
 		getLogic: (args) => call('get_logic', args),
 		getRipple: () => call('get_ripple'),
 		getReview: (args) => call('get_review', args),

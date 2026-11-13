@@ -32,6 +32,8 @@ export interface DataFlowApi {
 	readonly version: 1;
 	// The read methods need the state ready
 	readonly engineState: EngineState;
+	// The reason of the state failed, or of the state stopped with no compile database. Else undefined
+	readonly engineError: string | undefined;
 	// The compile databases of the engine: the files, or the qmake project of a database that DataFlow makes
 	readonly compileDatabases: readonly string[];
 	// The tools of the MCP server with their JSON schemas. callTool runs a tool by its name
@@ -61,6 +63,7 @@ export interface DataFlowApi {
 	getIncludes(args?: FileArgs): Promise<IncludeFacts>; // get_includes
 	getOutline(args: OutlineArgs): Promise<OutlineFacts>; // get_outline
 	getHeat(args?: HeatArgs): Promise<HeatFacts>; // get_heat
+	getCallGraph(): Promise<CallGraphFacts>; // get_call_graph
 	getLogic(args?: LogicArgs): Promise<LogicFacts>; // get_logic
 	getRipple(): Promise<RippleFacts>; // get_ripple
 	getReview(args: ReviewArgs): Promise<ReviewFacts>; // get_review
@@ -102,6 +105,7 @@ export interface DataFlowTool {
 export interface EngineStateEvent {
 	state: EngineState;
 	compileDatabases: string[];
+	error?: string; // the reason of the state failed, or of the state stopped with no compile database
 }
 
 export interface ViewEvent {
@@ -138,9 +142,11 @@ export interface OutlineArgs extends FileArgs {
 	line?: number;
 }
 
-// One function by its qualified name or its name. Default: all functions of the file
+// One function by its qualified name or its name, and the functions with a line in lines. Default: all functions of
+// the file
 export interface HeatArgs extends FileArgs {
 	function?: string;
+	lines?: [number, number];
 }
 
 // The choices of the path: the key of a decision from getLogic, and one of its options, for example
@@ -223,6 +229,8 @@ export interface DiffWalkArgs {
 	title?: string;
 	summary?: string;
 	steps: { title: string; hunks: string[]; text: string; checks?: string[]; kind?: GuideKind }[]; // hunks: the ids of getDiff
+	// true (default): a step at the end for each hunk that no step names. false: only the hunks of the steps
+	allHunks?: boolean;
 }
 
 export interface ReviewStepArgs {
@@ -419,8 +427,26 @@ export interface OutlineFacts extends ParseNote {
 
 export type HeatBand = 'cool' | 'warm' | 'hot' | 'very hot';
 
+// A signal of the heat: one reason of the score, with its kind (id) and its measure (value)
+export type HeatSignal = { group: 'reach' | 'risk' | 'history'; points: number; text: string } & (
+	// the function runs in each frame: the frame function, the functions from it to the caller before this function,
+	// and the number of calls from the frame function
+	| { id: 'framePath'; value: { reason: string; path: string[]; calls: number; isInLoop: boolean } }
+	| { id: 'frameLoop'; value: true } // a caller on the frame path calls the function in a loop
+	| { id: 'callers'; value: { direct: number; transitive: number; isCapped: boolean } }
+	| { id: 'callerFiles'; value: number }
+	| { id: 'includeReach'; value: { file: string; units: number; total: number } } // the source files with the declaration
+	| { id: 'virtual'; value: 'override' | 'virtual' }
+	| { id: 'decisions' | 'depth' | 'length' | 'commits'; value: number } // length: the lines of the body
+	| { id: 'writes' | 'sharedUnprotected' | 'sharedLocked'; value: string[] } // the names of the data
+	| { id: 'loopCosts'; value: { allocations: number; copies: number } }
+	| { id: 'fixes'; value: string[] } // the summaries of the commits that fix bugs
+	| { id: 'recent'; value: 'uncommitted' | 'recent' }
+);
+
 export interface HeatFacts {
 	file: string;
+	isReachComplete: boolean; // false: the reach of one or more functions has no callers and no frame path yet
 	functions: {
 		name: string;
 		lines: [number, number];
@@ -431,9 +457,14 @@ export interface HeatFacts {
 		risk: number;
 		history: number;
 		siloed?: boolean;
+		// false until the scan of the call graph is complete: the reach has no callers and no frame path. The score can
+		// then be too low, or too high, because the half points of a siloed function also do not apply
+		isReachComplete: boolean;
 		reasons: string[];
+		signals: HeatSignal[];
 	}[];
 	more?: number;
+	note?: string; // for example: no function has a line in the lines
 	callGraph?: string; // the state of the scan of the call graph
 	notices: string[];
 }
@@ -509,6 +540,7 @@ export interface HotChange {
 	lines: [number, number];
 	score: number;
 	band: HeatBand;
+	isReachComplete: boolean;
 	reasons: string[];
 	file: string;
 }
@@ -523,7 +555,7 @@ export interface ReviewFacts {
 		lines: number;
 		isChanged: boolean;
 		changedLines?: number[];
-		changedFunctions?: { function: string; lines: [number, number]; score: number; band: HeatBand }[];
+		changedFunctions?: { function: string; lines: [number, number]; score: number; band: HeatBand; isReachComplete: boolean }[];
 		diff?: string;
 		isDiffTruncated?: boolean;
 	}[];
@@ -542,7 +574,7 @@ export interface DiffHunkFacts {
 	removed: number;
 	functions?: string[];
 	newFunctions?: string[];
-	heat?: { function: string; score: number; band: HeatBand }[];
+	heat?: { function: string; score: number; band: HeatBand; isReachComplete: boolean }[];
 	diff?: string;
 	isDiffTruncated?: boolean;
 }
@@ -660,6 +692,7 @@ export interface DiffWalkResult {
 	steps: { step: number; title: string; file: string; lines: [number, number]; addedByDataFlow?: boolean }[];
 	addedSteps?: { title: string; hunks: string[] }[];
 	addedNote?: string;
+	notShown?: string[]; // with allHunks false: the hunks that no step names
 	shown: number;
 	note: string;
 }

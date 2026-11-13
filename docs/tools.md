@@ -234,6 +234,7 @@ The read tools give the facts of the engine and of git, and do not change the vi
 | [`get_includes`](#get_includes) | read | The data of Include Hierarchy, with the translation units of the compile database that include the file |
 | [`get_outline`](#get_outline) | read | The outline of a type: the members, the annotations and the memory layout |
 | [`get_heat`](#get_heat) | read | The heat score of each function of a file: how much a change of the function can break, with the reason of each point |
+| [`get_call_graph`](#get_call_graph) | read | The state of the scan of the call graph, and the frame functions of the project |
 | [`get_logic`](#get_logic) | read | The data of Logic Map: the decisions of a function with their options, and one path through the function for the choices |
 | [`get_ripple`](#get_ripple) | read | The data of the last review of Change Ripple: the code that each change reaches, also in the callers |
 | [`get_review`](#get_review) | read | The C and C++ files under the paths of a guided review, with the diff of each changed file against the target branch |
@@ -377,12 +378,39 @@ Each function has its lines, its score from 0 to 100, its band and its flames. I
 
 The callers and the frame path come from the call graph of the project. The first call starts the scan of the call graph and does not wait for it. Until the scan is complete, `callGraph` tells the progress, and the reach has no callers and no frame path. Call the tool again later for the complete scores. If the user stopped the scan, `callGraph` tells it.
 
+`isReachComplete` is false for a function until the call graph gives its reach. Then the score can be too low or too high, because the half points of a siloed function also do not apply. The result also gives `isReachComplete` for the file.
+
+`signals` gives each reason of a function with its `id`, its `group`, its `points`, its `text` and its measure (`value`):
+
+| `id` | `value` |
+| --- | --- |
+| `framePath` | The reason of the frame function, the functions from the frame function to the caller before this function (`path`), the number of calls (`calls`), and `isInLoop` |
+| `frameLoop` | `true`: a caller on the frame path calls the function in a loop |
+| `callers` | The direct callers, the transitive callers, and `isCapped` |
+| `callerFiles` | The number of the other files of the callers |
+| `includeReach` | The file of the declaration, the source files that include it, and all source files |
+| `virtual` | `override` or `virtual` |
+| `decisions`, `depth`, `length`, `commits` | The number. `length` is the number of the lines of the body. |
+| `writes`, `sharedUnprotected`, `sharedLocked` | The names of the data |
+| `loopCosts` | The allocations and the copies in loops |
+| `fixes` | The summaries of the commits that fix bugs |
+| `recent` | `uncommitted` or `recent` |
+
 | Parameter | Type | Function |
 | --- | --- | --- |
 | `file` | | See the common parameters. |
 | `function` | string | One function: its qualified name or its name. The default is all functions of the file. |
+| `lines` | two integers | Only the functions with a line in these lines: the first and the last line. The default is all lines. If no function has a line there, `functions` is empty, and `note` tells it. |
 
 Example request: "Which functions of this file are the most dangerous to change, and why?"
+
+### get_call_graph
+
+Gives the state of the scan of the call graph: `none`, `scanning`, `stopped`, `ready` or `failed`, and the progress of a scan in source files. After a complete scan, it also gives the number of the functions and of the calls, the frame functions of the project with their reasons, and the source files that the scan could not parse. The tool does not start or stop a scan.
+
+Parameters: none.
+
+Example request: "Which frame functions did DataFlow find in this project?"
 
 ### get_logic
 
@@ -658,6 +686,7 @@ Shows the plan of a diff walk in the side view, and goes to the lines of step 1.
 | `title` | text | A short title of the walk. DataFlow cuts a title after 80 characters. |
 | `summary` | text | One to three sentences: what the changes do. DataFlow cuts a summary after 1000 characters. |
 | `steps` | list | Necessary. The steps in the order of the walk, from 1 to 40 steps. |
+| `allHunks` | true or false | `true` (the default): DataFlow adds a step for each hunk that no step names. `false`: the walk shows only the hunks of the steps, and the result gives the other hunks in `notShown`. |
 
 Each step has these fields:
 
@@ -669,7 +698,7 @@ Each step has these fields:
 | `checks` | list of texts | Questions for the user in this step, a maximum of 5. |
 | `kind` | text | `change`, `ripple`, `context`, `risk` or `test`, as in `show_review_plan`. |
 
-DataFlow adds a step at the end for each hunk that no step names, so the walk shows all changes. The result gives these steps in `addedSteps`. If a step has a problem, for example an id that is not in the diff, the view does not change. The model gets each problem.
+DataFlow adds a step at the end for each hunk that no step names, so the walk shows all changes. The result gives these steps in `addedSteps`. With `allHunks` set to `false`, DataFlow adds no steps. If a step has a problem, for example an id that is not in the diff, the view does not change. The model gets each problem.
 
 Example request: "Show the walk, with the new settings first."
 

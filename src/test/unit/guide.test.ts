@@ -232,7 +232,7 @@ suite('Guided review', () => {
 	test('With the heat of the changed files, a changed file has the heat of its changed functions, and hottestChanges gives them', () => {
 		const fn = (name: string, first: number, last: number, score: number, band: HeatBand): HeatFunction => ({
 			name, qualifiedName: `power::${name}`, first, last, nameLine: first, score, band, flames: 1, reach: 0, risk: 0, history: 0, isSiloed: false,
-			reasons: [{ group: 'risk', points: 10, text: '24 decisions' }],
+			isReachComplete: true, reasons: [{ group: 'risk', points: 10, text: '24 decisions', id: 'decisions', value: 24 }],
 		});
 		const model: HeatModel = { file: CPP, notices: [], isReachComplete: true, functions: [fn('setup', 10, 20, 80, 'veryHot'), fn('solve', 60, 80, 55, 'hot')] };
 		// a removed block marks the line after it: the changed lines 69 and 75 are in solve(), not in setup()
@@ -248,11 +248,11 @@ suite('Guided review', () => {
 			files: { changedFunctions?: { function: string; lines: number[]; score: number; band: string }[] }[];
 			hottestChanges: { function: string; file: string; score: number; band: string; reasons: string[] }[];
 		};
-		assert.deepStrictEqual(facts.files[0].changedFunctions, [{ function: 'power::solve', lines: [60, 80], score: 55, band: 'hot' }]);
+		assert.deepStrictEqual(facts.files[0].changedFunctions, [{ function: 'power::solve', lines: [60, 80], score: 55, band: 'hot', isReachComplete: true }]);
 		// a file with no changes has no changed functions
 		assert.strictEqual(facts.files[1].changedFunctions, undefined);
 		assert.deepStrictEqual(facts.hottestChanges, [
-			{ function: 'power::solve', lines: [60, 80], score: 55, band: 'hot', file: 'src/battery.cpp', reasons: ['24 decisions (+10 risk)'] },
+			{ function: 'power::solve', lines: [60, 80], score: 55, band: 'hot', isReachComplete: true, file: 'src/battery.cpp', reasons: ['24 decisions (+10 risk)'] },
 		]);
 	});
 });

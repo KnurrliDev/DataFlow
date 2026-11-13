@@ -90,7 +90,9 @@ export function reviewFacts(input: ReviewFilesInput, heat?: ReadonlyMap<string, 
 			isChanged: true,
 			changedLines: f.hunks.flat().filter((l) => l.kind === 'added').map((l) => l.newLine),
 			...(fns.length > 0 ? {
-				changedFunctions: fns.map((fn) => ({ function: fn.qualifiedName || fn.name, lines: [fn.first, fn.last], score: fn.score, band: bandText(fn.band) })),
+				changedFunctions: fns.map((fn) => ({
+					function: fn.qualifiedName || fn.name, lines: [fn.first, fn.last], score: fn.score, band: bandText(fn.band), isReachComplete: fn.isReachComplete,
+				})),
 			} : {}),
 			diff: lines.slice(0, MAX_DIFF_LINES).join('\n'),
 			...(lines.length > MAX_DIFF_LINES ? { isDiffTruncated: true } : {}),

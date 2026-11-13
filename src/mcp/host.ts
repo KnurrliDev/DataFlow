@@ -428,8 +428,9 @@ export class DataFlowMcpHost implements McpHost {
 
 	// The outline of a type by its name, or at a line with its name. A type that the translation unit only declares gets
 	// the outline of the header with its definition, as the menu "Outline" does
-	// The heat of the functions of a file, the hottest first. With a function, only that function
-	async heat(file: string | undefined, fn: string | undefined): Promise<Api.HeatFacts> {
+	// The heat of the functions of a file, the hottest first. With a function, only that function. With lines, only the
+	// functions with a line in them, as for the hottest function of a step
+	async heat(file: string | undefined, fn: string | undefined, lines?: [number, number]): Promise<Api.HeatFacts> {
 		const { doc, file: f } = await this.prepare(file);
 		const model = await this.deps.heat(doc);
 		let functions = [...model.functions].sort((a, b) => b.score - a.score || a.first - b.first);
@@ -439,15 +440,22 @@ export class DataFlowMcpHost implements McpHost {
 				throw new Error(`No function ${fn} in ${path.basename(f)}. Call list_functions.`);
 			}
 		}
+		if (lines) {
+			functions = functions.filter((h) => h.first <= lines[1] && h.last >= lines[0]);
+		}
 		const scan = this.scanNote();
 		return {
 			file: f,
+			isReachComplete: model.isReachComplete,
 			functions: functions.slice(0, MAX_ITEMS).map((h) => ({
 				name: h.qualifiedName || h.name, lines: [h.first, h.last], score: h.score, band: bandText(h.band), flames: h.flames,
-				reach: h.reach, risk: h.risk, history: h.history, ...(h.isSiloed ? { siloed: true } : {}),
+				reach: h.reach, risk: h.risk, history: h.history, ...(h.isSiloed ? { siloed: true } : {}), isReachComplete: h.isReachComplete,
 				reasons: h.reasons.map((r) => `${r.text} (+${r.points} ${r.group})`),
+				signals: h.reasons.map((r) => ({ ...r })),
 			})),
 			...(functions.length > MAX_ITEMS ? { more: functions.length - MAX_ITEMS } : {}),
+			...(lines && functions.length === 0
+				? { note: `No function${fn ? ` ${fn}` : ''} has a line in the lines ${lines[0]} to ${lines[1]} of ${path.basename(f)}.` } : {}),
 			...(scan ? { callGraph: scan } : {}),
 			notices: model.notices,
 		};
@@ -753,7 +761,7 @@ export class DataFlowMcpHost implements McpHost {
 		if (walk.hunks.length === 0) {
 			throw new Error(`The last get_diff has no hunks: no C or C++ file changed against ${walk.input.base}.`);
 		}
-		const { guide, problems, added } = resolveWalkPlan(plan, walk.hunks, {
+		const { guide, problems, added, notShown } = resolveWalkPlan(plan, walk.hunks, {
 			input: walk.input, seq: (store.state.guide?.seq ?? 0) + 1, client: this.deps.client(),
 		});
 		if (!guide) {
@@ -772,6 +780,7 @@ export class DataFlowMcpHost implements McpHost {
 				addedSteps: added.map((g) => ({ title: groupTitle(g), hunks: g.map((h) => h.id) })),
 				addedNote: 'Your plan has no step for these hunks, so DataFlow added a step for each of them after your steps. To change this, call show_diff_walk again with all hunks.',
 			} : {}),
+			...(notShown.length > 0 ? { notShown } : {}),
 			shown: 1,
 			note: 'The side view shows step 1 with its diff. The user goes to the next step with the button Next, or asks you. get_view gives the step that the user looks at.',
 		};
@@ -916,6 +925,11 @@ export class DataFlowMcpHost implements McpHost {
 	async scanCallGraph(): Promise<Api.CallGraphFacts> {
 		this.ready();
 		this.deps.scanCallGraph();
+		return callGraphFacts(this.deps.store.state.callGraph);
+	}
+
+	// The state of the scan of the call graph. It does not start or stop a scan
+	async callGraph(): Promise<Api.CallGraphFacts> {
 		return callGraphFacts(this.deps.store.state.callGraph);
 	}
 

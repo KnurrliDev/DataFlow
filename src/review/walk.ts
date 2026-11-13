@@ -344,6 +344,7 @@ export interface WalkPlanInput {
 	title?: unknown;
 	summary?: unknown;
 	steps?: unknown;
+	allHunks?: boolean; // false: no steps for the hunks that no step names. Default: true
 }
 
 // The ids of hunks for a text, for example "h1, h4 and h7"
@@ -353,14 +354,15 @@ function idsText(ids: readonly string[]): string {
 
 // Checks the plan of a model for a diff walk. Each step names its hunks with the ids of get_diff, and all hunks of a
 // step are in one file. The hunks that no step names get default steps after the steps of the plan, so the walk shows
-// all changes. The result has a problem for each wrong step, so the model can correct all of them in one call
+// all changes. With allHunks false, the walk has only the steps of the plan, and notShown names the other hunks. The
+// result has a problem for each wrong step, so the model can correct all of them in one call
 export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[], options: { input: WalkInput; seq: number; client?: string }):
-	{ guide?: SideGuide; problems: string[]; added: WalkHunk[][] } {
+	{ guide?: SideGuide; problems: string[]; added: WalkHunk[][]; notShown: string[] } {
 	if (!Array.isArray(input.steps) || input.steps.length === 0) {
-		return { problems: ['Give "steps": a list with one step or more.'], added: [] };
+		return { problems: ['Give "steps": a list with one step or more.'], added: [], notShown: [] };
 	}
 	if (input.steps.length > MAX_WALK_STEPS) {
-		return { problems: [`Give ${MAX_WALK_STEPS} steps at most. The plan has ${input.steps.length} steps.`], added: [] };
+		return { problems: [`Give ${MAX_WALK_STEPS} steps at most. The plan has ${input.steps.length} steps.`], added: [], notShown: [] };
 	}
 	const problems: string[] = [];
 	const indexOf = new Map(hunks.map((h, i) => [h.id, i]));
@@ -408,15 +410,17 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 		}
 	});
 	if (problems.length > 0) {
-		return { problems, added: [] };
+		return { problems, added: [], notShown: [] };
 	}
 	const rest = hunks.filter((h) => !used.has(h.id));
-	const restGroups = walkGroups(rest);
+	const isAll = input.allHunks !== false;
+	const restGroups = isAll ? walkGroups(rest) : { groups: [], skipped: [] };
 	if (restGroups.skipped.length > 0 || planned.length + restGroups.groups.length > MAX_WALK_STEPS) {
 		return {
 			problems: [`The hunks ${idsText(rest.map((h) => h.id))} are in no step. They need more steps, and a walk has a maximum of ${MAX_WALK_STEPS} steps. `
-				+ 'Put these hunks in the steps of the plan.'],
+				+ 'Put these hunks in the steps of the plan, or give allHunks false.'],
 			added: [],
+			notShown: [],
 		};
 	}
 	const steps = [
@@ -444,6 +448,7 @@ export function resolveWalkPlan(input: WalkPlanInput, hunks: readonly WalkHunk[]
 		},
 		problems: [],
 		added: restGroups.groups,
+		notShown: isAll ? [] : rest.map((h) => h.id),
 	};
 }
 
@@ -496,7 +501,9 @@ export function walkFacts(input: WalkInput, hunks: readonly WalkHunk[], heat?: R
 				removed: h.minus,
 				...(h.functions.length > 0 ? { functions: h.functions.map((fn) => fn.qualified) } : {}),
 				...(h.newFunctions.length > 0 ? { newFunctions: h.newFunctions.map((fn) => fn.qualified) } : {}),
-				...(fns.length > 0 ? { heat: fns.map((fn) => ({ function: fn.qualifiedName || fn.name, score: fn.score, band: bandText(fn.band) })) } : {}),
+				...(fns.length > 0 ? {
+					heat: fns.map((fn) => ({ function: fn.qualifiedName || fn.name, score: fn.score, band: bandText(fn.band), isReachComplete: fn.isReachComplete })),
+				} : {}),
 				...(isShown ? { diff: text.join('\n') } : { isDiffTruncated: true }),
 			};
 		}),

@@ -62,7 +62,8 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `getHidden({ file, function, line })` | [`get_hidden`](tools.md#get_hidden) | read |
 | `getIncludes({ file })` | [`get_includes`](tools.md#get_includes) | read |
 | `getOutline({ file, name, line })` | [`get_outline`](tools.md#get_outline) | read |
-| `getHeat({ file, function })` | [`get_heat`](tools.md#get_heat) | read |
+| `getHeat({ file, function, lines })` | [`get_heat`](tools.md#get_heat) | read |
+| `getCallGraph()` | [`get_call_graph`](tools.md#get_call_graph) | read |
 | `getLogic({ file, function, line, choices })` | [`get_logic`](tools.md#get_logic) | read |
 | `getRipple()` | [`get_ripple`](tools.md#get_ripple) | read |
 | `getReview({ paths })` | [`get_review`](tools.md#get_review) | read |
@@ -82,7 +83,7 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `scanCallGraph()` | [`scan_call_graph`](tools.md#scan_call_graph) | view |
 | `stopCallGraph()` | [`stop_call_graph`](tools.md#stop_call_graph) | view |
 | `showReviewPlan({ title, summary, steps })` | [`show_review_plan`](tools.md#show_review_plan) | view |
-| `showDiffWalk({ title, summary, steps })` | [`show_diff_walk`](tools.md#show_diff_walk) | view |
+| `showDiffWalk({ title, summary, steps, allHunks })` | [`show_diff_walk`](tools.md#show_diff_walk) | view |
 | `reviewStep({ step, note, status })` | [`review_step`](tools.md#review_step) | view |
 | `closeGuide({ kind })` | [`close_guide`](tools.md#close_guide) | view |
 
@@ -96,13 +97,14 @@ These properties give the state:
 | --- | --- |
 | `version` | The version of the API: `1`. |
 | `engineState` | The state of the engine: `stopped`, `starting`, `ready` or `failed`. The methods that use the engine need `ready`. |
+| `engineError` | The reason of the state `failed`, or of the state `stopped` with no compile database. Else `undefined`. |
 | `compileDatabases` | The compile databases of the engine. |
 
 ## The events
 
 | Event | When | Data |
 | --- | --- | --- |
-| `onDidChangeEngineState` | The engine starts, is ready, stops or fails, or the compile databases change. | `state` and `compileDatabases` |
+| `onDidChangeEngineState` | The engine starts, is ready, stops or fails, or the compile databases change. | `state`, `compileDatabases`, and `error` as in `engineError` |
 | `onDidChangeView` | The file, the function or the line at the cursor changes. The cursor is the cursor of the active C++ editor, or the cursor of the side view if no C++ editor shows. The event comes after the engine found the function at the cursor. | `file`, `function` with its `name` and its `lines`, and `line` |
 | `onDidChangeGuide` | A guided review or a diff walk starts, goes to a step, gets a mark or a note, or closes. | The guide as `get_view` gives it in `review`, or `null` after the close |
 | `onDidChangeCallGraph` | The scan of the call graph starts, makes progress, stops or ends. | The data of `scan_call_graph` |
@@ -119,7 +121,7 @@ context.subscriptions.push(api.onDidChangeView((view) => console.log(view.file, 
 
 A method that fails rejects its promise with an `Error`. The message tells the reason. Examples:
 
-- The engine is not ready. Wait for `onDidChangeEngineState` with the state `ready`.
+- The engine is not ready. Wait for `onDidChangeEngineState` with the state `ready`. `engineError` tells why the engine does not run.
 - The file is not in the project. The tools read only the files of the project that is open in VS Code.
 - An argument is not correct, for example a line after the end of the file or a key of `choices` that the function does not have. A view method then does not change the view.
 

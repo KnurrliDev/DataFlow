@@ -48,7 +48,7 @@ suite('Heat', () => {
 
 	test('The risk adds the decisions, the depth, the writes, the threads, the costs in loops and the length, to a maximum of 25', () => {
 		const small = buildHeat(inputs([fn('small', 1, 5, { decisions: 1 })])).functions[0];
-		assert.deepStrictEqual([small.risk, small.reasons], [3, [{ group: 'risk', points: 3, text: '1 decision' }]]);
+		assert.deepStrictEqual([small.risk, small.reasons], [3, [{ group: 'risk', points: 3, text: '1 decision', id: 'decisions', value: 1 }]]);
 
 		const big = fn('solve', 10, 130, {
 			decisions: 24, depth: 5, bodyLines: 120, allocationsInLoops: 1, copiesInLoops: 3,
@@ -174,6 +174,9 @@ suite('Heat', () => {
 		assert.deepStrictEqual(old.reasons.map((r) => r.text), ['Changed in 2 commits', '1 commit that fixes a bug: "Fix the clamp"']);
 		// a line that is not committed is a recent change
 		assert.deepStrictEqual(changed.reasons.map((r) => r.text), ['Changed in 1 commit', 'Changes that are not committed']);
+		// the signals of the history: the number of the commits, the summaries of the fixes, and the kind of the change
+		assert.deepStrictEqual(all.reasons.map((r) => [r.id, r.value]), [['commits', 3], ['fixes', ['Fix the clamp']], ['recent', 'recent']]);
+		assert.deepStrictEqual(changed.reasons.map((r) => [r.id, r.value]), [['commits', 1], ['recent', 'uncommitted']]);
 		// with no blame, the notice tells it
 		assert.ok(buildHeat(inputs([fn('x', 1, 2)])).notices.some((n) => n.startsWith('No history')));
 	});
@@ -191,6 +194,48 @@ suite('Heat', () => {
 		const fact = heatFact(solve);
 		assert.deepStrictEqual([fact.function, fact.lines, fact.score, fact.band], ['rate::solve', [12, 30], solve.score, bandText(solve.band)]);
 		assert.deepStrictEqual(fact.reasons, solve.reasons.slice().sort((a, b) => b.points - a.points).slice(0, 3).map((r) => `${r.text} (+${r.points} ${r.group})`));
+	});
+
+	test('Each reason gives the id and the measure of its signal, and each function tells if its reach is complete', () => {
+		const frame = { reason: 'override of QWidget::paintEvent', path: ['View::paintEvent', 'draw'], isInLoop: true };
+		const hot = fn('shade', 1, 60, {
+			decisions: 3, depth: 4, bodyLines: 60, allocationsInLoops: 1, override: true, declaration: { file: HEADER, line: 3 },
+			writes: [{ path: 'rate_', scope: 'member' }], reach: { callers: 3, transitiveCallers: 40, callerFiles: 7, frame },
+		});
+		const threads = {
+			threads: [], captures: [], isTruncated: false, analysisMs: 0, cached: false,
+			functions: [{ name: 'shade', qualifiedName: 'rate::shade', kind: 'function', file: FILE, line: 1, first: 2, last: 60, threads: [-1] }],
+			items: [{
+				key: 'jobs', label: 'jobs_', kind: 'member', type: 'int', isAtomic: false,
+				refs: [
+					{ file: FILE, line: 20, col: 1, len: 4, role: 'write', thread: -1, fn: 0, path: 'jobs_', sub: [], locks: ['mutex_'], order: {}, guards: [], via: [] },
+					{ file: FILE, line: 40, col: 1, len: 4, role: 'read', thread: 0, fn: 0, path: 'jobs_', sub: [], locks: ['mutex_'], order: {}, guards: [], via: [] },
+				],
+			}],
+		} as unknown as ThreadsModel;
+		const heat = buildHeat(inputs([hot, fn('added', 62, 63, { reach: null })], {
+			threads, includeReach: (file) => (file === HEADER ? { units: 30, total: 50 } : undefined),
+		}));
+		const signals = Object.fromEntries(heat.functions[0].reasons.map((r) => [r.id, r.value]));
+		assert.deepStrictEqual(signals, {
+			framePath: { reason: 'override of QWidget::paintEvent', path: ['View::paintEvent', 'draw'], calls: 2, isInLoop: true },
+			frameLoop: true,
+			callers: { direct: 3, transitive: 40, isCapped: false },
+			callerFiles: 7,
+			includeReach: { file: HEADER, units: 30, total: 50 },
+			virtual: 'override',
+			decisions: 3,
+			depth: 4,
+			writes: ['rate_'],
+			sharedLocked: ['jobs_'],
+			loopCosts: { allocations: 1, copies: 0 },
+			length: 60,
+		});
+		// each reason has its signal, and the signal does not change the text or the points
+		assert.ok(heat.functions[0].reasons.every((r) => typeof r.id === 'string' && r.points > 0 && r.text.length > 0));
+		// the function that is newer than the scan has no reach yet
+		assert.deepStrictEqual(heat.functions.map((f) => f.isReachComplete), [true, false]);
+		assert.deepStrictEqual(heat.functions.map((f) => heatFact(f).isReachComplete), [true, false]);
 	});
 
 	test('The bands and the flames come from the score', () => {

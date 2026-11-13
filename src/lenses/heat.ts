@@ -8,11 +8,9 @@ import type { MetricsFunction, MetricsModel, MetricsReach, ThreadsModel } from '
 export type HeatBand = 'cool' | 'warm' | 'hot' | 'veryHot';
 export type HeatGroup = 'reach' | 'risk' | 'history';
 
-export interface HeatReason {
-	group: HeatGroup;
-	points: number;
-	text: string;
-}
+// A reason of the score: its group, its points and its text, with the kind (id) and the measure (value) of its signal
+// for the clients of DataFlow
+export type HeatReason = Api.HeatSignal;
 
 export interface HeatFunction {
 	name: string;
@@ -27,6 +25,7 @@ export interface HeatFunction {
 	risk: number;
 	history: number;
 	isSiloed: boolean; // the reach is less than 10 with the callers, thus the risk and the history count half
+	isReachComplete: boolean; // the call graph gives the reach of the function: its callers and its frame path
 	reasons: HeatReason[]; // the reasons with points, the largest first in each group
 }
 
@@ -135,12 +134,14 @@ function reachReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 	const out: HeatReason[] = [];
 	const graph = fn.reach;
 	if (graph?.frame) {
+		const frame = graph.frame;
 		out.push({
 			group: 'reach', points: 40,
-			text: graph.frame.path.length === 0 ? `Runs in each frame: ${graph.frame.reason}` : `On the frame path: ${framePathText(graph.frame, fn.qualifiedName)}`,
+			text: frame.path.length === 0 ? `Runs in each frame: ${frame.reason}` : `On the frame path: ${framePathText(frame, fn.qualifiedName)}`,
+			id: 'framePath', value: { reason: frame.reason, path: [...frame.path], calls: frame.path.length, isInLoop: frame.isInLoop },
 		});
-		if (graph.frame.isInLoop) {
-			out.push({ group: 'reach', points: 10, text: 'A caller on the frame path calls it in a loop' });
+		if (frame.isInLoop) {
+			out.push({ group: 'reach', points: 10, text: 'A caller on the frame path calls it in a loop', id: 'frameLoop', value: true });
 		}
 	}
 	// the transitive callers show how much code depends on the function
@@ -149,10 +150,16 @@ function reachReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 		const text = graph.transitiveCallers === graph.callers
 			? `${plural(graph.callers, 'function calls', 'functions call')} it directly`
 			: `${all} ${graph.transitiveCallers === 1 ? 'function calls' : 'functions call'} it, ${graph.callers} of them directly`;
-		out.push({ group: 'reach', points: logPoints(graph.transitiveCallers, 2, 10), text });
+		out.push({
+			group: 'reach', points: logPoints(graph.transitiveCallers, 2, 10), text,
+			id: 'callers', value: { direct: graph.callers, transitive: graph.transitiveCallers, isCapped: !!graph.isCapped },
+		});
 	}
 	if (graph && graph.callerFiles > 0) {
-		out.push({ group: 'reach', points: Math.min(5, graph.callerFiles), text: `Callers in ${plural(graph.callerFiles, 'other file', 'other files')}` });
+		out.push({
+			group: 'reach', points: Math.min(5, graph.callerFiles), text: `Callers in ${plural(graph.callerFiles, 'other file', 'other files')}`,
+			id: 'callerFiles', value: graph.callerFiles,
+		});
 	}
 	const reach = inputs.includeReach(fn.declaration.file);
 	if (reach && reach.total > 0 && reach.units > 0) {
@@ -161,11 +168,15 @@ function reachReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 			out.push({
 				group: 'reach', points,
 				text: `${baseName(fn.declaration.file)} with the declaration is in ${reach.units} of ${plural(reach.total, 'source file', 'source files')}`,
+				id: 'includeReach', value: { file: fn.declaration.file, units: reach.units, total: reach.total },
 			});
 		}
 	}
 	if (fn.override || fn.virtual) {
-		out.push({ group: 'reach', points: 2, text: fn.override ? 'Override of a virtual function' : 'Virtual function' });
+		out.push({
+			group: 'reach', points: 2, text: fn.override ? 'Override of a virtual function' : 'Virtual function',
+			id: 'virtual', value: fn.override ? 'override' : 'virtual',
+		});
 	}
 	return out;
 }
@@ -186,13 +197,14 @@ function riskReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 	const out: HeatReason[] = [];
 	const decisions = logPoints(fn.decisions, 2.5, 10);
 	if (decisions > 0) {
-		out.push({ group: 'risk', points: decisions, text: plural(fn.decisions, 'decision', 'decisions') });
+		out.push({ group: 'risk', points: decisions, text: plural(fn.decisions, 'decision', 'decisions'), id: 'decisions', value: fn.decisions });
 	}
 	if (fn.depth >= 4) {
-		out.push({ group: 'risk', points: 3, text: `Nesting depth of ${fn.depth}` });
+		out.push({ group: 'risk', points: 3, text: `Nesting depth of ${fn.depth}`, id: 'depth', value: fn.depth });
 	}
 	if (fn.writes.length > 0) {
-		out.push({ group: 'risk', points: Math.min(5, fn.writes.length), text: `Writes shared state: ${namesText(fn.writes.map((w) => w.path))}` });
+		const names = fn.writes.map((w) => w.path);
+		out.push({ group: 'risk', points: Math.min(5, fn.writes.length), text: `Writes shared state: ${namesText(names)}`, id: 'writes', value: names });
 	}
 
 	// the data that two or more threads share. An access with a lock, an atomic or an order to the threads is protected
@@ -212,9 +224,9 @@ function riskReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 		(mine.every(isSafe) ? locked : unprotected).push(item.label);
 	}
 	if (unprotected.length > 0) {
-		out.push({ group: 'risk', points: 6, text: `Data that threads share, with no protection: ${namesText(unprotected)}` });
+		out.push({ group: 'risk', points: 6, text: `Data that threads share, with no protection: ${namesText(unprotected)}`, id: 'sharedUnprotected', value: unprotected });
 	} else if (locked.length > 0) {
-		out.push({ group: 'risk', points: 3, text: `Data that threads share, with a lock: ${namesText(locked)}` });
+		out.push({ group: 'risk', points: 3, text: `Data that threads share, with a lock: ${namesText(locked)}`, id: 'sharedLocked', value: locked });
 	}
 
 	const costs = Math.min(3, fn.allocationsInLoops + Math.ceil(fn.copiesInLoops / 2));
@@ -223,11 +235,14 @@ function riskReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 			...(fn.allocationsInLoops > 0 ? [plural(fn.allocationsInLoops, 'allocation', 'allocations')] : []),
 			...(fn.copiesInLoops > 0 ? [plural(fn.copiesInLoops, 'copy', 'copies')] : []),
 		];
-		out.push({ group: 'risk', points: costs, text: `In loops: ${parts.join(', ')}` });
+		out.push({
+			group: 'risk', points: costs, text: `In loops: ${parts.join(', ')}`,
+			id: 'loopCosts', value: { allocations: fn.allocationsInLoops, copies: fn.copiesInLoops },
+		});
 	}
 	const length = fn.bodyLines > 100 ? 2 : fn.bodyLines > 50 ? 1 : 0;
 	if (length > 0) {
-		out.push({ group: 'risk', points: length, text: `Long body: ${fn.bodyLines} lines` });
+		out.push({ group: 'risk', points: length, text: `Long body: ${fn.bodyLines} lines`, id: 'length', value: fn.bodyLines });
 	}
 	return out;
 }
@@ -251,18 +266,22 @@ function historyReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 	const out: HeatReason[] = [];
 	const count = logPoints(commits.size, 2, 7);
 	if (count > 0) {
-		out.push({ group: 'history', points: count, text: `Changed in ${plural(commits.size, 'commit', 'commits')}` });
+		out.push({ group: 'history', points: count, text: `Changed in ${plural(commits.size, 'commit', 'commits')}`, id: 'commits', value: commits.size });
 	}
 	const fixes = [...commits].map((c) => blame.commits.get(c)?.summary ?? '').filter((s) => FIX_COMMIT.test(s));
 	if (fixes.length > 0) {
 		out.push({
 			group: 'history', points: Math.min(6, 2 * fixes.length),
 			text: `${fixes.length === 1 ? '1 commit that fixes a bug' : `${fixes.length} commits that fix bugs`}: ${namesText(fixes.map((s) => `"${s}"`))}`,
+			id: 'fixes', value: fixes,
 		});
 	}
 	const since = (inputs.now - RECENT_MS) / 1000;
 	if (isChanged || [...commits].some((c) => (blame.commits.get(c)?.time ?? 0) >= since)) {
-		out.push({ group: 'history', points: 2, text: isChanged ? 'Changes that are not committed' : 'Changed in the last 30 days' });
+		out.push({
+			group: 'history', points: 2, text: isChanged ? 'Changes that are not committed' : 'Changed in the last 30 days',
+			id: 'recent', value: isChanged ? 'uncommitted' : 'recent',
+		});
 	}
 	return out;
 }
@@ -295,6 +314,7 @@ export function buildHeat(inputs: HeatInputs): HeatModel {
 			risk: riskPoints,
 			history: historyPoints,
 			isSiloed,
+			isReachComplete: !!fn.reach,
 			reasons: [...reach, ...risk, ...history],
 		};
 	});
@@ -350,7 +370,7 @@ export const bandText = (band: HeatBand): Api.HeatBand => (band === 'veryHot' ? 
 export function heatFact(fn: HeatFunction, reasons = 3): Omit<Api.HotChange, 'file'> {
 	const top = [...fn.reasons].sort(byPoints).slice(0, reasons);
 	return {
-		function: fn.qualifiedName || fn.name, lines: [fn.first, fn.last], score: fn.score, band: bandText(fn.band),
+		function: fn.qualifiedName || fn.name, lines: [fn.first, fn.last], score: fn.score, band: bandText(fn.band), isReachComplete: fn.isReachComplete,
 		reasons: top.map((r) => `${r.text} (+${r.points} ${r.group})`),
 	};
 }
