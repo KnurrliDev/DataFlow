@@ -24,6 +24,7 @@
 - The tab Guide has a field for the note of the user on the current step. `get_view` gives the note of the user and the text of the note of the model. The summary has the notes of the user.
 - API: `onDidChangeGuide` gives `change` and `by`: the cause of the change, and the user or the client.
 - A guided review has a maximum of 40 steps, as a diff walk. Before, the maximum was 20.
+- API: `registerTools` adds tools of an extension to the MCP server. The MCP name of a tool starts with the name of the client, and its description too. The result removes the tools. After a change of the tools, the bridge tells its client that the list of the tools changed, and the agent mode of VS Code gets a new version of the server.
 
 ## 0.5.0
 

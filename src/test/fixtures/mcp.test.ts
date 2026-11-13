@@ -144,6 +144,42 @@ suite('MCP server on the fixture', () => {
 		assert.strictEqual(api.store.state.mcp.client, 'fixture-test');
 	});
 
+	test('An extension adds a tool: the list and the file of the window show it, a client calls it, and a dispose removes it', async function () {
+		this.timeout(30000);
+		const ext = api.getApi(1, { client: 'fixture-ext' });
+		const windowFile = path.join(process.env.DATAFLOW_MCP_REGISTRY!, `window-${process.pid}.json`);
+		const listsOf = () => (JSON.parse(readFileSync(windowFile, 'utf8')) as { lists?: number }).lists ?? 0;
+		const before = listsOf();
+		const seen: unknown[] = [];
+		const registration = ext.registerTools([{
+			name: 'get_brief', title: 'Get the brief', description: 'Gives the brief of the task.', isReadOnly: true,
+			inputSchema: { type: 'object', properties: { stage: { type: 'string' } } },
+			call: (args) => {
+				seen.push(args);
+				return { stage: args.stage ?? 'brief', text: 'Add a limit to the solver.' };
+			},
+		}]);
+		try {
+			// the file of the window gets the next number of the lists, so the bridge tells its client
+			await waitFor(() => listsOf() === before + 1, 5000, () => String(listsOf()));
+			const list = await rpc('tools/list');
+			const own = list.result.tools.find((t: { name: string }) => t.name === 'fixture_ext_get_brief');
+			assert.deepStrictEqual([own?.title, own?.description, own?.annotations.readOnlyHint], ['Get the brief', 'fixture-ext: Gives the brief of the task.', true]);
+			const res = await tool('fixture_ext_get_brief', { stage: 'survey' });
+			assert.deepStrictEqual([res.isError, res.data], [false, { stage: 'survey', text: 'Add a limit to the solver.' }]);
+			assert.deepStrictEqual(seen, [{ stage: 'survey' }]);
+			// the API keeps the tools of DataFlow for callTool
+			assert.ok(!ext.tools.some((t) => t.name === 'fixture_ext_get_brief'));
+			assert.throws(() => ext.registerTools([{ name: 'get_brief', title: 'x', description: 'y', inputSchema: { type: 'object' }, call: () => 'z' }]),
+				/the MCP server has the tool fixture_ext_get_brief already/);
+		} finally {
+			registration.dispose();
+		}
+		await waitFor(() => listsOf() === before + 2, 5000, () => String(listsOf()));
+		const after = await rpc('tools/list');
+		assert.ok(!after.result.tools.some((t: { name: string }) => t.name === 'fixture_ext_get_brief'));
+	});
+
 	test('get_structure gives the statements of process() and the branches of its if chain', async () => {
 		const res = await tool('get_structure', { function: 'process' });
 		assert.ok(!res.isError, res.text);

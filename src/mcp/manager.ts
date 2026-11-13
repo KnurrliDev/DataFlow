@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { StateStore } from '../state/store';
 import { registryDir, WindowEntry, windowFileName } from './bridge';
+import type { ExtensionTools } from './extensionTools';
 import {
 	claudeSettingsFile, ClaudeConnection, connectionOf, connectSettings, disconnectSettings, marketplaceDir, marketplacePathOf, readText,
 	removePlugin, writePlugin, writeTextAtomic, writeToken,
@@ -36,6 +37,7 @@ export class McpManager implements vscode.Disposable {
 		private readonly tools: McpTool[],
 		private readonly prompts: McpPrompt[],
 		private readonly folders: () => string[], // the workspace folders and the folder of the project
+		private readonly extensionTools?: ExtensionTools, // the tools that other extensions add with the API
 	) {
 		// the registry has the folders of the window and its last focus
 		this.disposables.push(
@@ -48,6 +50,14 @@ export class McpManager implements vscode.Disposable {
 			vscode.workspace.onDidChangeWorkspaceFolders(() => this.writeEntry()),
 			store.onDidChange(() => this.writeEntry()),
 		);
+		// a change of the tools of the extensions: the registry gets the new number of the lists, so the bridge tells its
+		// client, and the agent mode of VS Code gets a new version of the server
+		if (extensionTools) {
+			this.disposables.push(extensionTools.onDidChange(() => {
+				this.writeEntry();
+				this.changeEmitter.fire();
+			}));
+		}
 		// VS Code starts the server when its agent mode needs it. The user agrees to the start in VS Code
 		this.disposables.push(vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, {
 			onDidChangeMcpServerDefinitions: this.changeEmitter.event,
@@ -245,7 +255,8 @@ export class McpManager implements vscode.Disposable {
 		if (!server?.isRunning) {
 			return;
 		}
-		const entry: WindowEntry = { pid: process.pid, url: server.url, folders: this.folders(), focused: this.focused };
+		const lists = this.extensionTools?.lists ?? 0;
+		const entry: WindowEntry = { pid: process.pid, url: server.url, folders: this.folders(), focused: this.focused, ...(lists > 0 ? { lists } : {}) };
 		const text = JSON.stringify(entry);
 		if (text === this.entry) {
 			return;
@@ -275,7 +286,9 @@ export class McpManager implements vscode.Disposable {
 
 	private async definition(): Promise<vscode.McpHttpServerDefinition> {
 		const url = this.server?.isRunning ? this.server.url : `http://127.0.0.1:${this.port()}${PATH}`;
-		const version = String(this.context.extension.packageJSON.version ?? '');
+		// a new version tells VS Code that the tools changed
+		const lists = this.extensionTools?.lists ?? 0;
+		const version = `${String(this.context.extension.packageJSON.version ?? '')}${lists > 0 ? `+tools.${lists}` : ''}`;
 		return new vscode.McpHttpServerDefinition('DataFlow', vscode.Uri.parse(url), { Authorization: `Bearer ${await this.getToken()}` }, version);
 	}
 
@@ -291,7 +304,7 @@ export class McpManager implements vscode.Disposable {
 			title: 'DataFlow',
 			version: String(this.context.extension.packageJSON.version ?? ''),
 			instructions: INSTRUCTIONS,
-			tools: this.tools,
+			tools: () => (this.extensionTools ? [...this.tools, ...this.extensionTools.list()] : this.tools),
 			prompts: this.prompts,
 			log: (text) => this.log.warn(text),
 			onClient: (client) => {

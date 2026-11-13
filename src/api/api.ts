@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import type * as Api from '../../api/dataflow-api';
 import type { EngineFunction } from '../engine/client';
 import { fileKey } from '../lenses/member';
+import type { ExtensionTools } from '../mcp/extensionTools';
 import { callGraphFacts, DataFlowMcpHost, type HostDeps } from '../mcp/host';
 import { createTools } from '../mcp/tools';
 import { guideFacts } from '../review/guide';
@@ -21,6 +22,7 @@ export interface ApiDeps {
 	hostDeps: HostDeps; // the dependencies of the host of the MCP server. Each API object sets its own client
 	currentPlace(): { doc: vscode.TextDocument; pos: vscode.Position } | undefined;
 	log(message: string): void;
+	extensionTools?: ExtensionTools; // the tools that extensions add to the MCP server
 }
 
 // The reason of a state of the engine with no work, as the status bar tells it. Before the first search of the compile
@@ -186,6 +188,14 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		onDidChangeCallGraph: events.onDidChangeCallGraph,
 		onDidInvokeAction: events.actionsOf(client),
 		callTool: (tool, args) => call<unknown>(tool, args),
+		registerTools: (list) => {
+			if (!deps.extensionTools) {
+				throw new Error('The MCP server of DataFlow is not available in this window.');
+			}
+			const registration = deps.extensionTools.register(client, list);
+			deps.log(`The extension "${client}" added ${list.length === 1 ? '1 tool' : `${list.length} tools`} to the MCP server.`);
+			return registration;
+		},
 
 		getView: () => call('get_view'),
 		listFunctions: (args) => call('list_functions', args),

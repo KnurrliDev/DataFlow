@@ -25,7 +25,7 @@ Ctrl+click on a name in the side view goes to its definition, and Alt+Left goes 
 
 DataFlow also has an MCP server. A language model reads the facts of the engine through the tools of the server. Then the model shows logical blocks, notes, comments and details in the side view. The engine gives the lines and the data, and the model adds the words. In a guided review, the model goes through the files that you name with you, one step after the other. In a diff walk, the side view goes through the changes of a diff with you, for example the changes that the model made.
 
-Other VS Code extensions can use the same tools through the API of DataFlow, with events for the cursor, the engine, the guide and the scan of the call graph. Each extension and each MCP client has its own layers in the side view, and an extension can put buttons on its notes, details and steps. [Use the API for extensions](docs/api.md)
+Other VS Code extensions can use the same tools through the API of DataFlow, with events for the cursor, the engine, the guide and the scan of the call graph. Each extension and each MCP client has its own layers in the side view, and an extension can put buttons on its notes, details and steps. An extension can also add its own tools to the MCP server of DataFlow, so Claude Code needs only one connection. [Use the API for extensions](docs/api.md)
 
 DataFlow works on Windows 64-bit with VS Code 1.120 or later. Your project needs a compile database, for example the `compile_commands.json` file of CMake or a qmake build folder. For an Unreal Engine 5 project, DataFlow makes the compile database with UnrealBuildTool.
 

@@ -16,7 +16,8 @@ import { createInterface } from 'readline';
 //   > the token comes from the environment variable DATAFLOW_TOKEN, else from the token file of the registry folder,
 //     which the connection to Claude Code writes
 //   > after a change of the server, for example a reload of the window with a new version of DataFlow, the bridge tells
-//     the client that the list of the tools changed. The client then asks for the list again (ListWatch)
+//     the client that the list of the tools changed. The client then asks for the list again (ListWatch). The same occurs
+//     when an extension adds tools to the server or removes them: the window gives a new number of its lists
 // This file needs only Node.js. The extension copies it into the registry folder, so the setup of a client stays
 // correct after an update of the extension.
 
@@ -25,6 +26,7 @@ export interface WindowEntry {
 	url: string; // the address of the server, for example http://127.0.0.1:47321/mcp
 	folders: string[]; // the workspace folders and the folder of the project
 	focused: number; // the time of the last focus of the window in ms, or 0
+	lists?: number; // the number of the changes of the tools of the extensions. Undefined for 0
 }
 
 // The registry folder. It is not in AppData, because the Claude app on Windows redirects the files of AppData
@@ -151,16 +153,20 @@ const LISTS: Record<string, { key: string; notification: string }> = {
 	'prompts/list': { key: 'prompts', notification: 'notifications/prompts/list_changed' },
 };
 
-const serverOf = (w: WindowEntry) => `${w.pid} ${w.url}`;
+// The process of a server, and the server with the number of its lists
+const processOf = (w: WindowEntry) => `${w.pid} ${w.url}`;
+const serverOf = (w: WindowEntry) => `${processOf(w)} ${w.lists ?? 0}`;
 
 // The lists of the client, for the notifications after a change of the server. The HTTP server cannot send a message
-// of its own, so the bridge checks the server of the window at an interval. With a different server, it gives the new
-// server the initialize of the client, so the new server knows the client. Then it compares the lists of the new server
-// with the lists that the client got. For a different list, the client gets a notification, and it asks for the list
-// again. A change of the focus to a window with the same lists sends no notification.
+// of its own, so the bridge checks the server of the window at an interval. With a different server process, it gives
+// the new server the initialize of the client, so the new server knows the client. A new number of the lists of the same
+// server needs no initialize. Then the bridge compares the lists of the server with the lists that the client got. For a
+// different list, the client gets a notification, and it asks for the list again. A change of the focus to a window with
+// the same lists sends no notification.
 export class ListWatch {
 	private initialize?: string; // the last initialize of the client, one line
-	private server?: string; // the server of the lists of the client
+	private server?: string; // the server of the lists of the client, with the number of its lists
+	private process?: string; // the server process that got the initialize of the client
 	private readonly lists = new Map<string, string>(); // a method of a list -> the list that the client got, as JSON
 
 	// Notes a reply of a server to the client. The reply to initialize tells the client that the lists can change
@@ -172,11 +178,13 @@ export class ListWatch {
 		if (method === 'initialize') {
 			this.initialize = line;
 			this.server = serverOf(window);
+			this.process = processOf(window);
 			const caps = (result.capabilities ?? {}) as Record<string, object | undefined>;
 			result.capabilities = { ...caps, tools: { ...caps.tools, listChanged: true }, prompts: { ...caps.prompts, listChanged: true } };
 		} else if (LISTS[method]) {
 			this.lists.set(method, JSON.stringify(result[LISTS[method].key]));
 			this.server = serverOf(window);
+			this.process ??= processOf(window);
 		}
 		return body;
 	}
@@ -189,7 +197,10 @@ export class ListWatch {
 			return [];
 		}
 		try {
-			await post(window.url, token, this.initialize);
+			if (processOf(window) !== this.process) {
+				await post(window.url, token, this.initialize);
+				this.process = processOf(window);
+			}
 			const lists = new Map<string, string>();
 			for (const method of this.lists.keys()) {
 				const reply = await post(window.url, token, JSON.stringify({ jsonrpc: '2.0', id: `dataflow-bridge-${method}`, method, params: {} }));

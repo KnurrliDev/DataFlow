@@ -36,7 +36,7 @@ export interface DataFlowApi {
 	readonly engineError: string | undefined;
 	// The compile databases of the engine: the files, or the qmake project of a database that DataFlow makes
 	readonly compileDatabases: readonly string[];
-	// The tools of the MCP server with their JSON schemas. callTool runs a tool by its name
+	// The tools of DataFlow in the MCP server with their JSON schemas. callTool runs a tool by its name
 	readonly tools: readonly DataFlowTool[];
 
 	// The engine starts, is ready, stops or fails, or the compile databases change
@@ -52,8 +52,14 @@ export interface DataFlowApi {
 	// The user clicked a button of your extension on a note, a detail or a step of a guide
 	readonly onDidInvokeAction: vscode.Event<ActionEvent>;
 
-	// Runs a tool of the MCP server, and gives its result. The typed methods below run the same tools
+	// Runs a tool of DataFlow, and gives its result. The typed methods below run the same tools
 	callTool(name: string, args?: Record<string, unknown>): Promise<unknown>;
+
+	// Adds tools of your extension to the MCP server of DataFlow, so a client of the server, for example Claude Code,
+	// can call them. The MCP name of a tool is the name of your client in lowercase, then _, then the name of the tool.
+	// All tools must be correct, or no tool goes in, and the method throws an error. The result removes the tools: add it
+	// to the subscriptions of your extension
+	registerTools(tools: ExtensionTool[]): vscode.Disposable;
 
 	// Read tools. They do not change the view
 	getView(): Promise<ViewFacts>; // get_view
@@ -102,6 +108,20 @@ export interface DataFlowTool {
 	inputSchema: Record<string, unknown>; // the JSON schema of the arguments
 	isReadOnly: boolean; // the tool does not change the view
 	isDestructive: boolean; // the tool removes data of the user, for example the marks of the steps of a guide
+}
+
+// A tool of your extension for the MCP server. name: letters, digits and _. The MCP name, with the name of your client
+// before it, has a maximum of 64 characters. description: the server puts the name of your client before it.
+// inputSchema: a JSON Schema with "type": "object". call: gets the arguments of the client, and gives a text, or a value
+// that DataFlow gives as JSON. An error of call goes to the client as the result of the tool
+export interface ExtensionTool {
+	name: string;
+	title: string;
+	description: string;
+	inputSchema: Record<string, unknown>;
+	isReadOnly?: boolean; // the tool changes nothing. Default: false
+	isDestructive?: boolean; // the tool removes data of the user. Default: false
+	call(args: Record<string, unknown>): unknown;
 }
 
 //-------------------

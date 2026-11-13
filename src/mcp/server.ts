@@ -52,7 +52,7 @@ export interface McpServerOptions {
 	title: string;
 	version: string;
 	instructions: string;
-	tools: McpTool[];
+	tools: readonly McpTool[] | (() => readonly McpTool[]); // a function gives the tools that can change, for example the tools of extensions
 	prompts: McpPrompt[];
 	log?: (text: string) => void;
 	onClient?: (client: McpClientInfo) => void; // a client sent initialize
@@ -242,6 +242,7 @@ export class McpServer {
 
 	private async call(method: string, params: Record<string, unknown>): Promise<unknown> {
 		const { options } = this;
+		const tools = typeof options.tools === 'function' ? options.tools() : options.tools;
 		switch (method) {
 			case 'initialize': {
 				const info = (params.clientInfo ?? {}) as { name?: unknown; version?: unknown };
@@ -259,7 +260,7 @@ export class McpServer {
 				return {};
 			case 'tools/list':
 				return {
-					tools: options.tools.map((t) => ({
+					tools: tools.map((t) => ({
 						name: t.name,
 						title: t.title,
 						description: t.description,
@@ -268,7 +269,7 @@ export class McpServer {
 					})),
 				};
 			case 'tools/call': {
-				const tool = options.tools.find((t) => t.name === params.name);
+				const tool = tools.find((t) => t.name === params.name);
 				if (!tool) {
 					throw new RpcError(-32602, `Unknown tool: ${String(params.name)}`);
 				}

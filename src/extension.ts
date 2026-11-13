@@ -35,6 +35,7 @@ import {
 } from './logic/paths';
 import { DataFlowMcpHost, type HostDeps } from './mcp/host';
 import { LayerKeeper } from './mcp/layers';
+import { ExtensionTools } from './mcp/extensionTools';
 import { McpManager } from './mcp/manager';
 import { createPrompts, createTools } from './mcp/tools';
 import { commitUri, INCLUDE_FILE, isCppFile, openReviewRepository, ReviewDiff, ReviewRepository } from './review/git';
@@ -2900,7 +2901,11 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		},
 	};
 	const mcpHost = new DataFlowMcpHost(hostDeps);
-	const mcp: McpManager = new McpManager(context, store, log, createTools(mcpHost), createPrompts(), () => projectRoots());
+	// the tools of DataFlow, and the tools that other extensions add with the API
+	const dataflowTools = createTools(mcpHost);
+	const extensionTools = new ExtensionTools(() => dataflowTools.map((t) => t.name));
+	context.subscriptions.push(extensionTools);
+	const mcp: McpManager = new McpManager(context, store, log, dataflowTools, createPrompts(), () => projectRoots(), extensionTools);
 	context.subscriptions.push(mcp);
 
 	const startMcp = async (isUserAction: boolean): Promise<void> => {
@@ -3236,7 +3241,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	layers.restore();
 
 	// The API for other extensions. Each extension gets its own host of the tools, with its name as the client
-	const apiDeps = { store, hostDeps, currentPlace, log: (message: string) => log.info(message) };
+	const apiDeps = { store, hostDeps, currentPlace, log: (message: string) => log.info(message), extensionTools };
 	const apiEvents = new ApiEvents(apiDeps);
 	context.subscriptions.push(apiEvents);
 	const getApi = (version: 1, options?: DataFlowApiOptions) => createApi(apiDeps, apiEvents, version, options);

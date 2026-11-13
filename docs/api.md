@@ -13,6 +13,7 @@ Examples of extensions that can use the API:
 - [The events](#the-events)
 - [Guides](#guides)
 - [Buttons](#buttons)
+- [Tools for the MCP server](#tools-for-the-mcp-server)
 - [Errors](#errors)
 - [Versions](#versions)
 - [Examples](#examples)
@@ -97,7 +98,7 @@ The read methods do not change the view. The view methods change the side view t
 
 The results of `highlight`, `commentLines` and `addDetail` give the ids of the new items, for example `n1`, `c1` and `d1`. `remove` removes items of your client by their ids.
 
-`callTool(name, args)` runs a tool by its name, for example `callTool('get_view')`. `tools` gives the name, the description and the JSON schema of the arguments of each tool.
+`callTool(name, args)` runs a tool by its name, for example `callTool('get_view')`. `tools` gives the name, the description and the JSON schema of the arguments of each tool. `tools` and `callTool` use only the tools of DataFlow, not the tools of extensions.
 
 These properties give the state:
 
@@ -190,6 +191,34 @@ context.subscriptions.push(api.onDidInvokeAction(async (e) => {
 	}
 }));
 ```
+
+## Tools for the MCP server
+
+Your extension can add its own tools to the [MCP server](tools.md) of DataFlow. A client of the server, for example Claude Code, then gets your tools with the tools of DataFlow through one connection.
+
+```ts
+context.subscriptions.push(api.registerTools([{
+	name: 'get_brief',
+	title: 'Get the brief',
+	description: 'Gives the brief of the current task.',
+	inputSchema: { type: 'object', properties: { stage: { type: 'string' } } },
+	isReadOnly: true,
+	call: async (args) => ({ stage: args.stage ?? 'brief', text: await readBrief() }),
+}]));
+```
+
+- The MCP name of a tool is the name of your client in lowercase, then `_`, then the name of the tool, for example `my_extension_get_brief`. A character of the name of the client that is not a letter or a digit becomes `_`.
+- The name of a tool can have only letters, digits and `_`. The MCP name has a maximum of 64 characters. A name that the server has already gives an error.
+- The server puts the name of your client before the description of each tool.
+- `inputSchema` is a JSON Schema with `"type": "object"`. DataFlow does not check the arguments against it.
+- `call` gets the arguments of the client. A text goes to the client as it is, and a different value goes as JSON. An error of `call` goes to the client as an error result with its message.
+- All tools of one call must be correct. Else no tool goes in, and `registerTools` throws an error with each problem.
+- The result of `registerTools` removes the tools. Add it to the subscriptions of your extension.
+- `isReadOnly` and `isDestructive` give the hints of the tool for the client. The defaults are `false`.
+
+After a change of the tools, the bridge of DataFlow tells Claude Code that the list of the tools changed, and Claude Code gets the new list. The agent mode of VS Code gets a new version of the server. A client that connects to the address of the server with no bridge gets the new tools only at its next request for the list.
+
+The token of the MCP server protects your tools, as it protects the tools of DataFlow. Your tools run in your extension.
 
 ## Errors
 

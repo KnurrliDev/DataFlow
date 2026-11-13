@@ -244,6 +244,8 @@ The side view shows only C and C++ files. The summary of a walk of the command g
 
 The read tools give the facts of the engine and of git, and do not change the view. The view tools change the side view.
 
+Other extensions can add their own tools to the server with the [API for extensions](api.md#tools-for-the-mcp-server). The name of such a tool starts with the name of the extension, for example `my_extension_get_brief`, and its description starts with the name of the extension too. After a change of these tools, the bridge tells Claude Code that the list of the tools changed.
+
 | Tool | Kind | Function |
 | --- | --- | --- |
 | [`get_view`](#get_view) | read | The active file, the function and the line at the cursor, and the selection. Also the state of the side view, with the blocks of each function. With no C++ editor, the file, the cursor and the selection of the side view |

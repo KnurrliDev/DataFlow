@@ -5,7 +5,9 @@ import { IncomingHttpHeaders, request } from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { createInterface } from 'readline';
+import type * as Api from '../../../api/dataflow-api';
 import { chooseWindow, forward, readWindows, TOKEN_FILE, tokenOf, WindowEntry, windowFileName } from '../../mcp/bridge';
+import { ExtensionTools } from '../../mcp/extensionTools';
 import { nameColumn } from '../../mcp/host';
 import { McpServer, McpTool, PROTOCOL_VERSIONS } from '../../mcp/server';
 
@@ -286,6 +288,61 @@ suite('MCP bridge', () => {
 		}
 	});
 
+	test('An extension adds a tool: a new number of the lists of the same server gives the notification, with no new initialize', async function () {
+		this.timeout(30000);
+		const reg = mkdtempSync(path.join(os.tmpdir(), 'dataflow-bridge-lists-'));
+		const extra: McpTool = { ...echo, name: 'ext_extra', description: 'ext: A tool of an extension.' };
+		let tools: McpTool[] = [echo];
+		let initializes = 0;
+		const live = new McpServer({
+			port: 0, path: '/mcp', token: TOKEN, name: 'dataflow', title: 'DataFlow', version: '0.1.0', instructions: '', tools: () => tools, prompts: [],
+			onClient: () => { initializes++; },
+		});
+		await live.start();
+		const writeLists = (lists: number) => writeFileSync(path.join(reg, windowFileName(process.pid)),
+			JSON.stringify({ ...entry(process.pid, live.url, [reg], 1), ...(lists > 0 ? { lists } : {}) }));
+		writeLists(0);
+		const bridge = path.join(__dirname, '..', '..', 'mcp', 'bridge.js');
+		const child = spawn(process.execPath, [bridge, '--folder', reg], {
+			env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DATAFLOW_TOKEN: TOKEN, DATAFLOW_MCP_REGISTRY: reg, DATAFLOW_BRIDGE_CHECK_MS: '100' },
+		});
+		const closed = new Promise((resolve) => child.on('close', resolve));
+		const lines: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+		createInterface({ input: child.stdout }).on('line', (line) => lines.push(JSON.parse(line)));
+		const replyOf = (id: number) => lines.find((l) => l.id === id);
+		const changes = () => lines.filter((l) => l.method === 'notifications/tools/list_changed').length;
+		const until = async (isDone: () => boolean) => {
+			for (const end = Date.now() + 10000; !isDone(); await sleep(50)) {
+				assert.ok(Date.now() < end, JSON.stringify(lines));
+			}
+		};
+		try {
+			child.stdin.write(`${JSON.stringify(rpc('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'lists-test', version: '1' } }, 1))}\n`);
+			child.stdin.write(`${JSON.stringify(rpc('tools/list', {}, 2))}\n`);
+			await until(() => !!replyOf(1) && !!replyOf(2));
+			// the extension adds its tool, and the window writes the next number of its lists
+			tools = [echo, extra];
+			writeLists(1);
+			await until(() => changes() === 1);
+			child.stdin.write(`${JSON.stringify(rpc('tools/list', {}, 3))}\n`);
+			child.stdin.write(`${JSON.stringify(rpc('tools/call', { name: 'ext_extra', arguments: { b: 2 } }, 4))}\n`);
+			await until(() => !!replyOf(3) && !!replyOf(4));
+			assert.deepStrictEqual(replyOf(3).result.tools.map((t: { name: string }) => t.name), ['echo', 'ext_extra']);
+			assert.strictEqual(replyOf(4).result.content[0].text, '{"b":2}');
+			// the server is the same process, so it got the initialize of the client only one time
+			assert.strictEqual(initializes, 1);
+			// the extension removes its tool
+			tools = [echo];
+			writeLists(2);
+			await until(() => changes() === 2);
+		} finally {
+			child.stdin.end();
+			await closed;
+			await live.stop();
+			rmSync(reg, { recursive: true, force: true });
+		}
+	});
+
 	test('With no DATAFLOW_TOKEN, the bridge reads the token file of the registry folder', async function () {
 		this.timeout(20000);
 		const file = path.join(dir, TOKEN_FILE);
@@ -307,5 +364,65 @@ suite('MCP bridge', () => {
 		} finally {
 			rmSync(file, { force: true });
 		}
+	});
+});
+
+// The tools that other extensions add to the MCP server with the API
+suite('Tools of extensions in the MCP server', () => {
+	const ok = { title: 'A tool', description: 'Does a thing.', inputSchema: { type: 'object' }, call: () => 'done' };
+
+	test('The tools of a client get its name before their names and descriptions, and a dispose removes them', async () => {
+		const tools = new ExtensionTools(() => ['get_view', 'clear']);
+		let changes = 0;
+		tools.onDidChange(() => changes++);
+		const registration = tools.register('My-Extension', [
+			{ name: 'get_brief', title: 'Get the brief', description: 'Gives the brief.', inputSchema: { type: 'object', properties: {} }, isReadOnly: true, call: () => ({ brief: 'x' }) },
+			{ name: 'submit_plan', title: 'Submit the plan', description: 'Takes the plan.', inputSchema: { type: 'object' }, isDestructive: true, call: async (args: Record<string, unknown>) => `got ${JSON.stringify(args)}` },
+		]);
+		assert.deepStrictEqual(tools.list().map((t) => [t.name, t.description, t.isReadOnly, t.isDestructive ?? false]), [
+			['my_extension_get_brief', 'My-Extension: Gives the brief.', true, false],
+			['my_extension_submit_plan', 'My-Extension: Takes the plan.', false, true],
+		]);
+		assert.deepStrictEqual([tools.lists, changes], [1, 1]);
+		// a text stays as it is, and a different value becomes JSON
+		assert.deepStrictEqual(await tools.list()[0].call({}), { text: '{"brief":"x"}' });
+		assert.deepStrictEqual(await tools.list()[1].call({ a: 1 }), { text: 'got {"a":1}' });
+		registration.dispose();
+		registration.dispose();
+		assert.deepStrictEqual([tools.list(), tools.lists, changes], [[], 2, 2]);
+		tools.dispose();
+	});
+
+	test('Wrong tools give one problem for each tool, and no tool goes in', () => {
+		const tools = new ExtensionTools(() => ['ext_get_view']);
+		tools.register('other', [{ name: 'taken', ...ok }]);
+		const wrong = [
+			{ name: 'get_view', ...ok },
+			{ name: 'bad-name', ...ok },
+			{ name: 'x'.repeat(70), ...ok },
+			{ name: 'no_title', ...ok, title: ' ' },
+			{ name: 'no_schema', ...ok, inputSchema: { type: 'array' } },
+			{ name: 'no_call', ...ok, call: undefined },
+			{ name: 'twice', ...ok },
+			{ name: 'twice', ...ok },
+		] as unknown as Api.ExtensionTool[];
+		assert.throws(() => tools.register('ext', wrong), (error: Error) => {
+			assert.strictEqual(error.message, [
+				'No tool was added.',
+				'Tool 1: the MCP server has the tool ext_get_view already.',
+				'Tool 2: "name" must have only letters, digits and _.',
+				`Tool 3: the MCP name ext_${'x'.repeat(70)} has more than 64 characters.`,
+				'Tool 4: give a "title".',
+				'Tool 5: "inputSchema" must be a JSON Schema of an object, with "type": "object".',
+				'Tool 6: give the function "call".',
+				'Tool 8: the MCP server has the tool ext_twice already.',
+			].join('\n'));
+			return true;
+		});
+		assert.deepStrictEqual([tools.list().map((t) => t.name), tools.lists], [['other_taken'], 1]);
+		assert.throws(() => tools.register('ext', []), /Give a list of one tool or more\./);
+		// a tool of a different client with the same MCP name
+		assert.throws(() => tools.register('Other', [{ name: 'taken', ...ok }]), /the MCP server has the tool other_taken already/);
+		tools.dispose();
 	});
 });
