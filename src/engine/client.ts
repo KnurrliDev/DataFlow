@@ -355,13 +355,15 @@ export interface MetricsReach {
 	// the frame function. isPastLimit: more than 8 calls, so the path gives no points
 	frame?: { reason: string; path: string[]; isInLoop: boolean; calls?: number; isPastLimit?: boolean };
 	// the callers that the call graph cannot see: a use of the address of the function, a library that calls an override,
-	// or qt that calls a slot. via: the function that uses the address, the overridden function, or the signal
+	// qt that calls a slot, a lambda that runs later, the reflection of a framework, or the users of a library. via: the
+	// function that uses the address, the overridden function, the signal, the function around the lambda, the macro, or
+	// the public folder
 	unknownCallers?: { cause: UnknownCallersCause; via: string; file: string; line: number };
 	// the test functions among the transitive callers, and their first 5 files. Only with the folders of the tests
 	tests?: { functions: number; files: string[]; isCapped?: boolean };
 }
 
-export type UnknownCallersCause = 'address' | 'libraryOverride' | 'slot';
+export type UnknownCallersCause = 'address' | 'libraryOverride' | 'slot' | 'callback' | 'reflection' | 'public';
 
 // The data of dataflow/callers: the callers of a function up to a depth, with the lines of their calls, and the frame
 // paths of the function. Only the state of the call graph if the graph is not complete
@@ -386,6 +388,8 @@ export interface PlaceModel {
 	isInBody: boolean; // false for a line of the head of the function, for example a parameter
 	around: PlaceScope[]; // the statements around the line, from the outside in
 	locks: string[]; // the mutexes that the code holds at the start of the line
+	inScope: PlaceName[]; // the first 60 names in scope at the start of the line
+	isInScopeCapped?: boolean; // more names are in scope
 	reach: MetricsReach | null; // null: no complete call graph, or no node for the function
 	callGraph: MetricsModel['callGraph'];
 }
@@ -398,7 +402,15 @@ export interface PlaceScope {
 	text?: string; // the condition, the loop variable and the range, the exception or the captures of a lambda
 	branch?: string; // a decision: then, else, condition, true, false, or the case labels of a switch
 	isOpenLoop?: boolean; // a loop: no fixed number of iterations
+	isMainLoop?: boolean; // a loop: a main loop of the call graph. Only with a complete call graph
 	isSynchronous?: boolean; // a lambda: the call runs the lambda before it returns
+}
+
+// A name in scope at a line: a parameter, a local variable before the line, or a data member of the class or of a base
+export interface PlaceName {
+	name: string;
+	type: string;
+	kind: 'param' | 'local' | 'member';
 }
 
 // The data of dataflow/memberSites: the sites of the members of a type from the index of the call graph. A type with
@@ -463,6 +475,13 @@ export interface CallGraphFrame {
 	reason: string; // for example "override of QWidget::paintEvent"
 }
 
+// A main loop: a loop whose calls make frame functions, with the function and the first line of the loop
+export interface CallGraphMainLoop {
+	function: string;
+	file: string;
+	line: number;
+}
+
 // The data of dataflow/callGraph. engine/README.md describes the fields
 export interface CallGraphResult {
 	units: number; // the source files in the project folders
@@ -471,6 +490,7 @@ export interface CallGraphResult {
 	functions: number;
 	calls: number;
 	frames: CallGraphFrame[];
+	mainLoops: CallGraphMainLoop[];
 	failed: string[]; // the source files that the scan could not parse
 	ms: number;
 }
@@ -923,20 +943,21 @@ export class EngineClient implements vscode.Disposable {
 	}
 
 	// The metrics of the functions of the file, for the heat score. With a complete call graph, also the reach of each
-	// function. frameFunctions: the names of more frame functions
-	metrics(file: string, frameFunctions: string[], testFolders: string[], token?: vscode.CancellationToken): Promise<FileResult & MetricsModel> {
-		return this.request('dataflow/metrics', { file, frameFunctions, testFolders }, token);
+	// function. frameFunctions: the names of more frame functions. testFolders and publicFolders: the folders of the
+	// tests and of the public headers of a library
+	metrics(file: string, frameFunctions: string[], testFolders: string[], publicFolders: string[], token?: vscode.CancellationToken): Promise<FileResult & MetricsModel> {
+		return this.request('dataflow/metrics', { file, frameFunctions, testFolders, publicFolders }, token);
 	}
 
 	// The callers of a function in the call graph up to a depth from 1 to 6, and its frame paths
-	callers(file: string, fn: FunctionSelector, depth: number, frameFunctions: string[], token?: vscode.CancellationToken): Promise<FileResult & CallersModel> {
-		return this.request('dataflow/callers', { file, ...fn, depth, frameFunctions }, token);
+	callers(file: string, fn: FunctionSelector, depth: number, frameFunctions: string[], publicFolders: string[], token?: vscode.CancellationToken): Promise<FileResult & CallersModel> {
+		return this.request('dataflow/callers', { file, ...fn, depth, frameFunctions, publicFolders }, token);
 	}
 
-	// The facts of a line: the function, the statements around the line, the locks at its start, and the reach of the
-	// function in the call graph. line starts at 1
-	place(file: string, line: number, frameFunctions: string[], token?: vscode.CancellationToken): Promise<FileResult & PlaceModel> {
-		return this.request('dataflow/place', { file, line, frameFunctions }, token);
+	// The facts of a line: the function, the statements around the line, the locks at its start, the names in scope, and
+	// the reach of the function in the call graph. line starts at 1
+	place(file: string, line: number, frameFunctions: string[], publicFolders: string[], token?: vscode.CancellationToken): Promise<FileResult & PlaceModel> {
+		return this.request('dataflow/place', { file, line, frameFunctions, publicFolders }, token);
 	}
 
 	// The sites of the members of a type from the index of the call graph: by its name, or at a position with a UTF-8

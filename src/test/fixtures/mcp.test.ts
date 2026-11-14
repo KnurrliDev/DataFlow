@@ -180,6 +180,32 @@ suite('MCP server on the fixture', () => {
 		assert.ok(!after.result.tools.some((t: { name: string }) => t.name === 'fixture_ext_get_brief'));
 	});
 
+	test('onDidCallTool of the API gives each tool call of a client: a tool of DataFlow and a tool of an extension', async function () {
+		this.timeout(30000);
+		const ext = api.getApi(1, { client: 'fixture-calls' });
+		const seen: { client: string; tool: string; args: Record<string, unknown>; time: string; isReadOnly: boolean; isError: boolean; error?: string }[] = [];
+		const subscription = ext.onDidCallTool((e) => seen.push(e));
+		const registration = ext.registerTools([{ name: 'note', title: 'Take a note', description: 'Takes a note.', inputSchema: { type: 'object' }, call: () => ({ noted: true }) }]);
+		const before = Date.now();
+		try {
+			await tool('get_view');
+			assert.ok((await tool('get_place', { line: 0 })).isError);
+			assert.deepStrictEqual((await tool('fixture_calls_note', { text: 'x' })).data, { noted: true });
+			// a method of the API gives no event
+			await ext.getView();
+			assert.deepStrictEqual(seen.map((e) => [e.client, e.tool, e.args, e.isReadOnly, e.isError]), [
+				['fixture-test', 'get_view', {}, true, false],
+				['fixture-test', 'get_place', { line: 0 }, true, true],
+				['fixture-test', 'fixture_calls_note', { text: 'x' }, false, false],
+			]);
+			assert.match(seen[1].error ?? '', /"line" must be a line number from 1\./);
+			assert.ok(seen.every((e) => Date.parse(e.time) >= before - 1000 && Date.parse(e.time) <= Date.now()), JSON.stringify(seen));
+		} finally {
+			subscription.dispose();
+			registration.dispose();
+		}
+	});
+
 	test('get_structure gives the statements of process() and the branches of its if chain', async () => {
 		const res = await tool('get_structure', { function: 'process' });
 		assert.ok(!res.isError, res.text);
@@ -437,6 +463,14 @@ suite('MCP server on the fixture', () => {
 		this.timeout(60000);
 		const threads = await tool('get_threads');
 		assert.ok(threads.data.items.some((i: any) => i.item === 'charge.is_dirty' && i.verdict === 'Race'), JSON.stringify(threads.data.items));
+		// the accesses of the race as data: the lines of the texts caller and worker, and the pair of the race on both threads
+		const race = threads.data.items.find((i: any) => i.item === 'charge.is_dirty');
+		const linesOf = (thread: string) => race.accesses.filter((a: any) => a.thread === thread && !a.file).map((a: any) => String(a.line));
+		assert.ok(linesOf('caller').length > 0 && linesOf('caller').every((l: string) => race.caller.includes(l)), JSON.stringify(race));
+		assert.ok(linesOf('worker').length > 0 && linesOf('worker').every((l: string) => race.worker.includes(l)), JSON.stringify(race));
+		const paired = race.accesses.filter((a: any) => a.pair === 'race');
+		assert.deepStrictEqual([[...new Set(paired.map((a: any) => a.thread))].sort(), paired.some((a: any) => a.isWrite)], [['caller', 'worker'], true], JSON.stringify(race.accesses));
+		assert.ok(threads.data.items.every((i: any) => (i.kind === 'capture') === (i.accesses === undefined)), JSON.stringify(threads.data.items));
 		const calls = await tool('get_calls', { function: 'process' });
 		assert.ok(calls.data.calls.some((c: any) => c.callee.includes('fire_transition') && c.event), JSON.stringify(calls.data.calls));
 		// the test build of VS Code has no C++ extension

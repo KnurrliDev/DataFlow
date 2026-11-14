@@ -550,9 +550,11 @@ namespace DataFlow {
     for (const clang::CFGBlock* b : *cfg) transfer(*b, in[b->getBlockID()], true);
   }  // add_reaching_edges
 
-  // marks the references that the unchecked optional access model of clang reports
+  // marks the references that the unchecked optional access model of clang reports. the model can stop the engine on
+  // an expression with an error, so a function with an error gets no finding
   inline void add_optional_findings(FlowModel& _model, const clang::FunctionDecl& _fn, clang::ASTContext& _ctx) {
     using namespace clang::dataflow;
+    if (Detail::has_errors(_fn)) return;
 
     UncheckedOptionalAccessDiagnoser diagnoser;
     auto res = diagnoseFunction<UncheckedOptionalAccessModel, UncheckedOptionalAccessDiagnostic>(_fn, _ctx, diagnoser);

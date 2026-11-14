@@ -54,6 +54,9 @@ export interface DataFlowApi {
 	// The engine parsed a file again, for example the active file 250 ms after the last key. Ask for new facts of the file
 	// after this event
 	readonly onDidParse: vscode.Event<ParseEvent>;
+	// An MCP client, for example Claude Code, called a tool of the MCP server. The tool is a read tool or a view tool of
+	// DataFlow, or a tool of an extension. The event comes after the end of the call. The methods of the API give no event
+	readonly onDidCallTool: vscode.Event<ToolCallEvent>;
 
 	// Runs a tool of DataFlow, and gives its result. The typed methods below run the same tools
 	callTool(name: string, args?: Record<string, unknown>): Promise<unknown>;
@@ -85,7 +88,7 @@ export interface DataFlowApi {
 	getPlace(args: PlaceArgs): Promise<PlaceFacts>; // get_place
 	getMemberSites(args: OutlineArgs): Promise<MemberSitesFacts>; // get_member_sites
 	getLogic(args?: LogicArgs): Promise<LogicFacts>; // get_logic
-	getRipple(): Promise<RippleFacts>; // get_ripple
+	getRipple(args?: RippleArgs): Promise<RippleFacts>; // get_ripple. With base or paths, a new review that the view does not show
 	getReview(args: ReviewArgs): Promise<ReviewFacts>; // get_review
 	getDiff(args?: DiffArgs): Promise<DiffFacts>; // get_diff
 
@@ -204,6 +207,21 @@ export interface ViewEvent {
 	file: string | null;
 	function: { name: string; lines: [number, number] } | null;
 	line: number | null; // the line of the cursor
+}
+
+// A call of a tool of the MCP server by an MCP client. client: the name of the MCP client that connected last, as the
+// owner of its guides and marks. The server keeps no sessions, so with two clients at the same time, the name can be
+// wrong. tool: the MCP name of the tool. args: the arguments of the client. time: the start of the call (ISO 8601).
+// isReadOnly: the tool changes nothing, for example a read tool of DataFlow. isError: the call failed, and error gives
+// the text of the failure
+export interface ToolCallEvent {
+	client: string;
+	tool: string;
+	args: Record<string, unknown>;
+	time: string;
+	isReadOnly: boolean;
+	isError: boolean;
+	error?: string;
 }
 
 //-------------------
@@ -326,14 +344,17 @@ export interface RemoveArgs extends FileArgs {
 }
 
 // base: "target" (default), "uncommitted", a commit, a tag or a branch, or "mark:<name>", as for getDiff. paths: only
-// the changes under these paths
+// the changes under these paths. getRipple with base or paths makes a new review: the side view and the review of the
+// user do not change
 export interface RippleArgs {
 	base?: string;
 	paths?: string[];
 }
 
 // name: 1 to 64 letters, digits, "_", "-" or ".". paths: files and folders of the project, relative to the repository or
-// absolute. The mark keeps the text of each text file under the paths, a maximum of 500 files and 20 MB
+// absolute. The mark keeps the text of each text file under the paths, a maximum of 500 files and 20 MB. A path that is
+// not there, for example a new file of a step, is a file with no text. When the file is there, getDiff with the mark
+// gives it as a new file. The path must be in a folder of the project
 export interface MarkArgs {
 	name: string;
 	paths: string[];
@@ -511,14 +532,29 @@ export interface ThreadFacts extends ParseNote {
 		kind: 'member' | 'static' | 'global' | 'local' | 'capture';
 		type: string;
 		verdict: string; // Race, Check, Safe, Safe now or Dangling
-		caller: string;
-		worker: string;
+		caller: string; // the lines of the accesses of the caller thread as a text, for example "reads 94 · writes 116, 129"
+		worker: string; // the lines of the accesses of the worker threads as a text
 		protection: string;
 		summary: string;
 		fix?: { line: number; text: string; before: string; after: string };
+		accesses?: ThreadAccessFacts[]; // the accesses of caller and worker as data. Not for a capture
 	}[];
 	counts: { race: number; check: number; safe: number };
 	truncated?: boolean;
+}
+
+// An access of an item of getThreads, in the sequence of the code. file: only for an access in a different file. role:
+// the role of the engine, as in getFlow. isWrite: true for def, write and mayWrite, the writes of caller and worker.
+// thread: the thread of the caller of the function, or a worker thread. locks: the mutexes that the access holds. pair:
+// the access can run at the same time as an access of a different thread, as in the verdict of the item
+export interface ThreadAccessFacts {
+	file?: string;
+	line: number;
+	role: FlowRole;
+	isWrite: boolean;
+	thread: 'caller' | 'worker';
+	locks: string[];
+	pair?: 'race' | 'check';
 }
 
 export type HiddenKind = 'copy' | 'move' | 'conversion' | 'temporary' | 'shadow' | 'destructor' | 'allocation' | 'lookup' | 'state';
@@ -590,16 +626,20 @@ export type HeatBand = 'cool' | 'warm' | 'hot' | 'very hot';
 
 // address: the code uses the address of the function, so a pointer or a std::function can call it. libraryOverride: the
 // function overrides a virtual function of a library, and the library can call it. slot: qt can call the slot, for
-// example through a signal of a library
-export type UnknownCallersCause = 'address' | 'libraryOverride' | 'slot';
+// example through a signal of a library. callback: a lambda that can run later calls the function, for example the
+// callback of a timer. reflection: the reflection of a framework can call the function, for example a UFUNCTION of
+// Unreal Engine or a Q_INVOKABLE function of Qt. public: the first declaration is in a folder of the setting
+// dataflow.heat.publicFolders, so the users of the library can call the function
+export type UnknownCallersCause = 'address' | 'libraryOverride' | 'slot' | 'callback' | 'reflection' | 'public';
 
 // A signal of the heat: one reason of the score, with its kind (id) and its measure (value)
 export type HeatSignal = { group: 'reach' | 'risk' | 'history'; points: number; text: string } & (
 	// the function runs in each frame: the frame function, the functions from it to the caller before this function,
 	// and the number of calls from the frame function. isPastLimit: more than 8 calls, so the path gives no points
 	| { id: 'framePath'; value: { reason: string; path: string[]; calls: number; isInLoop: boolean; isPastLimit?: boolean } }
-	// callers that the call graph cannot see: a use of the address, a library that calls an override, or qt that calls a
-	// slot. 0 points, and the function is never siloed
+	// callers that the call graph cannot see, with the cause. via: the function that uses the address, the overridden
+	// function, the signal, the function around the lambda, the macro, or the public folder. 0 points, and the function
+	// is never siloed
 	| { id: 'reachUnknown'; value: { cause: UnknownCallersCause; via: string; file: string; line: number } }
 	// the test functions that reach the function, and their first 5 files. 0 points
 	| { id: 'tests'; value: { functions: number; files: string[]; isCapped: boolean } }
@@ -674,6 +714,10 @@ export interface PlaceFacts extends ParseNote {
 	isInBody: boolean; // false for a line of the head of the function, for example a parameter
 	around: PlaceStatement[]; // the statements around the line, from the outside in
 	locks: string[]; // the mutexes that the code holds at the start of the line
+	// the names in scope at the start of the line: the parameters, the local variables before the line, and the data
+	// members of the class and of its bases, the first 60 names. A lambda sees only its captures
+	inScope: PlaceName[];
+	isInScopeCapped?: boolean; // more than 60 names are in scope
 	// the worker threads that run the line, from Threads and races. file and line: the start of the thread
 	threads: { label: string; via: string; file: string; line: number }[];
 	isOnCallerThread: boolean; // the thread of the caller of the function runs the line, also if worker threads run it
@@ -735,7 +779,18 @@ export interface PlaceStatement {
 	text?: string; // the condition, the loop variable and the range, the exception or the captures of a lambda
 	branch?: string; // a decision: then, else, condition, true, false, or the case labels of a switch
 	isOpenLoop?: boolean; // a loop: true if the loop has no fixed number of iterations
+	// a loop: true for a main loop of the call graph, a loop whose calls make frame functions. Only with a complete call
+	// graph
+	isMainLoop?: boolean;
 	isSynchronous?: boolean; // a lambda: true if the call runs the lambda before it returns. false, for example, for a thread
+}
+
+// A name in scope at a line, with its type as text. param: a parameter of the function or of a lambda. local: a local
+// variable. member: a data member or a static data member of the class or of a base
+export interface PlaceName {
+	name: string;
+	type: string;
+	kind: 'param' | 'local' | 'member';
 }
 
 export interface LogicDecision {
@@ -921,6 +976,9 @@ export interface CallGraphFacts {
 		sourceFiles: number;
 		isComplete: boolean;
 		frames: { function: string; file: string; line: number; reason: string }[];
+		// the main loops: the loops whose calls make the frame functions "called in the main loop of", with the function
+		// and the first line of the loop
+		mainLoops: { function: string; file: string; line: number }[];
 		failed?: string[];
 	};
 	note?: string;
@@ -986,11 +1044,13 @@ export interface ClearedResult {
 	cleared: boolean;
 }
 
-// A mark of your client. files: the number of the text files in the mark. time: the time of the mark (ISO 8601)
+// A mark of your client. files: the number of the text files in the mark. notFound: the paths that were not there at
+// the time of the mark. time: the time of the mark (ISO 8601)
 export interface MarkFacts {
 	name: string;
 	files: number;
 	paths: string[];
+	notFound?: string[];
 	time: string;
 }
 

@@ -22,6 +22,9 @@ export interface MarkInfo {
 	name: string;
 	client: string;
 	paths: string[]; // the absolute paths of the files and the folders of the mark
+	// the paths that were not there at the time of the mark. Each one is a file with no text, so the diff since the mark
+	// gives a file there as a new file
+	missing?: string[];
 	root: string; // the folder of the relative paths, for the facts
 	time: number; // the time of the mark in ms
 	bytes: number; // the size of the texts in UTF-8
@@ -71,7 +74,8 @@ export class MarkStore {
 	}
 
 	// Makes a mark of the text files under the paths. A mark with the same name of the client goes away. A path that is
-	// not there, too many files, too much text and too many marks give an error, and no mark changes
+	// not there is a file with no text, for example a new file of a step. It counts as one file. Too many files, too much
+	// text and too many marks give an error, and no mark changes
 	async create(client: string, name: string, paths: readonly string[], root: string, source: MarkSource): Promise<MarkInfo> {
 		if (!NAME.test(name)) {
 			throw new Error('"name" must have 1 to 64 letters, digits, "_", "-" or ".", for example step-5.');
@@ -83,23 +87,20 @@ export class MarkStore {
 		if (!old && (await this.list(client)).length >= MAX_MARKS) {
 			throw new Error(`Your client has ${MAX_MARKS} marks, the maximum. Remove a mark with delete_mark first.`);
 		}
+		const key = (f: string) => (process.platform === 'win32' ? f.toLowerCase() : f);
 		const files = new Map<string, string>();
-		const missing: string[] = [];
+		const missing = new Map<string, string>();
 		for (const p of paths) {
 			const found = await source.files(p);
 			if (!found) {
-				missing.push(p);
-				continue;
+				missing.set(key(p), p);
 			}
-			for (const f of found) {
-				files.set(process.platform === 'win32' ? f.toLowerCase() : f, f);
+			for (const f of found ?? []) {
+				files.set(key(f), f);
 			}
-			if (files.size > MAX_MARK_FILES) {
+			if (files.size + missing.size > MAX_MARK_FILES) {
 				throw new Error(`The paths have more than ${MAX_MARK_FILES} files. Give paths with fewer files. No mark changed.`);
 			}
-		}
-		if (missing.length > 0) {
-			throw new Error(`These paths are not there: ${missing.join(', ')}. No mark changed.`);
 		}
 		// the texts: a file that is not a text file is not in the mark
 		const texts: { file: string; text: string }[] = [];
@@ -121,7 +122,8 @@ export class MarkStore {
 		await rm(next, { recursive: true, force: true });
 		await mkdir(next, { recursive: true });
 		const info: MarkInfo = {
-			name, client, paths: [...paths], root, time: Date.now(), bytes, files: texts.map((t, i) => ({ file: t.file, copy: `${i + 1}.txt` })),
+			name, client, paths: [...paths], ...(missing.size > 0 ? { missing: [...missing.values()] } : {}), root, time: Date.now(), bytes,
+			files: texts.map((t, i) => ({ file: t.file, copy: `${i + 1}.txt` })),
 		};
 		try {
 			for (const [i, t] of texts.entries()) {
@@ -170,8 +172,9 @@ export class MarkStore {
 }
 
 // The changes since a mark: the text of each file now against its text in the mark. A file under the paths of the mark
-// that is not in the mark is a new file. A file of the mark that is not there now is a deleted file. isWanted selects the
-// files, for example the C and C++ files
+// that is not in the mark is a new file. A path that was not there at the time of the mark gives such a new file when it
+// is there. Such a path gives nothing while it is not there. A file of the mark that is not there now is a deleted file.
+// isWanted selects the files, for example the C and C++ files
 export async function markDiff(info: MarkInfo, before: ReadonlyMap<string, string>, source: MarkSource, isWanted: (file: string) => boolean):
 	Promise<{ files: ReviewFile[]; deleted: string[]; other: string[] }> {
 	const key = (f: string) => (process.platform === 'win32' ? f.toLowerCase() : f);

@@ -14,7 +14,7 @@ import { buildSideIncludes } from '../lenses/includes';
 import { checkChoices, logicFacts } from '../lenses/logic';
 import { bodyLabel, fileKey, memberLabel, memberSummary, threadOf } from '../lenses/member';
 import { ReviewState, rippleFacts } from '../lenses/ripple';
-import { buildSideThreads } from '../lenses/threads';
+import { buildSideThreads, threadAccesses } from '../lenses/threads';
 import { buildControls, Choices, Control } from '../logic/paths';
 import { INCLUDE_FILE, isCppFile } from '../review/git';
 import {
@@ -101,6 +101,9 @@ export interface HostDeps {
 	ripple(): { state?: ReviewState; model?: RippleModel; root?: string };
 	// runs a review of Change Ripple, as the command Review Changes does, and gives its result. undefined if it failed
 	startRipple(options?: { base?: string; paths?: string[]; client?: string }): Promise<RippleModel | undefined>;
+	// runs a review of Change Ripple of the changes since a base, and gives its state, its result and the root of its
+	// repository. The side view and the last review do not change. With no target branch, the review fails
+	rippleOf(options: { base?: string; paths?: string[]; client?: string }): Promise<{ state: ReviewState; model?: RippleModel; root?: string }>;
 	// closes Change Ripple, as the button Clear of its bar does. false if no review showed
 	clearRipple(): boolean;
 	// starts the scan of the call graph, or the scan of the changed files, as the button Scan of the tab Heat does
@@ -171,6 +174,7 @@ export function callGraphFacts(graph: CallGraphView | undefined): Api.CallGraphF
 			lastScan: {
 				functions: result.functions, calls: result.calls, sourceFiles: result.units, isComplete: result.isComplete,
 				frames: result.frames.slice(0, MAX_ITEMS).map((f) => ({ function: f.name, file: f.file, line: f.line, reason: f.reason })),
+				mainLoops: (result.mainLoops ?? []).slice(0, MAX_ITEMS).map((l) => ({ function: l.function, file: l.file, line: l.line })),
 				...(result.failed.length > 0 ? { failed: result.failed.slice(0, MAX_ITEMS) } : {}),
 			},
 		} : {}),
@@ -378,16 +382,22 @@ export class DataFlowMcpHost implements McpHost {
 		const { client, doc, file: f } = await this.prepare(file);
 		const model = await client.threads(f, { asyncFunctions: this.deps.asyncFunctions(doc.uri), roots: this.roots() });
 		const side = buildSideThreads(model, f, (l) => (l >= 0 && l < doc.lineCount ? doc.lineAt(l).text : undefined));
+		// the item of the engine for each item of shared data. A capture has no accesses
+		const byKey = new Map(model.items.map((i) => [i.key, i]));
 		return {
 			file: f,
 			threads: side.threads.map((t) => ({
 				label: t.label, via: t.via, line: t.line, function: t.fn, handle: t.handle, ...(t.isRepeated ? { repeated: true } : {}),
 				joins: t.joins.map((j) => `${j.kind} on line ${j.line}`),
 			})),
-			items: side.items.slice(0, MAX_ITEMS).map((i) => ({
-				item: i.label, kind: i.kind, type: i.type, verdict: i.pill, caller: i.caller, worker: i.worker, protection: i.protection, summary: i.summary,
-				...(i.fix ? { fix: { line: i.fix.line, text: i.fix.text, before: i.fix.before, after: i.fix.after } } : {}),
-			})),
+			items: side.items.slice(0, MAX_ITEMS).map((i) => {
+				const item = i.kind === 'capture' ? undefined : byKey.get(i.key);
+				return {
+					item: i.label, kind: i.kind, type: i.type, verdict: i.pill, caller: i.caller, worker: i.worker, protection: i.protection, summary: i.summary,
+					...(i.fix ? { fix: { line: i.fix.line, text: i.fix.text, before: i.fix.before, after: i.fix.after } } : {}),
+					...(item ? { accesses: threadAccesses(model, item, f) } : {}),
+				};
+			}),
 			counts: side.counts,
 			...(side.isTruncated ? { truncated: true } : {}),
 			...parseNote(model),
@@ -584,9 +594,12 @@ export class DataFlowMcpHost implements McpHost {
 				kind: s.kind, lines: [s.first, s.last] as [number, number],
 				...(s.text ? { text: s.text } : {}), ...(s.branch ? { branch: s.branch } : {}),
 				...(s.isOpenLoop !== undefined ? { isOpenLoop: s.isOpenLoop } : {}),
+				...(s.isMainLoop !== undefined ? { isMainLoop: s.isMainLoop } : {}),
 				...(s.isSynchronous !== undefined ? { isSynchronous: s.isSynchronous } : {}),
 			})),
 			locks: [...res.locks],
+			inScope: (res.inScope ?? []).map((n) => ({ name: n.name, type: n.type, kind: n.kind })),
+			...(res.isInScopeCapped ? { isInScopeCapped: true } : {}),
 			threads,
 			isOnCallerThread,
 			isReachComplete: isReady && !!reach,
@@ -1270,9 +1283,17 @@ export class DataFlowMcpHost implements McpHost {
 		return { cleared: this.deps.clearFlow() };
 	}
 
-	// The last review of Change Ripple: the changed functions, the statements that each change reaches, and the callers
-	// that get a changed return value
-	async ripple(): Promise<Api.RippleFacts> {
+	// A review of Change Ripple: the changed functions, the statements that each change reaches, and the callers that get
+	// a changed return value. With a base or paths, a new review of the changes since the base: the side view and the last
+	// review do not change. Else the last review of the side view
+	async ripple(base?: string, paths?: unknown): Promise<Api.RippleFacts> {
+		if (base?.trim() || (paths !== undefined && paths !== null)) {
+			this.ready();
+			const review = await this.deps.rippleOf(this.rippleOptions(base, paths));
+			return review.model
+				? this.rippleResult(review.state, review.model, review.root, 'The side view does not show this review. start_ripple shows a review in the side view.')
+				: { state: 'failed', message: review.state.message ?? 'The review failed.' };
+		}
 		const { state, model, root } = this.deps.ripple();
 		if (state?.isRunning) {
 			return { state: 'running', note: 'The review of Change Ripple runs. Call get_ripple again later.' };
@@ -1282,28 +1303,36 @@ export class DataFlowMcpHost implements McpHost {
 				? { state: 'failed', message: state.message }
 				: { state: 'none', note: 'No review of Change Ripple shows. Call start_ripple, or ask the user to run "DataFlow: Review Changes".' };
 		}
-		const rel = (f: string) => (root && isInside(f, root) ? path.relative(root, f).replace(/\\/g, '/') : f);
-		return { state: 'ready', ...rippleFacts(model, state, rel), ...(state.message ? { message: state.message } : {}) };
+		return this.rippleResult(state, model, root);
 	}
 
 	// Runs a review of Change Ripple, and gives its facts. The default base is the target branch. A tool never asks the
 	// user, so with no target branch the review fails
 	async startRipple(base?: string, paths?: unknown): Promise<Api.RippleFacts> {
 		this.ready();
-		if (paths !== undefined && (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.trim().length > 0))) {
+		await this.deps.startRipple(this.rippleOptions(base, paths));
+		return this.ripple();
+	}
+
+	// The base and the paths of a review of a tool, and the client for its marks
+	private rippleOptions(base: string | undefined, paths: unknown): { base?: string; paths?: string[]; client: string } {
+		if (paths !== undefined && paths !== null && (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.trim().length > 0))) {
 			throw new Error('"paths" must be a list of files and folders.');
 		}
-		await this.deps.startRipple({
-			...(base?.trim() ? { base: base.trim() } : {}), ...(paths ? { paths: (paths as string[]).map((p) => p.trim()) } : {}), client: this.owner(),
-		});
-		return this.ripple();
+		return { ...(base?.trim() ? { base: base.trim() } : {}), ...(Array.isArray(paths) ? { paths: paths.map((p: string) => p.trim()) } : {}), client: this.owner() };
+	}
+
+	// The facts of a review with its result. The paths are relative to the root of the repository
+	private rippleResult(state: ReviewState, model: RippleModel, root: string | undefined, note?: string): Api.RippleFacts {
+		const rel = (f: string) => (root && isInside(f, root) ? path.relative(root, f).replace(/\\/g, '/') : f);
+		return { state: 'ready', ...(note ? { note } : {}), ...rippleFacts(model, state, rel), ...(state.message ? { message: state.message } : {}) };
 	}
 
 	//-------------------
 	// Marks
 
-	// Keeps the text files under the paths in a mark of the client, so get_diff and start_ripple can compare the files
-	// with it later
+	// Keeps the text files under the paths in a mark of the client, so get_diff, get_ripple and start_ripple can compare
+	// the files with it later. A path that is not there is a file with no text
 	async markBase(name: unknown, paths: unknown): Promise<Api.MarkResult> {
 		if (typeof name !== 'string' || !name.trim()) {
 			throw new Error('Give "name": the name of the mark, for example step-5.');
@@ -1315,7 +1344,8 @@ export class DataFlowMcpHost implements McpHost {
 		return {
 			...this.markFacts(info),
 			bytes: info.bytes,
-			note: `get_diff and start_ripple with the base "mark:${info.name}" give the changes since this mark. A new mark with the same name replaces it.`,
+			note: `get_diff, get_ripple and start_ripple with the base "mark:${info.name}" give the changes since this mark. A new mark with the same name replaces it.`
+				+ (info.missing?.length ? ' The paths of notFound are not there now. When a file is there, the diff since the mark gives it as a new file.' : ''),
 		};
 	}
 
@@ -1328,10 +1358,13 @@ export class DataFlowMcpHost implements McpHost {
 		return { deleted, marks: (await this.deps.marks.list(this.owner())).map((m) => m.name) };
 	}
 
-	// A mark for the client: the paths relative to the folder of the mark
+	// A mark for the client: the paths relative to the folder of the mark, and the paths that were not there
 	private markFacts(m: MarkInfo): Api.MarkFacts {
 		const rel = (f: string) => (isInside(f, m.root) ? path.relative(m.root, f).replace(/\\/g, '/') : f);
-		return { name: m.name, files: m.files.length, paths: m.paths.map(rel), time: new Date(m.time).toISOString() };
+		return {
+			name: m.name, files: m.files.length, paths: m.paths.map(rel), ...(m.missing?.length ? { notFound: m.missing.map(rel) } : {}),
+			time: new Date(m.time).toISOString(),
+		};
 	}
 
 	// Closes Change Ripple

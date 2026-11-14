@@ -2248,6 +2248,48 @@ test('a virtual call also goes to the overrides in the classes of its object', a
 	}
 });
 
+test('a function with an error gets no analysis of the optional accesses, because the analysis can stop the engine', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-error-'));
+	const file = path.join(dir, 'limit.cpp');
+	writeFileSync(file, [
+		'#include <optional>',
+		'std::optional<int> next();',
+		'bool over(std::optional<int>& future, int n) {',
+		'  const bool limit = future && n >= missing;', // 4: a check of the optional with an error after it stopped the engine
+		'  return limit;',
+		'}',
+		'int first() {',
+		'  std::optional<int> v = next();',
+		'  return *v;', // 9: an access with no check in a function with no error
+		'}',
+	].join('\n') + '\n');
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file, arguments: ['clang++', '-std=c++20', '-c', file] }]));
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 1, cacheSize: 2 })).error, undefined);
+		const access = await own.send('dataflow/optionalAccess', { file, function: 'over' });
+		assert.equal(access.error?.message, 'the function has an error, so the optional analysis did not run');
+		const flow = await own.send('dataflow/flow', { file, function: 'over', readFunctions: [] });
+		assert.equal(flow.error, undefined, JSON.stringify(flow.error));
+		assert.ok(flow.result.refs.every((r) => !r.finding), JSON.stringify(flow.result.refs));
+		const res = await own.send('dataflow/calls', { file, eventFunctions: [], asyncFunctions: [], roots: [dir] });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 1, res.result.errors.join('\n'));
+
+		// the function with no error keeps the analysis
+		const unchecked = await own.send('dataflow/optionalAccess', { file, function: 'first' });
+		assert.deepEqual(unchecked.result.unchecked.map((u) => u.range.begin.line), [9]);
+		const { functions, calls } = res.result;
+		const call = calls.find((c) => functions[c.to].name === 'next');
+		assert.deepEqual([call.line, call.into, call.optional, call.uncheckedLine], [8, 'v', 'unchecked', 9]);
+		assert.equal(own.proc.exitCode, null);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('gives the threads and the shared data of a file: starts, joins, locks, order and conditions', async () => {
 	const root = path.join(repo, 'test/fixtures/battery');
 	const res = await engine.send('dataflow/threads', { file: fixture, asyncFunctions: ['tf::Executor::async'], roots: [root] });
@@ -3791,6 +3833,540 @@ test('index: the uses of the members, the switch statements on an enum, and the 
 		assert.deepEqual(facts(types[1]), { value_: [1, 0, 1, 'peek', false], hits_: [0, 1, 1, 'peek', false] });
 		assert.deepEqual(types[0].members[0].users.map((u) => [u.name, u.isWrite]), [['demo::load', true], ['demo::save', false], ['demo::step', false]]);
 		assert.equal(types[0].members[3].frame.reason, 'called in the main loop of main');
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('call graph: a call in a lambda that runs later has the cause callback, and a lambda as the slot of a connection is a slot', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-graph-lambda-'));
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		mkdirSync(path.dirname(file), { recursive: true });
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	// a small copy of the declarations of qt, out of the project folders
+	write('lib/QObject.h', [
+		'#pragma once',
+		'#define signals public',
+		'#define emit',
+		'class QObject {',
+		' public:',
+		'  virtual ~QObject() = default;',
+		'  template <class S, class R> static bool connect(const QObject*, S, const QObject*, R) { return true; }',
+		'};',
+		'class QTimer : public QObject {',
+		' public:',
+		'  template <class F> static void singleShot(int, F) {}',
+		' signals:',
+		'  void timeout();',
+		'};',
+	]);
+	write('include/panel.h', [
+		'#pragma once',
+		'#include <QObject.h>',
+		'#include <functional>',
+		'class Panel : public QObject {',
+		' public:',
+		'  void build();',
+		'  void refresh();',
+		'  void tick();',
+		'  void onTimeout();',
+		'  void onChanged();',
+		'  std::function<void()> later();',
+		' signals:',
+		'  void changed();',
+		'};',
+	]);
+	const lines = [
+		'#include "panel.h"',
+		'#include <algorithm>',
+		'#include <vector>',
+		'void stored() {}',
+		'void onGlobal() {}',
+		'void helper() {}',
+		'void direct() {}',
+		'bool check(int x) { return x > 0; }',
+		'bool counted(int x) { return x > 1; }',
+		'void escaped() {}',
+		'void templ(int x) { (void)x; }',
+		'template <class C> void each(const C& c) { std::for_each(c.begin(), c.end(), [](int x) { templ(x); }); }',
+		'static std::function<void()> g_handler = [] { onGlobal(); };',
+		'void Panel::tick() {}',
+		'void Panel::onTimeout() {}',
+		'void Panel::onChanged() {}',
+		'void Panel::refresh() { emit changed(); }',
+		'std::function<void()> Panel::later() { return [] { stored(); }; }',
+		'void Panel::build() {',
+		'  QTimer* timer = nullptr;',
+		'  QTimer::singleShot(100, [this] { tick(); });',
+		'  connect(timer, &QTimer::timeout, this, [this] { onTimeout(); });',
+		'  connect(this, &Panel::changed, this, [this] { onChanged(); });',
+		'  std::vector<int> v{1, 2};',
+		'  const bool any = std::any_of(v.begin(), v.end(), [](int x) { return counted(x); });',
+		'  const auto pred = [](int x) { return check(x); };',
+		'  const bool all = std::all_of(v.begin(), v.end(), pred);',
+		'  const auto run = [&] { helper(); };',
+		'  run();',
+		'  [&] { direct(); }();',
+		'  auto job = [] { escaped(); };',
+		'  QTimer::singleShot(0, job);',
+		'  each(v);',
+		'  (void)any;',
+		'  (void)all;',
+		'}',
+		'int main() {',
+		'  Panel p;',
+		'  p.build();',
+		'  p.refresh();',
+		'  p.later()();',
+		'  g_handler();',
+		'  return 0;',
+		'}',
+	];
+	const panel = write('src/panel.cpp', lines);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file: panel, arguments: ['clang++', '-std=c++20', `-I${path.join(dir, 'include')}`, `-I${path.join(dir, 'lib')}`, '-c', panel] }]));
+	const line = (text) => lines.findIndex((l) => l.includes(text)) + 1;
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 2, cacheSize: 2 })).error, undefined);
+		const roots = [path.join(dir, 'include'), path.join(dir, 'src')];
+		const scan = await own.send('dataflow/callGraph', { roots });
+		assert.equal(scan.error, undefined, JSON.stringify(scan.error));
+		const res = await own.send('dataflow/metrics', { file: panel });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+		const fns = Object.fromEntries(res.result.functions.map((f) => [f.qualifiedName, f.reach]));
+		const unknown = (name) => {
+			const u = fns[name].unknownCallers;
+			return u && [u.cause, u.via, path.basename(u.file), u.line];
+		};
+
+		// a lambda that a timer runs later, a lambda that a function returns, a lambda in a global variable, and a local
+		// lambda that the code gives to a timer: the function around the lambda keeps its call
+		assert.deepEqual(unknown('Panel::tick'), ['callback', 'Panel::build', 'panel.cpp', line('singleShot(100')]);
+		assert.equal(fns['Panel::tick'].callers, 1);
+		assert.deepEqual(unknown('stored'), ['callback', 'Panel::later', 'panel.cpp', line('return [] { stored(); }')]);
+		assert.deepEqual(unknown('onGlobal'), ['callback', 'a global variable', 'panel.cpp', line('g_handler =')]);
+		assert.deepEqual(unknown('escaped'), ['callback', 'Panel::build', 'panel.cpp', line('auto job =')]);
+		// a lambda of a standard algorithm, also in a template, a local lambda that the function calls or gives to a standard
+		// algorithm, and a lambda that the code calls at once run now
+		assert.deepEqual([unknown('counted'), unknown('templ'), unknown('check'), unknown('helper'), unknown('direct')],
+			[undefined, undefined, undefined, undefined, undefined]);
+		assert.deepEqual([fns.counted.callers, fns.templ.callers, fns.check.callers, fns.helper.callers, fns.direct.callers], [1, 1, 1, 1, 1]);
+
+		// a lambda as the slot of a signal of a library: the functions that it calls are slots of the signal
+		assert.deepEqual(unknown('Panel::onTimeout'), ['slot', 'the signal QTimer::timeout', 'panel.cpp', line('&QTimer::timeout')]);
+		// a lambda as the slot of a signal of the project: the emitters of the signal reach the functions that it calls
+		assert.equal(unknown('Panel::onChanged'), undefined);
+		const callers = await own.send('dataflow/callers', { file: panel, function: 'Panel::onChanged', depth: 2 });
+		assert.equal(callers.error, undefined, JSON.stringify(callers.error));
+		assert.deepEqual(callers.result.callers.map((c) => [c.name, c.depth, c.lines, !!c.isConnection]).sort(), [
+			['Panel::build', 1, [line('&Panel::changed')], false],
+			['Panel::changed', 1, [line('&Panel::changed')], true],
+			['Panel::refresh', 2, [line('void Panel::refresh')], false],
+			['main', 2, [line('p.build();')], false],
+		]);
+		const tick = await own.send('dataflow/callers', { file: panel, function: 'Panel::tick', depth: 1 });
+		assert.deepEqual(tick.result.unknownCallers, { cause: 'callback', via: 'Panel::build', file: panel, line: line('singleShot(100') });
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('call graph: a function that the reflection of unreal engine or qt can call, with no caller, has the cause reflection', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-graph-reflection-'));
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		mkdirSync(path.dirname(file), { recursive: true });
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	// the macros of unreal engine and of qt give no code, as without the code generators
+	write('lib/Engine.h', [
+		'#pragma once',
+		'#define UCLASS(...)',
+		'#define UFUNCTION(...)',
+		'#define UPROPERTY(...)',
+		'#define GENERATED_BODY()',
+		'#define Q_OBJECT',
+		'#define Q_INVOKABLE',
+		'#define Q_PROPERTY(...)',
+		'#define signals public',
+		'class UObject { public: virtual ~UObject() = default; };',
+		'class QObject { public: virtual ~QObject() = default; };',
+	]);
+	write('include/actors.h', [
+		'#pragma once',
+		'#include <Engine.h>',
+		'UCLASS()',
+		'class ABattery : public UObject {',
+		'  GENERATED_BODY()',
+		' public:',
+		'  UFUNCTION(BlueprintCallable, Category = "Battery")',
+		'  void Charge(float Amount);',
+		'  UFUNCTION()',
+		'  void OnHit();',
+		'  void Drain();',
+		'  UPROPERTY(EditAnywhere)',
+		'  float Level = 0;',
+		'};',
+		'class Gauge : public QObject {',
+		'  Q_OBJECT',
+		'  Q_PROPERTY(int value READ value WRITE setValue RESET resetValue NOTIFY valueChanged)',
+		' public:',
+		'  int value() const;',
+		'  void setValue(int v);',
+		'  void resetValue();',
+		'  Q_INVOKABLE void refresh();',
+		'  Q_INVOKABLE void calledToo();',
+		'  void plain();',
+		' signals:',
+		'  void valueChanged();',
+		' private:',
+		'  int value_ = 0;',
+		'};',
+	]);
+	const lines = [
+		'#include "actors.h"',
+		'void ABattery::Charge(float Amount) { Level += Amount; }',
+		'void ABattery::OnHit() {}',
+		'void ABattery::Drain() {}',
+		'int Gauge::value() const { return value_; }',
+		'void Gauge::setValue(int v) { value_ = v; }',
+		'void Gauge::resetValue() { value_ = 0; }',
+		'void Gauge::refresh() {}',
+		'void Gauge::calledToo() {}',
+		'void Gauge::plain() { calledToo(); }',
+	];
+	const actors = write('src/actors.cpp', lines);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file: actors, arguments: ['clang++', '-std=c++20', `-I${path.join(dir, 'include')}`, `-I${path.join(dir, 'lib')}`, '-c', actors] }]));
+	const line = (text) => lines.findIndex((l) => l.includes(text)) + 1;
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 2, cacheSize: 2 })).error, undefined);
+		const scan = await own.send('dataflow/callGraph', { roots: [path.join(dir, 'include'), path.join(dir, 'src')] });
+		assert.equal(scan.error, undefined, JSON.stringify(scan.error));
+		const res = await own.send('dataflow/metrics', { file: actors });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+		const fns = Object.fromEntries(res.result.functions.map((f) => [f.qualifiedName, f.reach]));
+		const unknown = (name) => {
+			const u = fns[name].unknownCallers;
+			return u && [u.cause, u.via, path.basename(u.file), u.line];
+		};
+
+		// a UFUNCTION of unreal engine: a blueprint, a timer or the console can call it by its name
+		assert.deepEqual(unknown('ABattery::Charge'), ['reflection', 'UFUNCTION(BlueprintCallable, Category = "Battery")', 'actors.cpp', line('ABattery::Charge')]);
+		assert.deepEqual(unknown('ABattery::OnHit'), ['reflection', 'UFUNCTION()', 'actors.cpp', line('ABattery::OnHit')]);
+		assert.equal(unknown('ABattery::Drain'), undefined);
+		// the functions of a Q_PROPERTY and a Q_INVOKABLE function: qml can call them
+		assert.deepEqual(unknown('Gauge::value'), ['reflection', 'Q_PROPERTY READ', 'actors.cpp', line('Gauge::value')]);
+		assert.deepEqual(unknown('Gauge::setValue'), ['reflection', 'Q_PROPERTY WRITE', 'actors.cpp', line('Gauge::setValue')]);
+		assert.deepEqual(unknown('Gauge::resetValue'), ['reflection', 'Q_PROPERTY RESET', 'actors.cpp', line('Gauge::resetValue')]);
+		assert.deepEqual(unknown('Gauge::refresh'), ['reflection', 'Q_INVOKABLE', 'actors.cpp', line('Gauge::refresh')]);
+		// a function with a caller in the graph, and a function with no macro
+		assert.deepEqual([unknown('Gauge::calledToo'), unknown('Gauge::plain')], [undefined, undefined]);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('call graph: the main loops, in main or in a function that main calls, and isMainLoop of the loops around a line', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-graph-loops-'));
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		mkdirSync(path.dirname(file), { recursive: true });
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	// a main loop in main, with a loop with a fixed number of iterations in it and before it
+	const appLines = [
+		'#include <queue>',
+		'static bool running = true;',
+		'void update() {}',
+		'void render() {}',
+		'void setup() {}',
+		'void poll() {',
+		'  while (running) {',
+		'    update();  // poll',
+		'  }',
+		'}',
+		'int main() {',
+		'  for (int i = 0; i < 3; ++i) setup();',
+		'  while (running) {',
+		'    update();  // main',
+		'    for (int k = 0; k < 2; ++k) {',
+		'      render();',
+		'    }',
+		'  }',
+		'  return 0;',
+		'}',
+	];
+	// main has no main loop, so the main loop is in a function that main calls
+	const runLines = [
+		'static bool running = true;',
+		'void tick() {}',
+		'void run() {',
+		'  while (running) {',
+		'    tick();',
+		'  }',
+		'}',
+		'int main() {',
+		'  run();',
+		'  return 0;',
+		'}',
+	];
+	const app = write('app/app.cpp', appLines);
+	const runner = write('runner/run.cpp', runLines);
+	const dbs = [app, runner].map((file) => {
+		const db = path.join(path.dirname(file), 'build', 'compile_commands.json');
+		mkdirSync(path.dirname(db), { recursive: true });
+		writeFileSync(db, JSON.stringify([{ directory: path.dirname(file), file, arguments: ['clang++', '-std=c++20', '-c', file] }]));
+		return db;
+	});
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	const place = async (file, lines, text) => {
+		const res = await own.send('dataflow/place', { file, line: lines.findIndex((l) => l.includes(text)) + 1 });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		return res.result.around.map((s) => [s.kind, s.isOpenLoop, s.isMainLoop]);
+	};
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: dbs, maxThreads: 2, cacheSize: 2 })).error, undefined);
+		// with no call graph, a loop has no isMainLoop
+		assert.deepEqual(await place(app, appLines, 'render();'), [['while', true, undefined], ['for', false, undefined]]);
+
+		const scan = await own.send('dataflow/callGraph', { roots: [path.dirname(app)] });
+		assert.equal(scan.error, undefined, JSON.stringify(scan.error));
+		assert.deepEqual(scan.result.mainLoops.map((l) => [l.function, path.basename(l.file), l.line]), [['main', 'app.cpp', 13]]);
+		assert.deepEqual(scan.result.frames.map((f) => `${f.name}: ${f.reason}`).sort(),
+			['render: called in the main loop of main', 'update: called in the main loop of main']);
+		// the main loop and the loop in it. A loop with no fixed number of iterations in a different function is no main loop
+		assert.deepEqual(await place(app, appLines, 'render();'), [['while', true, true], ['for', false, false]]);
+		assert.deepEqual(await place(app, appLines, 'update();  // main'), [['while', true, true]]);
+		assert.deepEqual(await place(app, appLines, 'update();  // poll'), [['while', true, false]]);
+
+		// a graph of a different project folder
+		const other = await own.send('dataflow/callGraph', { roots: [path.dirname(runner)] });
+		assert.equal(other.error, undefined, JSON.stringify(other.error));
+		assert.deepEqual(other.result.mainLoops.map((l) => [l.function, path.basename(l.file), l.line]), [['run', 'run.cpp', 4]]);
+		assert.deepEqual(await place(runner, runLines, 'tick();'), [['while', true, true]]);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('call graph: a function with its first declaration in a public folder has the cause public, if it has no other cause', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-graph-public-'));
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		mkdirSync(path.dirname(file), { recursive: true });
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	const apiLines = [
+		'#pragma once',
+		'namespace mylib {',
+		'  int add(int a, int b);',
+		'  class Counter {',
+		'   public:',
+		'    void inc();',
+		'   protected:',
+		'    void reset();',
+		'   private:',
+		'    void bump();',
+		'    int value_ = 0;',
+		'  };',
+		'}  // namespace mylib',
+	];
+	write('include/mylib/api.h', apiLines);
+	write('src/detail.h', ['#pragma once', 'namespace mylib {', '  int twice(int a);', '}  // namespace mylib']);
+	const lines = [
+		'#include <mylib/api.h>',
+		'#include "detail.h"',
+		'namespace mylib {',
+		'  int twice(int a) { return add(a, a); }',
+		'  int add(int a, int b) { return a + b; }',
+		'  void Counter::inc() { bump(); }',
+		'  void Counter::reset() { value_ = 0; }',
+		'  void Counter::bump() { ++value_; }',
+		'}  // namespace mylib',
+		'void use_reset(mylib::Counter& c) {',
+		'  auto f = &mylib::Counter::inc;',
+		'  (c.*f)();',
+		'}',
+	];
+	const lib = write('src/lib.cpp', lines);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file: lib, arguments: ['clang++', '-std=c++20', `-I${path.join(dir, 'include')}`, '-c', lib] }]));
+	const apiLine = (text) => apiLines.findIndex((l) => l.includes(text)) + 1;
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	const unknowns = async (publicFolders) => {
+		const res = await own.send('dataflow/metrics', { file: lib, ...(publicFolders ? { publicFolders } : {}) });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+		return Object.fromEntries(res.result.functions.map((f) => {
+			const u = f.reach.unknownCallers;
+			return [f.qualifiedName, u && [u.cause, u.via, path.basename(u.file), u.line]];
+		}));
+	};
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 2, cacheSize: 2 })).error, undefined);
+		const scan = await own.send('dataflow/callGraph', { roots: [dir] });
+		assert.equal(scan.error, undefined, JSON.stringify(scan.error));
+
+		// with no public folders, no function of the library has the cause
+		const none = await unknowns();
+		assert.deepEqual([none['mylib::add'], none['mylib::Counter::reset']], [undefined, undefined]);
+
+		// a folder by its name, and a folder by its path relative to the project folder. A function with a caller is also
+		// public, a protected member function too, but not a private member function or a function of a private header. A
+		// different cause stays: the code uses the address of inc
+		for (const folder of ['include', 'include/mylib']) {
+			const fns = await unknowns([folder]);
+			assert.deepEqual(fns['mylib::add'], ['public', folder, 'api.h', apiLine('int add')], folder);
+			assert.deepEqual(fns['mylib::Counter::reset'], ['public', folder, 'api.h', apiLine('void reset')], folder);
+			assert.deepEqual([fns['mylib::Counter::bump'], fns['mylib::twice'], fns.use_reset], [undefined, undefined, undefined], folder);
+			assert.deepEqual(fns['mylib::Counter::inc'], ['address', 'use_reset', 'lib.cpp', lines.findIndex((l) => l.includes('auto f =')) + 1], folder);
+		}
+
+		// get_place and get_callers also take the public folders
+		const place = await own.send('dataflow/place', { file: lib, line: 5, publicFolders: ['include'] });
+		const u = place.result.reach.unknownCallers;
+		assert.deepEqual([u.cause, u.via, path.basename(u.file), u.line], ['public', 'include', 'api.h', apiLine('int add')]);
+		const callers = await own.send('dataflow/callers', { file: lib, function: 'mylib::add', publicFolders: ['include'] });
+		assert.equal(callers.result.unknownCallers?.cause, 'public');
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('place: the names in scope at a line: the parameters, the local variables before the line, and the data members', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-scope-'));
+	const lines = [
+		'#include <exception>',
+		'#include <string>',
+		'#include <vector>',
+		'struct Base {',
+		'  int baseValue = 0;',
+		' protected:',
+		'  double rate = 1.0;',
+		' private:',
+		'  int hidden = 0;',
+		'};',
+		'struct Pair { int x; int y; };',
+		'struct Tank : Base {',
+		'  int level = 0;',
+		'  std::string name;',
+		'  static int count;',
+		'  void fill(int amount, const std::string& label);',
+		'  static void reset(int to);',
+		'};',
+		'int Tank::count = 0;',
+		'void Tank::fill(int amount, const std::string& label) {',
+		'  int total = amount + level;',
+		'  std::vector<int> parts{1, 2};',
+		'  for (int i = 0; i < 2; ++i) {',
+		'    const int part = parts[i];',
+		'    total += part;  // A',
+		'  }',
+		'  int later = 0;',
+		'  auto add = [total, &parts](int extra) {',
+		'    return total + extra + int(parts.size());  // B',
+		'  };',
+		'  auto every = [&]() {',
+		'    return total + level;  // G',
+		'  };',
+		'  auto [a, b] = Pair{1, 2};',
+		'  if (const int n = add(1); n > 0) {',
+		'    level = n + a + b + every();  // C',
+		'  }',
+		'  for (const int p : parts) {',
+		'    level += p;  // D',
+		'  }',
+		'  try {',
+		'    later = 1;',
+		'  } catch (const std::exception& e) {',
+		'    later = 2;  // E',
+		'  }',
+		'',
+		'}',
+		'void Tank::reset(int to) {',
+		'  count = to;  // F',
+		'}',
+		'int pick(int k) {',
+		'  switch (k) {',
+		'    case 1:',
+		'      int first;',
+		'      first = k;',
+		'      return first;  // I',
+		'    default:',
+		'      return 0;',
+		'  }',
+		'}',
+		'struct Big {',
+		...Array.from({ length: 70 }, (_, i) => `  int m${i} = 0;`),
+		'  void touch();',
+		'};',
+		'void Big::touch() {',
+		'  m0 = 1;  // H',
+		'}',
+	];
+	const source = path.join(dir, 'scope.cpp');
+	writeFileSync(source, lines.join('\n') + '\n');
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file: source, arguments: ['clang++', '-std=c++20', '-c', source] }]));
+	const line = (text) => lines.findIndex((l) => l.includes(text)) + 1;
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	const scope = async (at) => {
+		const res = await own.send('dataflow/place', { file: source, line: typeof at === 'number' ? at : line(at) });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+		return res.result;
+	};
+	const names = (r) => r.inScope.map((n) => `${n.kind} ${n.name}`);
+	const members = ['member level', 'member name', 'member count', 'member baseValue', 'member rate'];
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 2, cacheSize: 2 })).error, undefined);
+
+		// in a loop: the parameters, the locals of the blocks around the line before it, the variable of the loop, the data
+		// members of the class, and the data members of the base that are not private
+		const inLoop = await scope('// A');
+		assert.deepEqual(names(inLoop), ['param amount', 'param label', 'local total', 'local parts', 'local i', 'local part', ...members]);
+		const types = Object.fromEntries(inLoop.inScope.map((n) => [n.name, n.type]));
+		assert.deepEqual([types.label, types.parts, types.part, types.name, types.rate], ['const std::string &', 'std::vector<int>', 'const int', 'std::string', 'double']);
+		assert.equal(inLoop.isInScopeCapped, undefined);
+
+		// a lambda with captures sees only its captures, its parameters and the static data members. A lambda with a
+		// capture default sees all names, also the data members through this
+		assert.deepEqual(names(await scope('// B')), ['local total', 'local parts', 'param extra', 'member count']);
+		assert.deepEqual(names(await scope('// G')), ['param amount', 'param label', 'local total', 'local parts', 'local later', 'local add', ...members]);
+		// the variable of an if with an init, the names of a structured binding, the variable of a range for and the
+		// exception of a catch
+		assert.deepEqual(names(await scope('// C')),
+			['param amount', 'param label', 'local total', 'local parts', 'local later', 'local add', 'local every', 'local a', 'local b', 'local n', ...members]);
+		assert.deepEqual(names(await scope('// D')).slice(-6), ['local p', ...members]);
+		const inCatch = await scope('// E');
+		assert.deepEqual(inCatch.inScope.find((n) => n.name === 'e'), { name: 'e', type: 'const std::exception &', kind: 'local' });
+		// a line after the last statement of the body: the locals before it
+		assert.ok(names(await scope(line('// E') + 2)).includes('local every'));
+		// a static member function sees only the static data members
+		assert.deepEqual(names(await scope('// F')), ['param to', 'member count']);
+		// a declaration after a case label
+		assert.deepEqual(names(await scope('// I')), ['param k', 'local first']);
+		// more than 60 names: the first 60, and isInScopeCapped
+		const big = await scope('// H');
+		assert.deepEqual([big.inScope.length, big.isInScopeCapped, big.inScope[0].name], [60, true, 'm0']);
+		// a line out of all functions has no names in scope
+		assert.deepEqual((await scope('int Tank::count = 0;')).inScope, []);
 	} finally {
 		await own.close();
 		rmSync(dir, { recursive: true, force: true });

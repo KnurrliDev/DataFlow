@@ -172,6 +172,51 @@ namespace DataFlow {
       return out;
     }  // member_gap
 
+    // the methods of a class that the reflection of a framework can call, with the macro: a method after UFUNCTION,
+    // Q_INVOKABLE, Q_SCRIPTABLE or Q_SLOT, for example UFUNCTION(BlueprintCallable), and a method that a Q_PROPERTY
+    // names after READ, WRITE, RESET, NOTIFY or BINDABLE, for example Q_PROPERTY READ
+    [[nodiscard]] inline std::vector<std::pair<const clang::Decl*, std::string>> reflected_methods(
+        const clang::CXXRecordDecl& _rd, const clang::ASTContext& _ctx) {
+      std::vector<std::pair<const clang::Decl*, std::string>> out;
+      std::vector<std::pair<std::string, std::string>> named;  // a method that a Q_PROPERTY names, and the macro
+      const auto add_names = [&](const MemberGap& _gap) {
+        for (const OutlineMember& p : _gap.properties_) {
+          llvm::SmallVector<llvm::StringRef> words;
+          llvm::SplitString(p.text_, words, " ()");
+          for (size_t i = 1; i + 1 < words.size(); ++i)
+            if (llvm::is_contained({"READ", "WRITE", "RESET", "NOTIFY", "BINDABLE"}, words[i]))
+              named.emplace_back(words[i + 1].str(), "Q_PROPERTY " + words[i].str());
+        }
+      };
+      const auto method_of = [](const clang::Decl* _d) -> const clang::CXXMethodDecl* {
+        if (const auto* t = llvm::dyn_cast<clang::FunctionTemplateDecl>(_d)) _d = t->getTemplatedDecl();
+        return llvm::dyn_cast<clang::CXXMethodDecl>(_d);
+      };
+
+      clang::SourceLocation gap = _rd.getBraceRange().getBegin();
+      for (const clang::Decl* d : _rd.decls()) {
+        if (d->isImplicit()) continue;
+        const MemberGap before = member_gap(_ctx, gap, d->getBeginLoc());
+        add_names(before);
+        gap                           = d->getEndLoc();
+        const clang::CXXMethodDecl* m = method_of(d);
+        const llvm::StringRef macro =
+            llvm::StringRef(before.annotation_).take_until([](const char _c) { return _c == '(' || _c == ' '; });
+        if (m && llvm::is_contained({"UFUNCTION", "Q_INVOKABLE", "Q_SCRIPTABLE", "Q_SLOT"}, macro))
+          out.emplace_back(m, before.annotation_);
+      }
+      add_names(member_gap(_ctx, gap, _rd.getBraceRange().getEnd()));
+
+      // the methods with a name of a Q_PROPERTY, also each overload
+      for (const auto& [name, macro] : named)
+        for (const clang::Decl* d : _rd.decls())
+          if (const clang::CXXMethodDecl* m = method_of(d);
+              m && m->getIdentifier() && m->getName() == name &&
+              std::ranges::none_of(out, [&](const auto& _o) { return _o.first == m; }))
+            out.emplace_back(m, macro);
+      return out;
+    }  // reflected_methods
+
     // the return type, the name, the parameters and the qualifiers of a function
     [[nodiscard]] inline std::string signature_of(const clang::FunctionDecl& _f, const clang::PrintingPolicy& _pp) {
       std::string out;

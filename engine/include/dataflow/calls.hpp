@@ -222,26 +222,31 @@ namespace DataFlow {
     };  // RefFinder
 
     // marks the std::optional results that the function accesses with no check, with the unchecked access model of
-    // clang. a result with no access and no check keeps NONE
+    // clang. a result with no access and no check keeps NONE. the model can stop the engine on an expression with an
+    // error, so in a function with an error only a check at the call marks a result
     inline void set_optional_uses(CallGraph& _graph, const std::vector<int32_t>& _sites, const clang::FunctionDecl& _fn,
                                   clang::ASTContext& _ctx) {
       using namespace clang::dataflow;
       const clang::SourceManager& sm = _ctx.getSourceManager();
+      const bool isValid             = !has_errors(_fn);
       std::unordered_set<clang::SourceLocation::UIntTy> unchecked;
       const TraversalScope scope(_ctx, {&_fn});
-      UncheckedOptionalAccessDiagnoser diagnoser;
-      auto res =
-          diagnoseFunction<UncheckedOptionalAccessModel, UncheckedOptionalAccessDiagnostic>(_fn, _ctx, diagnoser);
-      if (res) {
-        for (const UncheckedOptionalAccessDiagnostic& d : *res)
-          unchecked.insert(sm.getExpansionLoc(d.Range.getBegin()).getRawEncoding());
-      } else {
-        llvm::consumeError(res.takeError());
+      if (isValid) {
+        UncheckedOptionalAccessDiagnoser diagnoser;
+        auto res =
+            diagnoseFunction<UncheckedOptionalAccessModel, UncheckedOptionalAccessDiagnostic>(_fn, _ctx, diagnoser);
+        if (res) {
+          for (const UncheckedOptionalAccessDiagnostic& d : *res)
+            unchecked.insert(sm.getExpansionLoc(d.Range.getBegin()).getRawEncoding());
+        } else {
+          llvm::consumeError(res.takeError());
+        }
       }
 
       for (const int32_t i : _sites) {
         CallSite& s = _graph.calls_[i];
         if (s.result_ == CallResult::CHECKED) s.optional_ = OptionalUse::CHECKED;
+        if (!isValid) continue;
         if (unchecked.contains(sm.getExpansionLoc(s.call_->getBeginLoc()).getRawEncoding())) {
           s.optional_       = OptionalUse::UNCHECKED;
           s.unchecked_line_ = sm.getExpansionLineNumber(s.call_->getBeginLoc());

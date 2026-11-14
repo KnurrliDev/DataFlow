@@ -316,6 +316,23 @@ suite('Heat', () => {
 		assert.ok(heat.notices.some((n) => n.startsWith('1 function of the file is on a frame path after more than 8 calls.')), JSON.stringify(heat.notices));
 	});
 
+	test('A lambda that runs later, the reflection of a framework and a public header give callers that the graph cannot see', () => {
+		const unknown = (cause: 'callback' | 'reflection' | 'public', via: string): MetricsFunction =>
+			fn(`by_${cause}`, 1, 30, { decisions: 24, reach: { callers: 0, transitiveCallers: 0, callerFiles: 0, unknownCallers: { cause, via, file: FILE, line: 2 } } });
+		const heat = buildHeat(inputs([unknown('callback', 'Panel::build'), unknown('reflection', 'UFUNCTION(BlueprintCallable)'), unknown('public', 'include')]));
+		// each cause stops the half points of a siloed function
+		assert.deepStrictEqual(heat.functions.map((f) => [f.isSiloed, f.risk, f.reachUnknown?.cause]),
+			[[false, 10, 'callback'], [false, 10, 'reflection'], [false, 10, 'public']]);
+		assert.deepStrictEqual(heat.functions.map((f) => f.reasons[0].text), [
+			'Callers that the call graph cannot see: a lambda of Panel::build calls it, and the lambda can run later, for example as the callback of a timer',
+			'Callers that the call graph cannot see: the reflection of a framework can call it through UFUNCTION(BlueprintCallable), for example a Blueprint or QML',
+			'Callers that the call graph cannot see: its declaration is in the public folder include, so the users of the library can call it',
+		]);
+		assert.deepStrictEqual(heat.functions[2].reasons[0], {
+			group: 'reach', points: 0, text: heat.functions[2].reasons[0].text, id: 'reachUnknown', value: { cause: 'public', via: 'include', file: FILE, line: 2 },
+		});
+	});
+
 	test('The bands and the flames come from the score', () => {
 		assert.deepStrictEqual([0, 24, 25, 49, 50, 74, 75, 100].map(bandOf), ['cool', 'cool', 'warm', 'warm', 'hot', 'hot', 'veryHot', 'veryHot']);
 		assert.deepStrictEqual([0, 19, 20, 39, 40, 59, 60, 79, 80, 100].map(flamesOf), [1, 1, 2, 2, 3, 3, 4, 4, 5, 5]);

@@ -10,13 +10,20 @@
       conditional operator) with the branch of the line, try, catch, and the lambdas. a statement that starts on the
       line is not around the line, because code at the start of the line runs before the statement
     > the mutexes that the code holds at the start of the line
-  The server adds the reach of the function from the call graph: the callers and the frame path.
+    > the names in scope at the start of the line: the parameters, the local variables of the statements around the
+      line before it, and the data members of the class and of its bases. a lambda sees only its captures, and the
+      members only with a capture of this
+  The server adds the reach of the function from the call graph: the callers and the frame path. A loop around the line
+  is a main loop if its calls make frame functions.
 */
 
 namespace DataFlow {
 
   // the bytes of a text of a statement around a line
   inline constexpr size_t place_max_text = 100;
+
+  // the names in scope at a line in a place
+  inline constexpr size_t place_max_names = 60;
 
   // a statement around a line
   struct PlaceScope {
@@ -29,11 +36,20 @@ namespace DataFlow {
     bool isSynchronous_ = false;  // a lambda that the call runs before it returns
   };  // PlaceScope
 
+  // a name in scope at a line
+  struct PlaceName {
+    std::string name_;
+    std::string type_;
+    std::string kind_;  // param, local or member
+  };  // PlaceName
+
   struct Place {
     const clang::FunctionDecl* fn_ = nullptr;  // null if no function contains the line
     bool isInBody_                 = false;    // false for a line of the head of the function, for example a parameter
     std::vector<PlaceScope> around_;           // from the outside in
     std::vector<std::string> locks_;           // the mutexes that the code holds at the start of the line
+    std::vector<PlaceName> inScope_;           // the first place_max_names names in scope
+    bool isInScopeCapped_ = false;             // more names are in scope
   };  // Place
 
   namespace Detail {
@@ -148,6 +164,121 @@ namespace DataFlow {
       }
       return out;
     }  // place_scope
+
+    // the names in scope at the start of a line: the parameters, the local variables of the statements around the line
+    // before it, and the data members of the class and of its bases. an inner name hides an outer name. a lambda sees
+    // only its captures, and the data members only with a capture of this. _chain: the statements from the innermost
+    // statement at the line to the body. the result can have more than place_max_names names
+    [[nodiscard]] inline std::vector<PlaceName> names_in_scope(const clang::FunctionDecl& _fn,
+                                                               const std::vector<const clang::Stmt*>& _chain,
+                                                               const uint32_t _line, const clang::ASTContext& _ctx) {
+      clang::PrintingPolicy pp(_ctx.getLangOpts());
+      pp.AnonymousTagNameStyle = llvm::to_underlying(clang::PrintingPolicy::AnonymousTagMode::Plain);  // no file
+      std::vector<PlaceName> out;
+      const auto has = [&](const llvm::StringRef _name) {
+        return llvm::any_of(out, [&](const PlaceName& _n) { return _n.name_ == _name; });
+      };
+      const auto push = [&](const clang::ValueDecl* _d, const char* _kind) {
+        out.push_back(PlaceName{_d->getNameAsString(), one_line(_d->getType().getAsString(pp), place_max_text), _kind});
+      };
+      // a parameter or a local variable hides an outer name
+      const auto add = [&](const clang::ValueDecl* _d, const char* _kind) {
+        if (!_d || !_d->getIdentifier() || _d->getName().empty() || _d->isImplicit()) return;
+        std::erase_if(out, [&](const PlaceName& _n) { return _n.name_ == _d->getName(); });
+        push(_d, _kind);
+      };
+      const auto add_var = [&](const clang::Decl* _d) {
+        if (const auto* dd = llvm::dyn_cast_or_null<clang::DecompositionDecl>(_d))
+          for (const clang::BindingDecl* b : dd->bindings()) add(b, "local");
+        else
+          add(llvm::dyn_cast_or_null<clang::VarDecl>(_d), "local");
+      };
+      // the variables of a declaration, also after a case label or a label
+      const auto add_vars = [&](const clang::Stmt* _s) {
+        while (llvm::isa_and_nonnull<clang::SwitchCase, clang::LabelStmt>(_s))
+          _s = llvm::isa<clang::SwitchCase>(_s) ? llvm::cast<clang::SwitchCase>(_s)->getSubStmt()
+                                                : llvm::cast<clang::LabelStmt>(_s)->getSubStmt();
+        if (const auto* ds = llvm::dyn_cast_or_null<clang::DeclStmt>(_s))
+          for (const clang::Decl* d : ds->decls()) add_var(d);
+      };
+
+      for (const clang::ParmVarDecl* p : _fn.parameters()) add(p, "param");
+      const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(&_fn);
+      bool hasThis       = method && method->isInstance();
+
+      // the statements around the line from the outside in, each with its child on the way to the line
+      for (size_t i = _chain.size() - 1; i > 0; --i) {
+        const clang::Stmt* p = _chain[i];
+        const clang::Stmt* c = _chain[i - 1];
+        if (const auto* s = llvm::dyn_cast<clang::CompoundStmt>(p)) {
+          for (const clang::Stmt* x : s->body()) {
+            if (x == c) break;
+            add_vars(x);
+          }
+        } else if (const auto* s = llvm::dyn_cast<clang::ForStmt>(p)) {
+          if (c != s->getInit()) add_vars(s->getInit());
+          if (c == s->getBody()) add_var(s->getConditionVariable());
+        } else if (const auto* s = llvm::dyn_cast<clang::CXXForRangeStmt>(p)) {
+          if (c != s->getInit()) add_vars(s->getInit());
+          if (c == s->getBody()) add_var(s->getLoopVariable());
+        } else if (const auto* s = llvm::dyn_cast<clang::IfStmt>(p)) {
+          if (c != s->getInit()) add_vars(s->getInit());
+          if (c == s->getThen() || c == s->getElse()) add_var(s->getConditionVariable());
+        } else if (const auto* s = llvm::dyn_cast<clang::SwitchStmt>(p)) {
+          if (c != s->getInit()) add_vars(s->getInit());
+          if (c == s->getBody()) add_var(s->getConditionVariable());
+        } else if (const auto* s = llvm::dyn_cast<clang::WhileStmt>(p)) {
+          if (c == s->getBody()) add_var(s->getConditionVariable());
+        } else if (const auto* s = llvm::dyn_cast<clang::CXXCatchStmt>(p)) {
+          if (c == s->getHandlerBlock()) add_var(s->getExceptionDecl());
+        } else if (const auto* s = llvm::dyn_cast<clang::LambdaExpr>(p); s && c == s->getBody()) {
+          // with no capture default, the lambda sees only the variables that it captures
+          const bool hasDefault = s->getCaptureDefault() != clang::LCD_None;
+          if (!hasDefault)
+            std::erase_if(out, [&](const PlaceName& _n) {
+              return llvm::none_of(s->explicit_captures(), [&](const clang::LambdaCapture& _c) {
+                return _c.capturesVariable() && _c.getCapturedVar()->getName() == _n.name_;
+              });
+            });
+          hasThis = hasThis && (hasDefault || llvm::any_of(s->explicit_captures(), [](const clang::LambdaCapture& _c) {
+                                  return _c.capturesThis();
+                                }));
+          for (const clang::LambdaCapture& lc : s->explicit_captures())
+            if (const auto* v = lc.capturesVariable() ? llvm::dyn_cast<clang::VarDecl>(lc.getCapturedVar()) : nullptr;
+                v && v->isInitCapture())
+              add(v, "local");
+          for (const clang::ParmVarDecl* x : s->getCallOperator()->parameters()) add(x, "param");
+        }
+      }
+      // a block at the line: its declarations before the line
+      if (const auto* s = llvm::dyn_cast<clang::CompoundStmt>(_chain.front()))
+        for (const clang::Stmt* x : s->body()) {
+          const auto lines = main_lines_of(x, _ctx.getSourceManager());
+          if (!lines || lines->second >= _line) break;
+          add_vars(x);
+        }
+
+      // the data members of the class, then of its bases. a private member of a base is not in scope. the walk stops
+      // after 16 classes, or when the list is longer than the limit
+      if (!method) return out;
+      std::vector<const clang::CXXRecordDecl*> todo{method->getParent()};
+      llvm::SmallPtrSet<const clang::CXXRecordDecl*, 8> seen{method->getParent()};
+      for (size_t i = 0; i < todo.size() && i < 16 && out.size() <= place_max_names; ++i) {
+        for (const clang::Decl* d : todo[i]->decls()) {
+          const auto* v       = llvm::dyn_cast<clang::ValueDecl>(d);
+          const bool isField  = llvm::isa<clang::FieldDecl>(d);
+          const bool isStatic = llvm::isa<clang::VarDecl>(d) && llvm::cast<clang::VarDecl>(d)->isStaticDataMember();
+          if (!v || !v->getIdentifier() || v->getName().empty() || (!isField && !isStatic) || (isField && !hasThis) ||
+              (i > 0 && d->getAccess() == clang::AS_private) || has(v->getName()))
+            continue;
+          push(v, "member");
+        }
+        for (const clang::CXXBaseSpecifier& b : todo[i]->bases())
+          if (const clang::CXXRecordDecl* base = b.getType()->getAsCXXRecordDecl(); base && base->hasDefinition())
+            if (seen.insert(base->getDefinition()).second) todo.push_back(base->getDefinition());
+      }
+      return out;
+    }  // names_in_scope
   }  // namespace Detail
 
   // the facts of a line of the main file. _line starts at 1
@@ -202,23 +333,41 @@ namespace DataFlow {
         isAtEnd = true;
     }
     out.locks_ = Detail::locks_at(anchor, pm, ctx, isAtEnd);
+
+    // the names in scope at the start of the line
+    out.inScope_ = Detail::names_in_scope(*out.fn_, chain, _line, ctx);
+    if (out.inScope_.size() > place_max_names) {
+      out.inScope_.resize(place_max_names);
+      out.isInScopeCapped_ = true;
+    }
     return out;
   }  // build_place
 
-  [[nodiscard]] inline JsonObject place_to_json(const Place& _p, const clang::SourceManager& _sm) {
+  // _mainLoops: the first lines of the main loops of the function in the call graph, or null with no complete graph
+  [[nodiscard]] inline JsonObject place_to_json(const Place& _p, const clang::SourceManager& _sm,
+                                                const std::vector<uint32_t>* _mainLoops = nullptr) {
     JsonArray around;
     for (const PlaceScope& s : _p.around_) {
       JsonObject o{{"kind", s.kind_}, {"first", int64_t(s.first_)}, {"last", int64_t(s.last_)}};
       if (!s.text_.empty()) o["text"] = s.text_;
       if (!s.branch_.empty()) o["branch"] = s.branch_;
-      if (s.kind_ == "for" || s.kind_ == "while" || s.kind_ == "do") o["isOpenLoop"] = s.isOpenLoop_;
+      if (s.kind_ == "for" || s.kind_ == "while" || s.kind_ == "do") {
+        o["isOpenLoop"] = s.isOpenLoop_;
+        if (_mainLoops) o["isMainLoop"] = llvm::is_contained(*_mainLoops, s.first_);
+      }
       if (s.kind_ == "lambda") o["isSynchronous"] = s.isSynchronous_;
       around.push_back(std::move(o));
     }
-    return JsonObject{{"function", _p.fn_ ? Json(function_to_json(*_p.fn_, _sm)) : Json(nullptr)},
-                      {"isInBody", _p.isInBody_},
-                      {"around", std::move(around)},
-                      {"locks", JsonArray(_p.locks_)}};
+    JsonArray names;
+    for (const PlaceName& n : _p.inScope_)
+      names.push_back(JsonObject{{"name", n.name_}, {"type", n.type_}, {"kind", n.kind_}});
+    JsonObject out{{"function", _p.fn_ ? Json(function_to_json(*_p.fn_, _sm)) : Json(nullptr)},
+                   {"isInBody", _p.isInBody_},
+                   {"around", std::move(around)},
+                   {"locks", JsonArray(_p.locks_)},
+                   {"inScope", std::move(names)}};
+    if (_p.isInScopeCapped_) out["isInScopeCapped"] = true;
+    return out;
   }  // place_to_json
 
 }  // namespace DataFlow

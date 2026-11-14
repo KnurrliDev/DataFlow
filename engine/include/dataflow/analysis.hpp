@@ -129,6 +129,29 @@ namespace DataFlow {
         return true;
       }
     };  // DependentRangeFinder
+
+    // finds an expression with an error, for example a name that is not declared
+    class ErrorFinder : public clang::RecursiveASTVisitor<ErrorFinder> {
+     public:
+      bool isFound_ = false;
+
+      bool VisitExpr(clang::Expr* _e) {
+        isFound_ = _e->containsErrors();
+        return !isFound_;
+      }
+    };  // ErrorFinder
+
+    // true if the function has an expression with an error. the dataflow framework of clang can stop the engine on
+    // such an expression, for example on a check of a std::optional with an error after it
+    [[nodiscard]] inline bool has_errors(const clang::FunctionDecl& _fn) {
+      if (_fn.isInvalidDecl()) return true;
+      ErrorFinder finder;
+      if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(&_fn))
+        for (const clang::CXXCtorInitializer* init : ctor->inits())
+          if (!finder.isFound_ && init->getInit()) finder.TraverseStmt(init->getInit());
+      if (!finder.isFound_ && _fn.getBody()) finder.TraverseStmt(_fn.getBody());
+      return finder.isFound_;
+    }  // has_errors
   }  // namespace Detail
 
   // limits the traversal of the ast to some declarations while it lives, for example to the function of an analysis.
@@ -269,6 +292,9 @@ namespace DataFlow {
   [[nodiscard]] inline std::expected<Json, std::string> optional_access_to_json(const clang::FunctionDecl& _fn,
                                                                                 clang::ASTContext& _ctx) {
     using namespace clang::dataflow;
+    // the framework can stop the engine on an expression with an error
+    if (Detail::has_errors(_fn))
+      return std::unexpected("the function has an error, so the optional analysis did not run");
 
     const TraversalScope scope(_ctx, {&_fn});
     UncheckedOptionalAccessDiagnoser diagnoser;

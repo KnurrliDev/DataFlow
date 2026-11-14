@@ -42,7 +42,7 @@ export interface McpHost {
 	closeGuide(kind: string | undefined, more?: { id?: unknown; force?: boolean }): Promise<Api.CloseGuideResult>;
 	logic(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts>;
 	showLogicPath(file: string | undefined, fn: FunctionArg, choices: unknown): Promise<Api.LogicFacts>;
-	ripple(): Promise<Api.RippleFacts>;
+	ripple(base?: string, paths?: unknown): Promise<Api.RippleFacts>;
 	startRipple(base?: string, paths?: unknown): Promise<Api.RippleFacts>;
 	clearRipple(): Promise<Api.ClearedResult>;
 	markBase(name: unknown, paths: unknown): Promise<Api.MarkResult>;
@@ -62,7 +62,7 @@ export const INSTRUCTIONS = [
 	'DataFlow analyzes the C++ code that is open in VS Code with the Clang compiler, and it shows the results in its side view beside the editor.',
 	'The read tools (get_*, list_functions) give facts of the engine: statements, data flow, calls, threads and races, hidden operations, includes, the outline of a type, '
 	+ 'the heat of the functions: how much a change of each function can break, the decisions and the paths of a function (get_logic), '
-	+ 'and the last review of Change Ripple (get_ripple).',
+	+ 'and the code that changes reach with Change Ripple (get_ripple: the last review, or a new review of the changes since a base).',
 	'The view tools (show_blocks, show_flow, show_logic_path, show_line, highlight, comment_lines, add_detail, clear) change the side view that the user looks at. '
 	+ 'set_lens turns a lens on or off, clear_flow removes the trace of Flow Lens, start_ripple and clear_ripple run and close Change Ripple, '
 	+ 'and scan_call_graph and stop_call_graph control the scan of the call graph for the heat.',
@@ -75,7 +75,7 @@ export const INSTRUCTIONS = [
 	'To walk the user through the changes of the working tree, of the branch or since a commit, for example the changes that you made, call get_diff, '
 	+ 'read the changed code, then call show_diff_walk with steps of hunks, and go on with review_step. The prompt diff-walk gives the steps.',
 	'get_review and get_diff give the heat of the changed functions. Start a plan with the hottest changes, unless a different order explains the change better.',
-	'To show only the changes of one step of a task with no commit, call mark_base before the step. After the step, get_diff and start_ripple with the base "mark:<name>" give its changes.',
+	'To show only the changes of one step of a task with no commit, call mark_base before the step. After the step, get_diff, get_ripple and start_ripple with the base "mark:<name>" give its changes.',
 	'The side view keeps a stack of up to 5 guides, and the top guide shows. A new plan goes on the top. To change your plan, give its id to show_review_plan or show_diff_walk. '
 	+ 'review_step and close_guide change a guide of the user or of a different client only with "force": true, when the user asks you for it.',
 	'When the user asks you to close or delete the guided review or the diff walk, call close_guide.',
@@ -97,6 +97,19 @@ const CHOICES = {
 	type: 'object', additionalProperties: { type: 'string' },
 	description: 'The options that you select for the path: the key of a decision from get_logic, and one of its options, for example {"if:count > 0#0": "no"}. '
 		+ '"any" removes a choice. A decision with no choice takes the option that runs the most lines.',
+};
+
+// The base and the paths of a review of Change Ripple
+const RIPPLE_ARGS = {
+	base: {
+		type: 'string',
+		description: '"target" (default): the changes of the branch against its target branch. "uncommitted": the changes against HEAD. '
+			+ 'Else a commit, a tag or a branch: the changes since its merge base with HEAD. "mark:<name>": the changes since a mark of mark_base.',
+	},
+	paths: {
+		type: 'array', minItems: 1, items: { type: 'string' },
+		description: 'Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. Default: all changed files.',
+	},
 };
 
 const BLOCK_PROPERTIES = {
@@ -262,7 +275,8 @@ export function createTools(host: McpHost): McpTool[] {
 			'The callers of a function in all files of the project, from the call graph of the engine: the direct callers, their callers and so on, up to a depth, '
 			+ 'each with its file, its lines and the lines of its calls, and the frame paths of the function: the calls from a frame function, for example a main loop or a tick '
 			+ 'or paint override, to the function. A signal of Qt calls its connected slots. reachUnknown tells if the function has callers that the call graph cannot see, '
-			+ 'for example through a pointer, a library or Qt. The first call starts the scan of the call graph and does not wait: callGraph tells the progress.',
+			+ 'for example through a pointer, a library, Qt, a lambda that runs later, the reflection of Unreal Engine or Qt, or the users of a public header. '
+			+ 'The first call starts the scan of the call graph and does not wait: callGraph tells the progress.',
 			{
 				file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION,
 				depth: { type: 'integer', minimum: 1, maximum: 6, description: 'The callers up to this number of calls from the function. Default: 3.' },
@@ -270,14 +284,17 @@ export function createTools(host: McpHost): McpTool[] {
 			[], true, (a) => host.callers(a.text('file'), a.fn(), a.number('depth'))),
 		tool('get_place', 'Get the facts of a line',
 			'The facts of a line, for example before you add code at the line: the function that contains the line, the statements around the line from the outside in '
-			+ '(the loops, with isOpenLoop for a loop with no fixed number of iterations; the decisions if, switch and ?:, with the branch of the line; try, catch and the lambdas, '
-			+ 'with isSynchronous: false for a lambda that runs after the call, for example on a thread), the mutexes that the code holds at the start of the line, '
-			+ 'the worker threads that run the line, and the callers and the frame path of the function from the call graph. A statement that starts on the line is not around '
+			+ '(the loops, with isOpenLoop for a loop with no fixed number of iterations and isMainLoop for a main loop that runs in each frame; the decisions if, switch and ?:, '
+			+ 'with the branch of the line; try, catch and the lambdas, with isSynchronous: false for a lambda that runs after the call, for example on a thread), '
+			+ 'the mutexes that the code holds at the start of the line, the names in scope (inScope: the parameters, the local variables before the line and the data members, '
+			+ 'each with its type and its kind), the worker threads that run the line, and the callers and the frame path of the function from the call graph. A statement that starts on the line is not around '
 			+ 'the line, because code at the start of the line runs before the statement. The first call starts the scan of the call graph and does not wait: callGraph tells the progress.',
 			{ file: FILE, line: { type: 'integer', minimum: 1, description: 'The line, from 1.' } },
 			['line'], true, (a) => host.place(a.text('file'), a.requiredLine('line'))),
 		tool('get_threads', 'Get the threads and races',
-			'The thread starts of a file, the data that two threads share, the protection of each access (lock, order, check), and a verdict for each item: race, check or safe.',
+			'The thread starts of a file, the data that two threads share, the protection of each access (lock, order, check), and a verdict for each item: race, check or safe. '
+			+ 'caller and worker give the lines of the accesses as a text. accesses gives each access as data: its line, its role, isWrite, its thread (caller or worker) and its locks. '
+			+ 'pair (race or check) tells that the access can run at the same time as an access of a different thread. An access in a different file also has its file.',
 			{ file: FILE }, [], true, (a) => host.threads(a.text('file'))),
 		tool('get_hidden', 'Get the hidden C++',
 			'The hidden operations of a function: copies, moves, conversions, temporaries, destructors, allocations, map lookups and hidden state, with their lines.',
@@ -329,8 +346,8 @@ export function createTools(host: McpHost): McpTool[] {
 			},
 			[], true, (a) => host.heat(a.text('file'), a.text('function'), a.range('lines'))),
 		tool('get_call_graph', 'Get the state of the call graph',
-			'The state of the scan of the call graph for the heat (none, scanning, stopped, ready or failed), its progress, and the counts and the frame functions of the last complete scan. '
-			+ 'It does not start or stop a scan.',
+			'The state of the scan of the call graph for the heat (none, scanning, stopped, ready or failed), its progress, and the counts, the frame functions and the main loops '
+			+ '(the function and the first line of each loop whose calls run in each frame) of the last complete scan. It does not start or stop a scan.',
 			{}, [], true, () => host.callGraph()),
 		tool('get_logic', 'Get the logic of a function',
 			'The logic of a function, as Logic Map of DataFlow finds it, but does not change the view: the decisions of the function (if, loop, do, switch, conditional operator, '
@@ -341,8 +358,10 @@ export function createTools(host: McpHost): McpTool[] {
 		tool('get_ripple', 'Get the Change Ripple review',
 			'The last review of Change Ripple: for each changed function of the branch against its target branch, the statements that the change reaches, the exits where '
 			+ 'the effect leaves a body, and the callers that get a changed return value (depth 1, and depth 2 for their callers), with their statements. '
-			+ 'state is ready, running, failed or none. start_ripple runs a new review.',
-			{}, [], true, () => host.ripple()),
+			+ 'state is ready, running, failed or none. start_ripple runs a new review in the side view. '
+			+ 'With "base" or "paths", the tool makes a new review of the changes since the base, waits for its end, and gives its facts. An example is the changes since a mark of mark_base. '
+			+ 'The side view and the review of the user do not change. With no target branch, such a review fails: then give "base".',
+			RIPPLE_ARGS, [], true, (a) => host.ripple(a.text('base'), a.raw('paths'))),
 		tool('show_blocks', 'Show logical blocks',
 			'Shows logical blocks of one function in the DataFlow side view: a bar beside the lines of each block, its title at the end of its first line, and a list with the summaries and the data of the blocks. '
 			+ `Give the blocks in the sequence of the lines, with no overlap. A block can have children, for example one child for each branch of an if chain, and a child can have children too: ${MAX_BLOCK_LEVELS} levels at most. `
@@ -454,24 +473,15 @@ export function createTools(host: McpHost): McpTool[] {
 			'Runs a review of Change Ripple, as the command Review Changes does, waits for its end, and gives the same facts as get_ripple. '
 			+ 'The side view shows the story of the review. By default, Change Ripple compares the working tree with the merge base of the target branch. '
 			+ 'If the repository has no target branch, the review fails: then give "base".',
-			{
-				base: {
-					type: 'string',
-					description: '"target" (default): the changes of the branch against its target branch. "uncommitted": the changes against HEAD. '
-						+ 'Else a commit, a tag or a branch: the changes since its merge base with HEAD. "mark:<name>": the changes since a mark of mark_base.',
-				},
-				paths: {
-					type: 'array', minItems: 1, items: { type: 'string' },
-					description: 'Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. Default: all changed files.',
-				},
-			},
-			[], false, (a) => host.startRipple(a.text('base'), a.raw('paths'))),
+			RIPPLE_ARGS, [], false, (a) => host.startRipple(a.text('base'), a.raw('paths'))),
 		tool('clear_ripple', 'Close Change Ripple',
 			'Closes the review of Change Ripple in the DataFlow side view, as the button Clear of its bar does.',
 			{}, [], false, () => host.clearRipple()),
 		tool('mark_base', 'Mark the files',
 			'Keeps the text of the text files under the paths in a mark of your client, for example before you write the code of one step of a task. '
-			+ 'get_diff and start_ripple with the base "mark:<name>" then give the changes since the mark, also with no commit. '
+			+ 'get_diff, get_ripple and start_ripple with the base "mark:<name>" then give the changes since the mark, also with no commit. '
+			+ 'A path that is not there, for example a new file of the step, is a file with no text. When the file is there, the diff since the mark gives it as a new file. '
+			+ 'notFound gives these paths. '
 			+ 'A mark has a maximum of 500 files and 20 MB, and your client has a maximum of 20 marks. A new mark with the same name replaces the old mark. '
 			+ 'The marks stay after a reload of the window. get_view gives your marks.',
 			{
@@ -479,7 +489,7 @@ export function createTools(host: McpHost): McpTool[] {
 				paths: {
 					type: 'array', minItems: 1, items: { type: 'string' },
 					description: 'The files and the folders of the mark, in the folders of the project: paths relative to the repository, or absolute paths. '
-						+ 'A folder gives its text files, also in its subfolders, except build folders.',
+						+ 'A folder gives its text files, also in its subfolders, except build folders. A path that is not there is a file with no text.',
 				},
 			},
 			['name', 'paths'], false, (a) => host.markBase(a.raw('name'), a.raw('paths'))),

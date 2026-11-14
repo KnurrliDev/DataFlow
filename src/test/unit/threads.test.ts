@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import type { ThreadsAccessInfo, ThreadsItemInfo, ThreadsModel } from '../../engine/client';
-import { buildSideThreads, overlaps, threadPairs } from '../../lenses/threads';
+import { buildSideThreads, overlaps, threadAccesses, threadPairs } from '../../lenses/threads';
 
 // A model with the shape of the result of dataflow/threads for the fixture: process() starts solve_power_plan() with
 // tf::Executor::async on line 95, and get() on line 102 joins it. The engine counts lines from 1 and columns in UTF-8
@@ -131,6 +131,33 @@ suite('Threads and races', () => {
 			[95, 'start', 'starts lambda on line 95'],
 			[102, 'join', 'get() waits for lambda on line 95'],
 		]);
+	});
+
+	test('The accesses of an item give the place, the role, the thread, the locks and the pair of each access as data', () => {
+		const worker = path.join(ROOT, 'worker.cpp');
+		const is_dirty = item('charge.is_dirty', [
+			access(76, 'is_dirty', 0, 'write'),
+			access(94, 'is_dirty', -1, 'check'),
+			// the same access again, for example from a second run: one access
+			access(94, 'is_dirty', -1, 'check'),
+			// after the join: no pair
+			access(116, 'charge', -1, 'mayWrite', { whole: true, order: { after: [0] }, locks: ['mutex_'] }),
+			{ ...access(61, 'is_dirty', 0, 'read'), file: worker },
+		]);
+		const m = model([is_dirty]);
+		// an access in the file of the result has no file
+		assert.deepStrictEqual(threadAccesses(m, is_dirty, CPP), [
+			{ line: 76, role: 'write', isWrite: true, thread: 'worker', locks: [], pair: 'race' },
+			{ line: 94, role: 'check', isWrite: false, thread: 'caller', locks: [], pair: 'race' },
+			{ line: 116, role: 'mayWrite', isWrite: true, thread: 'caller', locks: ['mutex_'] },
+			{ file: worker, line: 61, role: 'read', isWrite: false, thread: 'worker', locks: [] },
+		]);
+		// a condition of the caller thread makes the pair a check
+		const guarded = item('charge.is_dirty', [access(76, 'is_dirty', 0, 'write'), access(94, 'is_dirty', -1, 'read', { guards: [{ text: 'ready', isNegated: false }] })]);
+		assert.deepStrictEqual(threadAccesses(model([guarded]), guarded, CPP).map((a) => a.pair), ['check', 'check']);
+		// the texts stay as they are
+		const side = buildSideThreads(m, CPP, lineText);
+		assert.deepStrictEqual([side.items[0].caller, side.items[0].worker], ['reads 94 · writes 116', 'reads worker.cpp:61 · writes 76']);
 	});
 
 	test('A capture of a local object by reference in a thread that can outlive its function dangles', () => {

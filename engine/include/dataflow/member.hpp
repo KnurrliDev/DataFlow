@@ -168,9 +168,9 @@ namespace DataFlow {
       return nullptr;
     }  // call_of_lambda
 
-    // true if the call that gets the lambda runs it before the call returns: the predicate of a wait of a condition
-    // variable, or a standard algorithm
-    [[nodiscard]] inline bool is_synchronous(const clang::LambdaExpr* _l, const clang::ParentMap& _pm) {
+    // true if a call runs its callable arguments before it returns: a wait of a condition variable with a predicate, or
+    // a standard algorithm. in a template, a call with a dependent argument gets the candidate of called_function
+    [[nodiscard]] inline bool is_synchronous_call(const clang::Expr* _call) {
       static const std::vector<llvm::StringRef> algorithms = {
           "all_of",      "any_of",      "none_of",       "for_each",       "for_each_n",   "find_if",
           "find_if_not", "count_if",    "remove_if",     "replace_if",     "copy_if",      "transform",
@@ -178,7 +178,7 @@ namespace DataFlow {
           "partition",   "min_element", "max_element",   "minmax_element", "is_sorted",    "lower_bound",
           "upper_bound", "equal_range", "binary_search", "adjacent_find",  "generate",     "generate_n",
           "unique",      "erase_if",    "invoke",        "apply",          "visit",        "call_once"};
-      const auto* call = llvm::dyn_cast_or_null<clang::CallExpr>(call_of_lambda(_l, _pm));
+      const auto* call = llvm::dyn_cast_or_null<clang::CallExpr>(_call);
       if (!call) return false;
 
       // a niebloid, for example std::ranges::for_each, is an object with a call operator
@@ -188,12 +188,18 @@ namespace DataFlow {
         return ref && ref->getDecl()->getIdentifier() && is_in_std(ref->getDecl()) &&
                llvm::is_contained(algorithms, ref->getDecl()->getName());
       }
-      const clang::FunctionDecl* fn = call->getDirectCallee();
+      const clang::FunctionDecl* fn = called_function(call);
       if (!fn || !fn->getIdentifier()) return false;
       if (const auto* m = llvm::dyn_cast<clang::CXXMethodDecl>(fn); m && fn->getName().starts_with("wait"))
         return m->getParent()->getIdentifier() &&
                llvm::is_contained({"condition_variable", "condition_variable_any"}, m->getParent()->getName());
       return is_in_std(fn) && llvm::is_contained(algorithms, fn->getName());
+    }  // is_synchronous_call
+
+    // true if the call that gets the lambda runs it before the call returns: the predicate of a wait of a condition
+    // variable, or a standard algorithm
+    [[nodiscard]] inline bool is_synchronous(const clang::LambdaExpr* _l, const clang::ParentMap& _pm) {
+      return is_synchronous_call(call_of_lambda(_l, _pm));
     }  // is_synchronous
 
     // true if a loop around the statement in the body runs it more than one time

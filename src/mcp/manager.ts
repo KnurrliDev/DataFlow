@@ -9,7 +9,7 @@ import {
 	claudeSettingsFile, ClaudeConnection, connectionOf, connectSettings, disconnectSettings, marketplaceDir, marketplacePathOf, readText,
 	removePlugin, writePlugin, writeTextAtomic, writeToken,
 } from './claude';
-import { McpPrompt, McpServer, McpTool } from './server';
+import { McpPrompt, McpServer, McpTool, McpToolCall } from './server';
 import { INSTRUCTIONS } from './tools';
 
 // The MCP server of DataFlow in a VS Code window: it starts and stops the server, keeps the token, gives the server to
@@ -21,14 +21,43 @@ const PROVIDER_ID = 'dataflow.mcp';
 const PATH = '/mcp';
 export const DEFAULT_MCP_PORT = 47321;
 
+// The part of the secret storage of VS Code that keeps the token
+export type TokenSecrets = Pick<vscode.SecretStorage, 'get' | 'store'>;
+
+// Gives the token of the MCP server. Each call gets the promise of the first call, so 2 calls at the same time get the
+// same token. At the start of the window, the start of the server and the definition for VS Code ask at the same time
+export function tokenSource(secrets: TokenSecrets, warn: (message: string) => void): () => Promise<string> {
+	let token: Promise<string> | undefined;
+	const read = async (): Promise<string> => {
+		try {
+			const stored = await secrets.get(TOKEN_KEY);
+			if (stored) {
+				return stored;
+			}
+			const made = randomBytes(24).toString('base64url');
+			await secrets.store(TOKEN_KEY, made);
+			return made;
+		} catch (error) {
+			// no secret storage, for example in a test without a keyring
+			warn(`The secret storage is not available, so the MCP token is only for this window: ${error}`);
+			return randomBytes(24).toString('base64url');
+		}
+	};
+	return () => (token ??= read());
+}
+
 export class McpManager implements vscode.Disposable {
 	private server?: McpServer;
-	private token?: string;
+	private token?: () => Promise<string>;
 	private starting?: Promise<void>;
 	private focused = vscode.window.state.focused ? Date.now() : 0; // the time of the last focus of the window
 	private entry = ''; // the text of the file of the window in the registry
 	private readonly changeEmitter = new vscode.EventEmitter<void>();
-	private readonly disposables: vscode.Disposable[] = [this.changeEmitter];
+	private readonly toolCallEmitter = new vscode.EventEmitter<McpToolCall>();
+	private readonly disposables: vscode.Disposable[] = [this.changeEmitter, this.toolCallEmitter];
+	// A client of the server called a tool: a tool of DataFlow or a tool of an extension. The event stays after a restart
+	// of the server
+	readonly onDidCallTool = this.toolCallEmitter.event;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -89,24 +118,9 @@ export class McpManager implements vscode.Disposable {
 
 	// The token in the header Authorization. It stays the same in all windows and after a restart, so the setup of a
 	// client stays correct. The secret storage of VS Code keeps it.
-	async getToken(): Promise<string> {
-		if (this.token) {
-			return this.token;
-		}
-		let token: string | undefined;
-		try {
-			token = await this.context.secrets.get(TOKEN_KEY);
-			if (!token) {
-				token = randomBytes(24).toString('base64url');
-				await this.context.secrets.store(TOKEN_KEY, token);
-			}
-		} catch (error) {
-			// no secret storage, for example in a test without a keyring
-			this.log.warn(`The secret storage is not available, so the MCP token is only for this window: ${error}`);
-			token = randomBytes(24).toString('base64url');
-		}
-		this.token = token;
-		return token;
+	getToken(): Promise<string> {
+		this.token ??= tokenSource(this.context.secrets, (message) => this.log.warn(message));
+		return this.token();
 	}
 
 	start(): Promise<void> {
@@ -311,6 +325,7 @@ export class McpManager implements vscode.Disposable {
 				this.log.info(`MCP: ${client.name} ${client.version} connected.`);
 				this.updateState();
 			},
+			onToolCall: (call) => this.toolCallEmitter.fire(call),
 		});
 		try {
 			await server.start();

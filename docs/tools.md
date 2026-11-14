@@ -263,7 +263,7 @@ Other extensions can add their own tools to the server with the [API for extensi
 | [`get_heat`](#get_heat) | read | The heat score of each function of a file: how much a change of the function can break, with the reason of each point |
 | [`get_call_graph`](#get_call_graph) | read | The state of the scan of the call graph, and the frame functions of the project |
 | [`get_logic`](#get_logic) | read | The data of Logic Map: the decisions of a function with their options, and one path through the function for the choices |
-| [`get_ripple`](#get_ripple) | read | The data of the last review of Change Ripple: the code that each change reaches, also in the callers |
+| [`get_ripple`](#get_ripple) | read | The data of the last review of Change Ripple: the code that each change reaches, also in the callers. With a base, the data of a new review that the side view does not show |
 | [`get_review`](#get_review) | read | The C and C++ files under the paths of a guided review, with the diff of each changed file against the target branch |
 | [`get_diff`](#get_diff) | read | The hunks of the changed C and C++ files against a base, with their functions and their diff, for a diff walk. With `allFiles`, also the other changed text files |
 | [`show_blocks`](#show_blocks) | view | Shows the logical blocks of a function, with a maximum of five levels. A new call replaces the blocks of its function. The blocks of the other functions of the file stay. |
@@ -373,10 +373,11 @@ Gives the facts of a line, for example before the model or an extension adds cod
 
 - `function`: the innermost function that contains the line, or null. `isInBody` is false for a line of the head of the function, for example a line of the parameters.
 - `around`: the statements around the line, from the outside in. Each statement has `kind`, `lines` and `text`, for example the condition:
-  - the loops `for`, `while` and `do`, with `isOpenLoop`: true if the loop has no fixed number of iterations
+  - the loops `for`, `while` and `do`, with `isOpenLoop`: true if the loop has no fixed number of iterations. With a complete call graph, a loop also has `isMainLoop`: true for a main loop, a loop whose calls run in each frame. `get_call_graph` gives the main loops.
   - the decisions `if`, `switch` and `conditional` (`?:`), with `branch`: `then`, `else`, `condition`, `true`, `false`, or the case labels of a `switch`
   - `try`, `catch`, and `lambda` with `isSynchronous`: false if the lambda runs after the call, for example on a thread
 - `locks`: the mutexes that the code holds at the start of the line.
+- `inScope`: the names that the code at the start of the line can use, each with `name`, `type` and `kind`: `param` (a parameter), `local` (a local variable declared before the line in a block around it, or the variable of a loop, an `if` or a `catch` around it) or `member` (a data member of the class or of a base). A lambda with no capture default sees only its captures and its parameters, and the data members only with a capture of `this`. The list has a maximum of 60 names. With more names, `isInScopeCapped` is true.
 - `threads`: the worker threads that run the line, from Threads and races, with the start of each thread. `isOnCallerThread` is true if the thread of the caller of the function also runs the line.
 - `callers` and `framePath`: the reach of the function in the call graph, as `get_heat` gives it. `reachUnknown` tells if the function has callers that the call graph cannot see.
 
@@ -394,6 +395,20 @@ Example request: "I want to log the value on line 65. Which thread runs that lin
 ### get_threads
 
 Gives the thread starts of a file, the data that two threads share, and the protection of each access: a lock, an order or a check. Each item has a verdict: race, check or safe.
+
+`caller` and `worker` give the lines of the accesses of the caller thread and of the worker threads as a text, for example `reads 94 · writes 116, 129`. `accesses` gives the same accesses as data, in the sequence of the code:
+
+| Field | Function |
+| --- | --- |
+| `file` | The file of the access. Only an access in a different file has it. |
+| `line` | The line of the access. |
+| `role` | `def`, `write`, `mayWrite`, `check` or `read`, as in `get_flow`. |
+| `isWrite` | `true` for `def`, `write` and `mayWrite`: the writes of `caller` and `worker`. `false` for the reads. |
+| `thread` | `caller`: the thread of the caller of the function. `worker`: a worker thread. |
+| `locks` | The mutexes that the access holds. |
+| `pair` | `race`: the access and an access of a different thread can run at the same time, and one of the two accesses writes. `check`: the same, but a condition around the access of the caller thread can keep the threads apart. The engine cannot see if it does. An access with no `pair` is in no such pair, for example an access after a join. |
+
+An item of the kind `capture`, a variable that a thread lambda captures by reference, has no `accesses`.
 
 Parameters: `file`.
 
@@ -472,14 +487,23 @@ The callers and the frame path come from the call graph of the project. The firs
 
 `isReachComplete` is false for a function until the call graph gives its reach. Then the score can be too low or too high, because the half points of a siloed function also do not apply. The result also gives `isReachComplete` for the file.
 
-`reachUnknown` tells that the function has callers that the call graph cannot see, with the cause: `address` (the code uses the address of the function), `libraryOverride` (a library can call the override) or `slot` (Qt can call the slot). Such a function is never siloed. `tests` gives the number of the test functions that reach the function, and their first 5 files. A frame path of more than 8 calls gives no points, and a notice tells it.
+`reachUnknown` tells that the function has callers that the call graph cannot see, with the cause:
+
+- `address`: the code uses the address of the function.
+- `libraryOverride`: a library can call the override.
+- `slot`: Qt can call the slot, also a function that a lambda as a slot calls.
+- `callback`: a lambda that can run later calls the function, for example the callback of a timer.
+- `reflection`: the reflection of a framework can call a function with no caller, for example a `UFUNCTION` of Unreal Engine, or a `Q_INVOKABLE` function or a function of a `Q_PROPERTY` of Qt.
+- `public`: the first declaration of the function is in a folder of the setting `dataflow.heat.publicFolders`, so the users of the library can call it.
+
+Such a function is never siloed. `tests` gives the number of the test functions that reach the function, and their first 5 files. A frame path of more than 8 calls gives no points, and a notice tells it.
 
 `signals` gives each reason of a function with its `id`, its `group`, its `points`, its `text` and its measure (`value`):
 
 | `id` | `value` |
 | --- | --- |
 | `framePath` | The reason of the frame function, the functions from the frame function to the caller before this function (`path`), the number of calls (`calls`), and `isInLoop`. `isPastLimit` is true after more than 8 calls: then the signal has 0 points. |
-| `reachUnknown` | The cause, the function that uses the address or the overridden function or the signal (`via`), and the place (`file`, `line`). 0 points. |
+| `reachUnknown` | The cause, the function that uses the address, the overridden function, the signal, the function around the lambda, the macro or the public folder (`via`), and the place (`file`, `line`). 0 points. |
 | `tests` | The number of the test functions that reach the function, their first 5 files, and `isCapped`. 0 points. |
 | `frameLoop` | `true`: a caller on the frame path calls the function in a loop |
 | `callers` | The direct callers, the transitive callers, and `isCapped` |
@@ -511,7 +535,7 @@ Example request: "Which functions of this file are the most dangerous to change,
 
 ### get_call_graph
 
-Gives the state of the scan of the call graph: `none`, `scanning`, `stopped`, `ready` or `failed`, and the progress of a scan in source files. After a complete scan, it also gives the number of the functions and of the calls, the frame functions of the project with their reasons, and the source files that the scan could not parse. The tool does not start or stop a scan.
+Gives the state of the scan of the call graph: `none`, `scanning`, `stopped`, `ready` or `failed`, and the progress of a scan in source files. After a complete scan, it also gives the number of the functions and of the calls, the frame functions of the project with their reasons, the main loops, and the source files that the scan could not parse. A main loop is a loop whose calls give the reason "called in the main loop of": `mainLoops` gives its function, its file and its first line. The tool does not start or stop a scan.
 
 Parameters: none.
 
@@ -548,7 +572,14 @@ Gives the last review of Change Ripple. `state` is `ready`, `running`, `failed` 
 
 `counts` gives the number of changed functions, of bodies and of the lines that the changes reach. `notice` tells if Change Ripple found only the callers in the same file.
 
-Parameters: none.
+With no parameters, the tool gives the last review of the side view. With `base` or `paths`, the tool makes a new review of the changes since the base, waits for its end, and gives its data. The state of such a review is `ready` or `failed`. The side view does not show this review, and the review of the user stays. Thus the model or an extension can get the code that the changes of one step reach, for example since a mark of `mark_base`. The review of the user can show at the same time. `start_ripple` shows its review in the side view.
+
+| Parameter | Type | Function |
+| --- | --- | --- |
+| `base` | text | As for `start_ripple`: `target` (the default), `uncommitted`, a commit, a tag or a branch, or `mark:<name>`. |
+| `paths` | list of texts | Only the changes of the files under these files and folders: paths relative to the repository, or absolute paths. The default is all changed files. |
+
+As with `start_ripple`, the tool never asks you. If the repository has no target branch, a review with the default base fails, and the model gives a different base.
 
 Example request: "Which code does my change of solve_power_plan() reach?"
 
@@ -736,14 +767,16 @@ Parameters: none.
 
 ### mark_base
 
-Keeps the text of the text files under paths in a mark, for example before the model writes the code of one step of a task. `get_diff` and `start_ripple` with the base `mark:<name>` then give the changes since the mark, also with no commit. The mark keeps the text of the editors that are not saved.
+Keeps the text of the text files under paths in a mark, for example before the model writes the code of one step of a task. `get_diff`, `get_ripple` and `start_ripple` with the base `mark:<name>` then give the changes since the mark, also with no commit. The mark keeps the text of the editors that are not saved.
 
 | Parameter | Type | Function |
 | --- | --- | --- |
 | `name` | text | Necessary. The name of the mark: 1 to 64 letters, digits, `_`, `-` or `.`, for example `step-5`. |
-| `paths` | list of texts | Necessary. The files and the folders of the mark, in the folders of the project: paths relative to the repository, or absolute paths. A folder gives its text files, also in its subfolders, except build folders. |
+| `paths` | list of texts | Necessary. The files and the folders of the mark, in the folders of the project: paths relative to the repository, or absolute paths. A folder gives its text files, also in its subfolders, except build folders. A path that is not there is a file with no text. |
 
-A mark has a maximum of 500 files and 20 MB. Each client has its own marks, with a maximum of 20 marks. A new mark with the same name replaces the old mark. The marks are in the storage folder of the workspace, so they stay after a reload of the window. `get_view` gives the marks of the client.
+A mark has a maximum of 500 files and 20 MB. A path that is not there counts as one file. Each client has its own marks, with a maximum of 20 marks. A new mark with the same name replaces the old mark. The marks are in the storage folder of the workspace, so they stay after a reload of the window. `get_view` gives the marks of the client.
+
+A path that is not there, for example a new file of the step, must also be in a folder of the project. The mark keeps it as a file with no text, and `notFound` in the result gives it. When the file is there, the diff since the mark gives it as a new file. While the file is not there, the diff gives nothing for it. Thus a mark of the new files of a step does not need the folder of the new files.
 
 The diff since a mark compares the text of each file now with its text in the mark. A file under the paths that is not in the mark is a new file. A file of the mark that is not there now is a deleted file. A diff walk of a mark has no diff editor, because a mark has no commit.
 

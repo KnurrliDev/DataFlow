@@ -44,6 +44,19 @@ export interface McpClientInfo {
 	time: number;
 }
 
+// A call of a tool of the server by a client. client: the name of the client that sent initialize last, else undefined.
+// args: the arguments before the call. time: the start of the call in ms. isError: the call failed, and error gives
+// the text of the failure
+export interface McpToolCall {
+	client?: string;
+	tool: string;
+	args: Record<string, unknown>;
+	isReadOnly: boolean;
+	time: number;
+	isError: boolean;
+	error?: string;
+}
+
 export interface McpServerOptions {
 	port: number; // 0 for a free port
 	path: string; // for example /mcp
@@ -56,6 +69,7 @@ export interface McpServerOptions {
 	prompts: McpPrompt[];
 	log?: (text: string) => void;
 	onClient?: (client: McpClientInfo) => void; // a client sent initialize
+	onToolCall?: (call: McpToolCall) => void; // a client called a tool. It comes after the end of the call
 }
 
 type JsonRpcId = string | number | null;
@@ -274,13 +288,21 @@ export class McpServer {
 					throw new RpcError(-32602, `Unknown tool: ${String(params.name)}`);
 				}
 				const args = params.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : {};
+				// the arguments before the call, because a tool of an extension can change them
+				const given = options.onToolCall ? structuredClone(args) : args;
+				const time = Date.now();
 				// an error of the tool goes to the model as a result, so the model can correct the call
+				let result: McpToolResult;
 				try {
-					const result = await tool.call(args);
-					return { content: [{ type: 'text', text: result.text }], isError: !!result.isError };
+					result = await tool.call(args);
 				} catch (error) {
-					return { content: [{ type: 'text', text: String((error as Error).message ?? error) }], isError: true };
+					result = { text: String((error as Error).message ?? error), isError: true };
 				}
+				this.called({
+					client: this.lastClient?.name, tool: tool.name, args: given, isReadOnly: tool.isReadOnly, time, isError: !!result.isError,
+					...(result.isError ? { error: result.text } : {}),
+				});
+				return { content: [{ type: 'text', text: result.text }], isError: !!result.isError };
 			}
 			case 'prompts/list':
 				return {
@@ -296,6 +318,15 @@ export class McpServer {
 			}
 			default:
 				throw new RpcError(-32601, `Unknown method: ${method}`);
+		}
+	}
+
+	// Tells the call of a tool. An error of the listener does not change the result of the call
+	private called(call: McpToolCall): void {
+		try {
+			this.options.onToolCall?.(call);
+		} catch (error) {
+			this.options.log?.(`MCP tool call: ${error}`);
 		}
 	}
 }

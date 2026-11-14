@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { readFileSync } from 'fs';
+import { readFileSync, rmSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type * as Api from '../../../api/dataflow-api';
@@ -48,6 +48,58 @@ suite('API for other extensions: Change Ripple and the guide', () => {
 		assert.strictEqual(internals.store.state.review, undefined);
 		assert.strictEqual((await api.getRipple()).state, 'none');
 		assert.deepStrictEqual(await api.clearRipple(), { cleared: false });
+	});
+
+	test('getRipple with a base makes a review that the side view does not show, and the review of the user stays', async function () {
+		this.timeout(120000);
+		await api.clearRipple();
+		const facts = await api.getRipple({ base: 'target' });
+		assert.strictEqual(facts.state, 'ready', JSON.stringify(facts).slice(0, 500));
+		assert.match(facts.base ?? '', /^main \(merge base [0-9a-f]{7}\)$/);
+		assert.match(facts.note ?? '', /^The side view does not show this review\./);
+		assert.deepStrictEqual(facts.changes?.map((c) => [c.file, c.function, c.lines]),
+			[['src/battery.cpp', 'electricity::power_ctrl::solve_power_plan', [lineOf('if (cost < 1e-4)')]]]);
+		// the side view did not change
+		assert.deepStrictEqual([internals.store.state.review, internals.store.state.rippleLayer, internals.store.state.lenses.review], [undefined, undefined, false]);
+		assert.strictEqual((await api.getRipple()).state, 'none');
+
+		// a review of the user stays after a review of a tool with a different base
+		const shown = await api.startRipple({ base: 'target' });
+		const fire = lineOf('fire_transition(home_battery_ctl, "", true);');
+		const editor = await vscode.window.showTextDocument(vscode.Uri.file(source()));
+		await editor.edit((b) => b.insert(new vscode.Position(fire, 0), '  int cycle = 0;\n'));
+		try {
+			const uncommitted = await api.getRipple({ base: 'uncommitted', paths: ['src/battery.cpp'] });
+			assert.deepStrictEqual(uncommitted.changes?.map((c) => c.lines), [[fire + 1]], JSON.stringify(uncommitted).slice(0, 400));
+			const none = await api.getRipple({ base: 'no-such-branch' });
+			assert.deepStrictEqual([none.state, none.message], ['failed', 'Git does not find the commit no-such-branch.']);
+			const last = await api.getRipple();
+			assert.deepStrictEqual([last.state, last.base, last.changes?.map((c) => c.lines)], ['ready', shown.base, shown.changes?.map((c) => c.lines)]);
+		} finally {
+			await vscode.window.showTextDocument(editor.document);
+			await vscode.commands.executeCommand('workbench.action.files.revert');
+			await api.clearRipple();
+		}
+	});
+
+	test('A mark keeps a path that is not there, and getDiff with the mark gives the file as a new file when it is there', async function () {
+		this.timeout(90000);
+		const added = path.join(root(), 'src', 'limit.cpp');
+		const mark = await api.markBase({ name: 'step-new', paths: ['src/battery.cpp', 'src/limit.cpp'] });
+		assert.deepStrictEqual([mark.paths, mark.notFound, mark.files], [['src/battery.cpp', 'src/limit.cpp'], ['src/limit.cpp'], 1]);
+		assert.deepStrictEqual((await api.getView()).marks?.find((m) => m.name === 'step-new')?.notFound, ['src/limit.cpp']);
+		try {
+			// while the file is not there, the diff gives nothing
+			assert.deepStrictEqual((await api.getDiff({ base: 'mark:step-new' })).files, []);
+			writeFileSync(added, 'int limit_of_rate(int rate) {\n  return rate > 4 ? 4 : rate;\n}\n');
+			const diff = await api.getDiff({ base: 'mark:step-new' });
+			assert.deepStrictEqual(diff.files.map((f) => [f.file, f.isNew, f.hunks.map((h) => h.lines)]), [['src/limit.cpp', true, [[1, 3]]]], JSON.stringify(diff.files));
+		} finally {
+			rmSync(added, { force: true });
+			await api.deleteMark({ name: 'step-new' });
+		}
+		// a path that is not there must also be in a folder of the project
+		await assert.rejects(api.markBase({ name: 'outside', paths: ['../elsewhere/new.cpp'] }), /These paths are not in a folder of the project: \.\.\/elsewhere\/new\.cpp\. No mark changed\./);
 	});
 
 	test('onDidChangeGuide follows a guided review of the API: the plan, a step with a mark, and the close', async function () {

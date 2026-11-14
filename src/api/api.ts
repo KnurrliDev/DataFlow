@@ -2,9 +2,11 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type * as Api from '../../api/dataflow-api';
 import type { EngineFunction } from '../engine/client';
+import { ownerOf } from '../lenses/blocks';
 import { fileKey } from '../lenses/member';
 import type { ExtensionTools } from '../mcp/extensionTools';
 import { callGraphFacts, DataFlowMcpHost, type HostDeps } from '../mcp/host';
+import type { McpToolCall } from '../mcp/server';
 import { createTools } from '../mcp/tools';
 import { guideFacts } from '../review/guide';
 import { guideChangeOf } from '../review/stack';
@@ -25,6 +27,7 @@ export interface ApiDeps {
 	currentPlace(): { doc: vscode.TextDocument; pos: vscode.Position } | undefined;
 	log(message: string): void;
 	extensionTools?: ExtensionTools; // the tools that extensions add to the MCP server
+	toolCalls?: vscode.Event<McpToolCall>; // the calls of the tools of the MCP server by its clients
 }
 
 // The reason of a state of the engine with no work, as the status bar tells it. Before the first search of the compile
@@ -44,6 +47,12 @@ const engineEvent = (state: DataFlowState): Api.EngineStateEvent => {
 	return { state: state.engine, compileDatabases: state.databases.map((d) => d.makefile ?? d.path), ...(error ? { error } : {}) };
 };
 
+// A call of a tool of the MCP server for the API. A client with no name is the model, as for the owner of a guide
+export const toolCallEvent = (c: McpToolCall): Api.ToolCallEvent => ({
+	client: ownerOf({ client: c.client }), tool: c.tool, args: c.args, time: new Date(c.time).toISOString(), isReadOnly: c.isReadOnly, isError: c.isError,
+	...(c.error !== undefined ? { error: c.error } : {}),
+});
+
 // The events of the API. All API objects share them. They come from the changes of the state of DataFlow
 export class ApiEvents implements vscode.Disposable {
 	private readonly engine = new vscode.EventEmitter<Api.EngineStateEvent>();
@@ -52,12 +61,14 @@ export class ApiEvents implements vscode.Disposable {
 	private readonly callGraph = new vscode.EventEmitter<Api.CallGraphFacts>();
 	private readonly action = new vscode.EventEmitter<{ owner: string; event: Api.ActionEvent }>();
 	private readonly parse = new vscode.EventEmitter<Api.ParseEvent>();
+	private readonly toolCall = new vscode.EventEmitter<Api.ToolCallEvent>();
 	private readonly clients = new Set<string>(); // the clients with an API object
 	readonly onDidChangeEngineState = this.engine.event;
 	readonly onDidChangeView = this.view.event;
 	readonly onDidChangeGuide = this.guide.event;
 	readonly onDidChangeCallGraph = this.callGraph.event;
 	readonly onDidParse = this.parse.event;
+	readonly onDidCallTool = this.toolCall.event;
 
 	// The clicks on the buttons of one client
 	actionsOf(client: string): vscode.Event<Api.ActionEvent> {
@@ -84,6 +95,7 @@ export class ApiEvents implements vscode.Disposable {
 	private lastCallGraph: CallGraphView | undefined;
 	private lastParse: ParseState | undefined;
 	private readonly subscription: vscode.Disposable;
+	private readonly toolCalls: vscode.Disposable | undefined;
 
 	constructor(private readonly deps: ApiDeps) {
 		const state = deps.store.state;
@@ -95,11 +107,13 @@ export class ApiEvents implements vscode.Disposable {
 		this.lastCallGraph = state.callGraph;
 		this.lastParse = state.lastParse;
 		this.subscription = deps.store.onDidChange((s) => this.onState(s));
+		this.toolCalls = deps.toolCalls?.((c) => this.toolCall.fire(toolCallEvent(c)));
 	}
 
 	dispose(): void {
 		this.subscription.dispose();
-		[this.engine, this.view, this.guide, this.callGraph, this.action, this.parse].forEach((e) => e.dispose());
+		this.toolCalls?.dispose();
+		[this.engine, this.view, this.guide, this.callGraph, this.action, this.parse, this.toolCall].forEach((e) => e.dispose());
 	}
 
 	private onState(state: DataFlowState): void {
@@ -236,6 +250,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		onDidChangeCallGraph: events.onDidChangeCallGraph,
 		onDidInvokeAction: events.actionsOf(client),
 		onDidParse: events.onDidParse,
+		onDidCallTool: events.onDidCallTool,
 		callTool: (tool, args) => call<unknown>(tool, args),
 		registerTools: (list) => {
 			if (!deps.extensionTools) {
@@ -262,7 +277,7 @@ export function createApi(deps: ApiDeps, events: ApiEvents, version: unknown, op
 		getPlace: (args) => call('get_place', args),
 		getMemberSites: (args) => call('get_member_sites', args),
 		getLogic: (args) => call('get_logic', args),
-		getRipple: () => call('get_ripple'),
+		getRipple: (args) => call('get_ripple', args),
 		getReview: (args) => call('get_review', args),
 		getDiff: (args) => call('get_diff', args),
 

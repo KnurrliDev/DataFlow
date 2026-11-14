@@ -29,7 +29,7 @@ import { buildSideIncluders, buildSideIncludes } from './lenses/includes';
 import { buildSideThreads } from './lenses/threads';
 import { classScope, findIncluder, includeLine, isSourceFile, searchClassFiles, type ClassFile } from './lenses/classFiles';
 import { buildMemberView, fileKey, memberRefAt, mergeMemberModels, sameFile, threadEntries } from './lenses/member';
-import { buildReviewState } from './lenses/ripple';
+import { buildReviewState, type ReviewState } from './lenses/ripple';
 import {
 	ANY, buildControls, Choices, Control, dominators, evaluatePath, moveChoices, pathChoices, PathResult, pathSteps, WhyItem, whyLine,
 } from './logic/paths';
@@ -1654,6 +1654,8 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	const frameFunctionsOf = (uri: vscode.Uri | undefined): string[] => settingOf<string[]>('dataflow.heat', 'frameFunctions', uri, []);
 	// The folders of the tests, for the test functions that reach a function
 	const testFoldersOf = (uri: vscode.Uri | undefined): string[] => settingOf<string[]>('dataflow.heat', 'testFolders', uri, ['test', 'tests']);
+	// The folders of the public headers of a library: the users of the library in other projects can call their functions
+	const publicFoldersOf = (uri: vscode.Uri | undefined): string[] => settingOf<string[]>('dataflow.heat', 'publicFolders', uri, []);
 
 	// Scans the call graph of the project in the engine, or the source files that changed after the last scan. The scan
 	// does not block: the side view shows its progress, and the heat of the file of the lens comes again at its end
@@ -1729,7 +1731,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		const file = doc.uri.fsPath;
 		const roots = projectRoots();
 		const [metrics, threadsModel, blame, types] = await Promise.all([
-			client.metrics(file, frameFunctionsOf(doc.uri), testFoldersOf(doc.uri), token),
+			client.metrics(file, frameFunctionsOf(doc.uri), testFoldersOf(doc.uri), publicFoldersOf(doc.uri), token),
 			client.threads(file, { asyncFunctions: asyncFunctionsOf(doc.uri), roots }, token).catch(() => undefined),
 			blameOf(doc).catch(() => undefined),
 			client.memberMetrics(file, frameFunctionsOf(doc.uri), token).catch(() => undefined),
@@ -2086,17 +2088,22 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		show([...own, ...others], false);
 	};
 
+	// The state of a review with its result. A failed call hierarchy gives a notice
+	const reviewStateOf = (model: RippleModel, diff: ReviewDiff): ReviewState => {
+		const state = buildReviewState(model, diff.label, diff.target || undefined);
+		if (callHierarchyFailure && model.isCallHierarchyMissing) {
+			state.notice = 'The call hierarchy of the C/C++ extension stopped with an error. Change Ripple follows only the callers in the same file.';
+		}
+		return state;
+	};
+
 	// Shows the last review in the side view
 	const showReview = (): void => {
 		if (!review) {
 			return;
 		}
-		const state = buildReviewState(review.model, review.diff.label, review.diff.target || undefined);
-		if (callHierarchyFailure && review.model.isCallHierarchyMissing) {
-			state.notice = 'The call hierarchy of the C/C++ extension stopped with an error. Change Ripple follows only the callers in the same file.';
-		}
 		store.update({
-			review: state,
+			review: reviewStateOf(review.model, review.diff),
 			rippleLayer: { model: review.model, files: review.diff.files.map((f) => ({ file: f.uri.fsPath, hunks: f.hunks })), base: review.diff.label },
 		});
 	};
@@ -2172,6 +2179,73 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		return { info, diff: await markDiff(info, await marks.texts(info), markSource, isWanted) };
 	};
 
+	// A tool never asks the user for a target branch
+	const toolNoTarget = 'The repository has no target branch. Give "base": "uncommitted", a branch, a commit or "mark:<name>".';
+
+	// The changes of a review against its base, and their ripple. The base is a mark of the client, the target branch,
+	// HEAD, or a commit, a tag or a branch. With paths, only the changes under the paths. noTarget gives the target branch
+	// if the user selected none and no automatic target branch is there. It gives a branch, the reason of a failure, or
+	// undefined to stop the review
+	const reviewChanges = async (client: EngineClient, folder: vscode.Uri, base: string | undefined, paths: string[] | undefined, owner: string | undefined,
+		noTarget: (repo: ReviewRepository) => Promise<string | { message: string } | undefined>):
+		Promise<{ model: RippleModel; diff: ReviewDiff; root: string } | { message: string; target?: string } | undefined> => {
+		const asyncFunctions = settingOf('dataflow.ripple', 'asyncFunctions', folder, DEFAULT_ASYNC_FUNCTIONS);
+		vscode.workspace.textDocuments.forEach(flushChange); // the engine gets the text of the editors first
+		let target: string | undefined;
+		try {
+			let diff: ReviewDiff;
+			let root: string;
+			if (base?.startsWith(MARK_BASE)) {
+				// the changes since a mark of the client. A new file of the mark has no copy, so the diff editor shows an empty file
+				const changes = await markChanges(owner, base.slice(MARK_BASE.length), isCppFile);
+				if ('message' in changes) {
+					return changes;
+				}
+				const { info } = changes;
+				const copyOf = (uri: vscode.Uri) => marks.copyOf(info, uri.fsPath);
+				diff = { base: '', target: '', label: `mark ${info.name}`, ...changes.diff, baseUri: (uri) => (copyOf(uri) ? vscode.Uri.file(copyOf(uri)!) : uri.with({ scheme: 'untitled' })) };
+				root = info.root;
+			} else {
+				const repo = await openReviewRepository(folder);
+				root = repo.root;
+				if (!base || base === 'target') {
+					const found = (await selectedTarget(repo)) ?? await automaticTarget(repo, folder) ?? await noTarget(repo);
+					if (typeof found !== 'string') {
+						return found;
+					}
+					target = found;
+					diff = await repo.diff(target);
+				} else {
+					// the changes against HEAD, or since the merge base of HEAD and a commit, a tag or a branch
+					const ref = base === 'uncommitted' ? 'HEAD' : base;
+					if (!await repo.commitOf(ref)) {
+						return { message: `Git does not find the commit ${ref}.` };
+					}
+					const changes = await repo.diff(ref, { untracked: true });
+					diff = { ...changes, target: '', label: ref === 'HEAD' ? `HEAD (${changes.base.slice(0, 7)})` : changes.label };
+				}
+			}
+			// with paths, only the changes under the paths
+			if (paths && paths.length > 0) {
+				const wanted = paths.map((p) => (path.isAbsolute(p) ? p : path.join(root, p)));
+				const isWanted = (file: string) => wanted.some((p) => fileKey(p) === fileKey(file) || isInside(file, p));
+				diff = { ...diff, files: diff.files.filter((f) => isWanted(f.uri.fsPath)), deleted: diff.deleted.filter(isWanted), other: diff.other.filter(isWanted) };
+			}
+			// the files go in parallel. Each one keeps a parse of the engine until its ripple is complete, and one parse
+			// stays free for the callers in other files
+			const cacheSize = Math.min(64, Math.max(1, vscode.workspace.getConfiguration('dataflow').get<number>('engine.cacheSize', 4)));
+			const model = await runRipple(diff.files.map((f) => ({ file: f.uri.fsPath, ...f.changes })), {
+				slice: (file, seed, confidence) => client.slice(file, seed, asyncFunctions, confidence),
+				callers: editorCallers,
+				maxDepth: settingOf('dataflow.ripple', 'maxDepth', folder, 2),
+				concurrency: Math.max(1, cacheSize - 1),
+			});
+			return { model, diff, root };
+		} catch (error) {
+			return { message: error instanceof Error ? error.message : String(error), target };
+		}
+	};
+
 	// Compares the files with the base, slices each change, and follows the return values to the callers. An update
 	// after a save keeps the shown review until the new review is complete: it does not open the side view, it does not
 	// ask for a target branch, and an error keeps the old review. options: a base and paths of a tool, as for get_diff.
@@ -2211,82 +2285,56 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		if (!isUpdate) {
 			store.update({ review: { isRunning: true, other: [] }, rippleLayer: undefined });
 		}
-		const asyncFunctions = settingOf('dataflow.ripple', 'asyncFunctions', folder, DEFAULT_ASYNC_FUNCTIONS);
-		vscode.workspace.textDocuments.forEach(flushChange); // the engine gets the text of the editors first
 		// the base and the paths of the review. An update keeps the base, the paths and the owner of the shown review
 		const base = (isUpdate && shown ? shown.base : options.base)?.trim() || undefined;
 		const paths = isUpdate && shown ? shown.paths : options.paths;
 		const owner = isUpdate && shown ? shown.client : options.client;
-		let target: string | undefined;
-		try {
-			let diff: ReviewDiff;
-			let root: string;
-			if (base?.startsWith(MARK_BASE)) {
-				// the changes since a mark of the client. A new file of the mark has no copy, so the diff editor shows an empty file
-				const changes = await markChanges(owner, base.slice(MARK_BASE.length), isCppFile);
-				if ('message' in changes) {
-					return fail(changes.message);
-				}
-				const { info } = changes;
-				const copyOf = (uri: vscode.Uri) => marks.copyOf(info, uri.fsPath);
-				diff = { base: '', target: '', label: `mark ${info.name}`, ...changes.diff, baseUri: (uri) => (copyOf(uri) ? vscode.Uri.file(copyOf(uri)!) : uri.with({ scheme: 'untitled' })) };
-				root = info.root;
-			} else {
-				const repo = await openReviewRepository(folder);
-				root = repo.root;
-				if (!base || base === 'target') {
-					target = (await selectedTarget(repo)) ?? await automaticTarget(repo, folder);
-					if (target === undefined && (isUpdate || options.isTool)) {
-						return fail(isUpdate ? 'The repository has no target branch.'
-							: 'The repository has no target branch. Give "base": "uncommitted", a branch, a commit or "mark:<name>".');
-					}
-					if (target === undefined) {
-						// the repository has no default branch, no main and no master. The user selects the target branch
-						target = await pickTarget(repo) || undefined;
-						if (run !== reviewRun) {
-							return undefined;
-						}
-						if (!target) {
-							return fail('Change Ripple needs a target branch: the branch that the active branch merges into. '
-								+ 'Click Target in the Change Ripple bar, and select the branch.');
-						}
-						await saveTarget(repo, target);
-					}
-					diff = await repo.diff(target);
-				} else {
-					// the changes against HEAD, or since the merge base of HEAD and a commit, a tag or a branch
-					const ref = base === 'uncommitted' ? 'HEAD' : base;
-					if (!await repo.commitOf(ref)) {
-						return fail(`Git does not find the commit ${ref}.`);
-					}
-					const changes = await repo.diff(ref, { untracked: true });
-					diff = { ...changes, target: '', label: ref === 'HEAD' ? `HEAD (${changes.base.slice(0, 7)})` : changes.label };
-				}
+		const found = await reviewChanges(client, folder, base, paths, owner, async (repo) => {
+			if (isUpdate || options.isTool) {
+				return { message: isUpdate ? 'The repository has no target branch.' : toolNoTarget };
 			}
-			// with paths, only the changes under the paths
-			if (paths && paths.length > 0) {
-				const wanted = paths.map((p) => (path.isAbsolute(p) ? p : path.join(root, p)));
-				const isWanted = (file: string) => wanted.some((p) => fileKey(p) === fileKey(file) || isInside(file, p));
-				diff = { ...diff, files: diff.files.filter((f) => isWanted(f.uri.fsPath)), deleted: diff.deleted.filter(isWanted), other: diff.other.filter(isWanted) };
-			}
-			// the files go in parallel. Each one keeps a parse of the engine until its ripple is complete, and one parse
-			// stays free for the callers in other files
-			const cacheSize = Math.min(64, Math.max(1, vscode.workspace.getConfiguration('dataflow').get<number>('engine.cacheSize', 4)));
-			const model = await runRipple(diff.files.map((f) => ({ file: f.uri.fsPath, ...f.changes })), {
-				slice: (file, seed, confidence) => client.slice(file, seed, asyncFunctions, confidence),
-				callers: editorCallers,
-				maxDepth: settingOf('dataflow.ripple', 'maxDepth', folder, 2),
-				concurrency: Math.max(1, cacheSize - 1),
-			});
+			// the repository has no default branch, no main and no master. The user selects the target branch
+			const picked = await pickTarget(repo) || undefined;
 			if (run !== reviewRun) {
 				return undefined;
 			}
-			review = { model, diff, root, ...(base ? { base } : {}), ...(paths ? { paths } : {}), ...(owner ? { client: owner } : {}) };
-			showReview();
-			return model;
-		} catch (error) {
-			return fail(error instanceof Error ? error.message : String(error), target);
+			if (!picked) {
+				return { message: 'Change Ripple needs a target branch: the branch that the active branch merges into. Click Target in the Change Ripple bar, and select the branch.' };
+			}
+			await saveTarget(repo, picked);
+			return picked;
+		});
+		if (!found) {
+			return undefined;
 		}
+		if ('message' in found) {
+			return fail(found.message, found.target);
+		}
+		if (run !== reviewRun) {
+			return undefined;
+		}
+		review = { model: found.model, diff: found.diff, root: found.root, ...(base ? { base } : {}), ...(paths ? { paths } : {}), ...(owner ? { client: owner } : {}) };
+		showReview();
+		return found.model;
+	};
+
+	// The review of get_ripple with a base or paths: the changes since the base, and their ripple. The side view and the
+	// last review do not change, and a new review of the user does not stop it. With no target branch, the review fails
+	const toolReview = async (options: { base?: string; paths?: string[]; client?: string }): Promise<{ state: ReviewState; model?: RippleModel; root?: string }> => {
+		const failed = (message: string, target?: string) => ({ state: { isRunning: false, message, target, other: [] } });
+		const client = engine;
+		if (!client || client.currentState !== 'ready') {
+			return failed('The engine is not ready. Wait for the engine, then review again.');
+		}
+		const folder = reviewFolder();
+		if (!folder) {
+			return failed('Open a folder of a git repository, or select a project with "DataFlow: Open Project".');
+		}
+		const found = await reviewChanges(client, folder, options.base?.trim() || undefined, options.paths, options.client, async () => ({ message: toolNoTarget }));
+		if (!found || 'message' in found) {
+			return failed(found?.message ?? toolNoTarget, found?.target);
+		}
+		return { state: reviewStateOf(found.model, found.diff), model: found.model, root: found.root };
 	};
 
 	// The target branch that the user selected for the active branch of a repository, by the folder of the repository and
@@ -2971,7 +3019,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 				throw new Error('The DataFlow engine is not ready.');
 			}
 			flushChange(doc);
-			const res = await client.callers(doc.uri.fsPath, at, depth, frameFunctionsOf(doc.uri));
+			const res = await client.callers(doc.uri.fsPath, at, depth, frameFunctionsOf(doc.uri), publicFoldersOf(doc.uri));
 			requestCallGraph(client, res.callGraph.state, doc.uri);
 			return res;
 		},
@@ -2981,7 +3029,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 				throw new Error('The DataFlow engine is not ready.');
 			}
 			flushChange(doc);
-			const res = await client.place(doc.uri.fsPath, line, frameFunctionsOf(doc.uri));
+			const res = await client.place(doc.uri.fsPath, line, frameFunctionsOf(doc.uri), publicFoldersOf(doc.uri));
 			requestCallGraph(client, res.callGraph.state, doc.uri);
 			return res;
 		},
@@ -3024,6 +3072,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		},
 		ripple: () => ({ state: store.state.review, model: review?.model, root: review?.root }),
 		startRipple: (options) => runReview(false, { ...options, isTool: true }),
+		rippleOf: (options) => toolReview(options),
 		clearRipple: () => {
 			const hadReview = !!store.state.review || store.state.lenses.review;
 			closeReview();
@@ -3385,7 +3434,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	layers.restore();
 
 	// The API for other extensions. Each extension gets its own host of the tools, with its name as the client
-	const apiDeps = { store, hostDeps, currentPlace, log: (message: string) => log.info(message), extensionTools };
+	const apiDeps = { store, hostDeps, currentPlace, log: (message: string) => log.info(message), extensionTools, toolCalls: mcp.onDidCallTool };
 	const apiEvents = new ApiEvents(apiDeps);
 	context.subscriptions.push(apiEvents);
 	const getApi = (version: 1, options?: DataFlowApiOptions) => createApi(apiDeps, apiEvents, version, options);

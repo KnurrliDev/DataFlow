@@ -164,12 +164,27 @@ function framePathText(frame: NonNullable<MetricsReach['frame']>, name: string):
 // The frame path gives points only up to this number of calls from the frame function, as the engine tells it
 export const FRAME_LIMIT = 8;
 
+// The reason of callers that the call graph cannot see, from the cause of the engine
+function unknownCallersReason(u: NonNullable<MetricsReach['unknownCallers']>): string {
+	switch (u.cause) {
+		case 'address':
+			return `${u.via} uses the address of the function, so a pointer or a std::function can call it`;
+		case 'libraryOverride':
+			return `a library can call this override of ${u.via}`;
+		case 'callback':
+			return `a lambda of ${u.via} calls it, and the lambda can run later, for example as the callback of a timer`;
+		case 'reflection':
+			return `the reflection of a framework can call it through ${u.via}, for example a Blueprint or QML`;
+		case 'public':
+			return `its declaration is in the public folder ${u.via}, so the users of the library can call it`;
+		default:
+			return u.via.startsWith('the signal ') ? `Qt calls it through ${u.via}` : 'Qt can call it as a slot';
+	}
+}
+
 // The text of callers that the call graph cannot see, from the cause of the engine
 export function unknownCallersText(u: NonNullable<MetricsReach['unknownCallers']>): string {
-	const why = u.cause === 'address' ? `${u.via} uses the address of the function, so a pointer or a std::function can call it`
-		: u.cause === 'libraryOverride' ? `a library can call this override of ${u.via}`
-			: u.via.startsWith('the signal ') ? `Qt calls it through ${u.via}` : 'Qt can call it as a slot';
-	return `Callers that the call graph cannot see: ${why}`;
+	return `Callers that the call graph cannot see: ${unknownCallersReason(u)}`;
 }
 
 // The reach points: the frame path, the callers and their files from the call graph of the engine, the include reach of

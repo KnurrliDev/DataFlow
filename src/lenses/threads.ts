@@ -1,4 +1,5 @@
 import * as path from 'path';
+import type * as Api from '../../api/dataflow-api';
 import type { ThreadsAccessInfo, ThreadsItemInfo, ThreadsModel, ThreadsStartInfo } from '../engine/client';
 import type {
 	SideFlowRole, SideThread, SideThreadAccess, SideThreadItem, SideThreadMark, SideThreads, SideThreadStep, SideThreadVerdict,
@@ -6,8 +7,9 @@ import type {
 import { toUtf16Column, type LineText } from './flow';
 import { sameFile } from './member';
 
-// Threads and races: the pairs of accesses that can run at the same time, the verdict of each item, and the data of the
-// side view. This module does not use the VS Code API, so the unit tests can call it directly. Lines start at 1.
+// Threads and races: the pairs of accesses that can run at the same time, the verdict of each item, the data of the
+// side view, and the accesses for a client of DataFlow. This module does not use the VS Code API, so the unit tests can
+// call it directly. Lines start at 1.
 
 const WRITE_ROLES = new Set(['def', 'write', 'mayWrite']);
 const VERDICT_RANK: SideThreadVerdict[] = ['race', 'check', 'safe'];
@@ -347,8 +349,8 @@ function laneSteps(model: ThreadsModel, item: ThreadsItemInfo, pairs: ThreadPair
 	return steps;
 }
 
-// The marks of the accesses of an item in the file of the side view
-function itemMarks(item: ThreadsItemInfo, pairs: ThreadPair[], file: string, lineText: LineText): SideThreadMark[] {
+// The partner of each access of a pair, by the index of the access in the refs. A race comes before a check
+function partnersOf(item: ThreadsItemInfo, pairs: ThreadPair[]): Map<number, { other: ThreadsAccessInfo; kind: 'race' | 'check' }> {
 	const partner = new Map<number, { other: ThreadsAccessInfo; kind: 'race' | 'check' }>();
 	for (const p of pairs) {
 		for (const [self, other] of [[p.a, p.b], [p.b, p.a]]) {
@@ -358,6 +360,12 @@ function itemMarks(item: ThreadsItemInfo, pairs: ThreadPair[], file: string, lin
 			}
 		}
 	}
+	return partner;
+}
+
+// The marks of the accesses of an item in the file of the side view
+function itemMarks(item: ThreadsItemInfo, pairs: ThreadPair[], file: string, lineText: LineText): SideThreadMark[] {
+	const partner = partnersOf(item, pairs);
 	// one mark for each place. An access of a pair comes before the other accesses at the same place
 	const rank = (m: SideThreadMark) => (m.pair === 'race' ? 2 : m.pair === 'check' ? 1 : 0);
 	const byPlace = new Map<string, SideThreadMark>();
@@ -414,6 +422,29 @@ export function buildThreadItem(model: ThreadsModel, item: ThreadsItemInfo, file
 		decl: item.decl ? { file: item.decl.file, line: item.decl.line } : undefined,
 		marks: itemMarks(item, pairs, file, lineText), steps: laneSteps(model, item, pairs, thread, file),
 	};
+}
+
+// The accesses of an item for a client of DataFlow, in the sequence of the engine. Each access has its line, its role,
+// its thread and its locks. An access in a different file also has its file. isWrite is true for the writes of the texts
+// caller and worker. pair: the access can run at the same time as an access of a different thread. Two accesses with the
+// same facts are one access
+export function threadAccesses(model: ThreadsModel, item: ThreadsItemInfo, file: string): Api.ThreadAccessFacts[] {
+	const partner = partnersOf(item, threadPairs(model, item));
+	const seen = new Set<string>();
+	const out: Api.ThreadAccessFacts[] = [];
+	item.refs.forEach((r, i) => {
+		const pair = partner.get(i)?.kind;
+		const access: Api.ThreadAccessFacts = {
+			...(sameFile(r.file, file) ? {} : { file: r.file }), line: r.line, role: r.role, isWrite: isWrite(r), thread: r.thread < 0 ? 'caller' : 'worker',
+			locks: [...r.locks], ...(pair ? { pair } : {}),
+		};
+		const key = JSON.stringify(access);
+		if (!seen.has(key)) {
+			seen.add(key);
+			out.push(access);
+		}
+	});
+	return out;
 }
 
 // The variables that a thread captures by reference, when the thread can run after its function returns. A reference

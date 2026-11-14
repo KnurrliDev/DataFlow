@@ -819,11 +819,13 @@ namespace DataFlow {
                                });
     // the metrics of the functions of the file for the heat score: decisions, depth, loops, writes and costs in loops.
     // with a complete call graph, also the reach of each function. frameFunctions: the frame functions of the setting.
-    // testFolders: the folders of the tests, for the test functions among the callers
+    // testFolders: the folders of the tests, for the test functions among the callers. publicFolders: the folders of
+    // the public headers of a library, for the callers in other projects
     if (_method == "dataflow/metrics")
       return post_file_request(_srv, *_id, *file,
                                [&srv = _srv, names = Detail::get_strings(&params, "frameFunctions"),
-                                testFolders = Detail::get_strings(&params, "testFolders")](
+                                testFolders   = Detail::get_strings(&params, "testFolders"),
+                                publicFolders = Detail::get_strings(&params, "publicFolders")](
                                    clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
                                  const std::vector<const clang::FunctionDecl*> fns = main_file_functions(_ast);
                                  const std::vector<FunctionMetrics> metrics =
@@ -834,19 +836,21 @@ namespace DataFlow {
                                    const std::vector<char> tests = testFolders.empty()
                                                                        ? std::vector<char>()
                                                                        : test_nodes(*view.graph_, testFolders);
+                                   const FolderSetting pub(publicFolders, view.graph_->roots_);
                                    for (size_t i = 0; i < metrics.size() && i < list->size(); ++i)
                                      if (JsonObject* o = (*list)[i].getAsObject())
                                        (*o)["reach"] =
-                                           reach_to_json(*view.graph_, *view.paths_, *metrics[i].fn_, tests);
+                                           reach_to_json(*view.graph_, *view.paths_, *metrics[i].fn_, tests, &pub);
                                  }
                                  out["callGraph"] = JsonObject(view.state_);
                                  return out;
                                });
     // the callers of a function in the call graph up to a depth, with the lines of their calls, and its frame paths.
-    // params: function, or line and col; depth (default 3, maximum 6); frameFunctions
+    // params: function, or line and col; depth (default 3, maximum 6); frameFunctions; publicFolders
     if (_method == "dataflow/callers")
       return post_file_request(_srv, *_id, *file,
-                               [&srv = _srv, params, names = Detail::get_strings(&params, "frameFunctions")](
+                               [&srv = _srv, params, names = Detail::get_strings(&params, "frameFunctions"),
+                                publicFolders = Detail::get_strings(&params, "publicFolders")](
                                    clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
                                  const auto fn = resolve_function(_ast, &params);
                                  if (!fn) return std::unexpected(fn.error());
@@ -855,7 +859,9 @@ namespace DataFlow {
                                  const Detail::GraphView view = Detail::graph_view(srv, names);
                                  JsonObject out;
                                  if (view.graph_) {
-                                   Json callers = callers_to_json(*view.graph_, *view.paths_, **fn, depth, 200);
+                                   const FolderSetting pub(publicFolders, view.graph_->roots_);
+                                   Json callers =
+                                       callers_to_json(*view.graph_, *view.paths_, **fn, depth, 200, 5, &pub);
                                    if (const JsonObject* o = callers.getAsObject()) out = *o;
                                  }
                                  // with no complete graph, or with no node for the function: its name and the state
@@ -863,19 +869,28 @@ namespace DataFlow {
                                  out["callGraph"] = JsonObject(view.state_);
                                  return out;
                                });
-    // the facts of a line for a hook in the code: the function, the statements around the line, the locks at the start
-    // of the line, and the reach of the function in the call graph. params: line (from 1); frameFunctions
+    // the facts of a line for a hook in the code: the function, the statements around the line with the main loops,
+    // the locks at the start of the line, the names in scope, and the reach of the function in the call graph. params:
+    // line (from 1); frameFunctions; publicFolders
     if (_method == "dataflow/place")
       return post_file_request(
           _srv, *_id, *file,
-          [&srv = _srv, line = params.getInteger("line"), names = Detail::get_strings(&params, "frameFunctions")](
+          [&srv = _srv, line = params.getInteger("line"), names = Detail::get_strings(&params, "frameFunctions"),
+           publicFolders = Detail::get_strings(&params, "publicFolders")](
               clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
             if (!line || *line < 1) return std::unexpected("dataflow/place needs a line");
             const Place place            = build_place(_ast, uint32_t(*line));
-            JsonObject out               = place_to_json(place, _ast.getSourceManager());
             const Detail::GraphView view = Detail::graph_view(srv, names);
-            out["reach"] =
-                place.fn_ && view.graph_ ? reach_to_json(*view.graph_, *view.paths_, *place.fn_) : Json(nullptr);
+            const bool hasGraph          = place.fn_ && view.graph_;
+            const std::vector<uint32_t> loops =
+                hasGraph ? main_loops_of(*view.graph_, *place.fn_) : std::vector<uint32_t>();
+            JsonObject out = place_to_json(place, _ast.getSourceManager(), hasGraph ? &loops : nullptr);
+            if (hasGraph) {
+              const FolderSetting pub(publicFolders, view.graph_->roots_);
+              out["reach"] = reach_to_json(*view.graph_, *view.paths_, *place.fn_, {}, &pub);
+            } else {
+              out["reach"] = nullptr;
+            }
             out["callGraph"] = JsonObject(view.state_);
             return out;
           });

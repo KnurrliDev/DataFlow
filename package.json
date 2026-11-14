@@ -566,6 +566,15 @@
           "scope": "resource",
           "markdownDescription": "The folders of the tests for the lens Heat. The functions in these folders are test functions, and the heat tells the test functions that reach each function. A name with no `/` is a folder with this name at any place in the project, for example `tests`. A path is absolute, or relative to the project folder. The test functions give no points."
         },
+        "dataflow.heat.publicFolders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "The folders of the public headers of a library for the lens Heat, for example `include`. The users of the library in other projects can call a function with its first declaration in these folders, but the call graph cannot see these callers. Thus such a function gets a reason with no points, and it is never siloed. A private member function does not get the reason. A name with no `/` is a folder with this name at any place in the project. A path is absolute, or relative to the project folder."
+        },
         "dataflow.ripple.asyncFunctions": {
           "type": "array",
           "items": {

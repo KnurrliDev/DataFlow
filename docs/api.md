@@ -74,7 +74,7 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `getHeat({ file, function, lines })` | [`get_heat`](tools.md#get_heat) | read |
 | `getCallGraph()` | [`get_call_graph`](tools.md#get_call_graph) | read |
 | `getLogic({ file, function, line, choices })` | [`get_logic`](tools.md#get_logic) | read |
-| `getRipple()` | [`get_ripple`](tools.md#get_ripple) | read |
+| `getRipple({ base, paths })` | [`get_ripple`](tools.md#get_ripple) | read |
 | `getReview({ paths })` | [`get_review`](tools.md#get_review) | read |
 | `getDiff({ base, paths, allFiles })` | [`get_diff`](tools.md#get_diff) | read |
 | `showBlocks({ file, function, line, blocks })` | [`show_blocks`](tools.md#show_blocks) | view |
@@ -101,6 +101,8 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 
 The read methods do not change the view. The view methods change the side view that the user looks at. Use them only when the user asks your extension for it, for example with a command or a button.
 
+`getRipple()` gives the last review of Change Ripple in the side view. `getRipple({ base, paths })` makes a new review of the changes since the base, for example since a mark of your client, and gives its data. The side view does not show this review, and the review of the user stays. `startRipple` shows its review in the side view.
+
 The results of `highlight`, `commentLines` and `addDetail` give the ids of the new items, for example `n1`, `c1` and `d1`. `remove` removes items of your client by their ids.
 
 `callTool(name, args)` runs a tool by its name, for example `callTool('get_view')`. `tools` gives the name, the description and the JSON schema of the arguments of each tool. `tools` and `callTool` use only the tools of DataFlow, not the tools of extensions.
@@ -124,6 +126,7 @@ These properties give the state:
 | `onDidChangeCallGraph` | The scan of the call graph starts, makes progress, stops or ends. | The data of `scan_call_graph` |
 | `onDidInvokeAction` | The user clicks a button of your extension. See [Buttons](#buttons). | `kind`, `action`, `item`, `file`, `line` and `step` |
 | `onDidParse` | The engine parsed a file again. After each edit of the active file, the engine parses it about 250 ms after the last key. Ask for new facts of the file after this event. | `file`, `parseMs`, `errorCount`, the first 5 `errors`, and `isFailed` if the engine could not parse the file |
+| `onDidCallTool` | An MCP client called a tool of the MCP server. See [The tool calls of the MCP clients](#the-tool-calls-of-the-mcp-clients). | `client`, `tool`, `args`, `time`, `isReadOnly`, `isError`, and `error` for a call that failed |
 
 At the end of a scan of the call graph, the heat of the functions can change. Then call `getHeat` again.
 
@@ -131,6 +134,33 @@ Each subscription to an event gives a disposable. Add it to the subscriptions of
 
 ```ts
 context.subscriptions.push(api.onDidChangeView((view) => console.log(view.file, view.function?.name, view.line)));
+```
+
+### The tool calls of the MCP clients
+
+`onDidCallTool` comes after each call of a tool of the MCP server by an MCP client, for example Claude Code. Thus your extension can find the tool that gave a fact to the model. For example, your extension can refuse a fact of the model if the model did not call the tool that gives the fact.
+
+The event comes for all tools of the server: the read tools and the view tools of DataFlow, and the tools of extensions. A view tool can also give facts, for example `show_flow` and `start_ripple`. Use `isReadOnly` or `tool` to select the calls. The calls of the methods of the API give no event.
+
+| Field | Function |
+| --- | --- |
+| `client` | The name of the MCP client, as the owner of its guides and marks. |
+| `tool` | The MCP name of the tool, for example `get_place` or `my_extension_get_brief`. |
+| `args` | The arguments of the call. |
+| `time` | The start of the call (ISO 8601). The event comes after the end of the call. |
+| `isReadOnly` | `true` if the tool changes nothing: a read tool of DataFlow, or a tool of an extension with `isReadOnly`. |
+| `isError` | `true` if the call failed. Then `error` gives the text of the failure. |
+
+The server keeps only the name of the MCP client that connected last. If two clients use the server at the same time, `client` can name the wrong client.
+
+```ts
+// the calls of the model that gave facts
+const calls: ToolCallEvent[] = [];
+context.subscriptions.push(api.onDidCallTool((call) => {
+	if (!call.isError) {
+		calls.push(call);
+	}
+}));
 ```
 
 ## Guides

@@ -1,12 +1,17 @@
 import * as assert from 'assert';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import type * as Api from '../../../api/dataflow-api';
 import { ApiDeps, ApiEvents, createApi } from '../../api/api';
 import type { CompileDbInfo } from '../../cdb/manager';
 import type { EngineFunction } from '../../engine/client';
+import { buildReviewState } from '../../lenses/ripple';
 import { DataFlowMcpHost, type HostDeps } from '../../mcp/host';
+import type { McpToolCall } from '../../mcp/server';
 import { createTools } from '../../mcp/tools';
 import { withCurrent, withStatus } from '../../review/guide';
+import type { MarkInfo } from '../../review/marks';
+import type { RippleModel } from '../../review/ripple';
 import { dropGuide, pushGuide, setGuide, setStack, stackOf } from '../../review/stack';
 import type { SideGuide } from '../../side/protocol';
 import { Lens, StateStore } from '../../state/store';
@@ -166,6 +171,84 @@ suite('API for other extensions', () => {
 		subscription.dispose();
 		assert.deepStrictEqual(seen, ['g1 start user 1', 'g2 start ext-a 1', 'g2 mark user 1', 'g2 step user 2', 'g1 close ext-a 1', 'none']);
 		assert.strictEqual(store.state.guideSeq, 2);
+	});
+
+	test('onDidCallTool gives each call of a tool of the MCP server with the client, the arguments, the time and the failure', () => {
+		const calls = new vscode.EventEmitter<McpToolCall>();
+		const own = new ApiEvents({ ...deps, toolCalls: calls.event });
+		try {
+			const api = createApi({ ...deps, toolCalls: calls.event }, own, 1, { client: 'review-tool' });
+			const seen: Api.ToolCallEvent[] = [];
+			const subscription = api.onDidCallTool((e) => seen.push(e));
+			const time = Date.UTC(2026, 10, 14, 9, 30);
+			calls.fire({ client: 'claude-code', tool: 'get_place', args: { line: 5 }, isReadOnly: true, time, isError: false });
+			// a client with no name is the model, as for the owner of a guide
+			calls.fire({ tool: 'show_flow', args: {}, isReadOnly: false, time, isError: true, error: 'Give "line".' });
+			subscription.dispose();
+			calls.fire({ client: 'claude-code', tool: 'get_view', args: {}, isReadOnly: true, time, isError: false });
+			assert.deepStrictEqual(seen, [
+				{ client: 'claude-code', tool: 'get_place', args: { line: 5 }, time: '2026-11-14T09:30:00.000Z', isReadOnly: true, isError: false },
+				{ client: 'model', tool: 'show_flow', args: {}, time: '2026-11-14T09:30:00.000Z', isReadOnly: false, isError: true, error: 'Give "line".' },
+			]);
+		} finally {
+			own.dispose();
+			calls.dispose();
+		}
+	});
+
+	test('getRipple with a base or paths makes a new review, and with no arguments it gives the last review of the side view', async () => {
+		const asked: { base?: string; paths?: string[]; client?: string }[] = [];
+		const root = path.resolve('/p');
+		const model: RippleModel = { changes: [], other: [{ file: path.join(root, 'src', 'a.cpp'), outside: [3], quiet: [] }], isCallHierarchyMissing: false, errors: [] };
+		const hostDeps = {
+			...deps.hostDeps,
+			engine: () => ({ currentState: 'ready' }),
+			rippleOf: async (options: { base?: string; paths?: string[]; client?: string }) => {
+				asked.push(options);
+				return options.base === 'mark:none'
+					? { state: { isRunning: false, message: 'Your client has no mark none. mark_base makes a mark.', other: [] } }
+					: { state: buildReviewState(model, 'mark step-1'), model, root };
+			},
+		} as unknown as HostDeps;
+		const api = createApi({ ...deps, hostDeps }, events, 1, { client: 'review-tool' });
+		assert.deepStrictEqual(await api.getRipple({ base: ' mark:step-1 ', paths: ['src'] }), {
+			state: 'ready', note: 'The side view does not show this review. start_ripple shows a review in the side view.', base: 'mark step-1',
+			counts: { changes: 0, bodies: 0, reachedLines: 0 }, changes: [], otherLines: [{ file: 'src/a.cpp', text: 'lines 3 are outside of a function' }],
+		});
+		// only paths: the default base of the review
+		await api.getRipple({ paths: ['src/a.cpp'] });
+		assert.deepStrictEqual(asked, [{ base: 'mark:step-1', paths: ['src'], client: 'review-tool' }, { paths: ['src/a.cpp'], client: 'review-tool' }]);
+		assert.deepStrictEqual(await api.getRipple({ base: 'mark:none' }), { state: 'failed', message: 'Your client has no mark none. mark_base makes a mark.' });
+		await assert.rejects(api.getRipple({ paths: 'src' as unknown as string[] }), /"paths" must be a list of files and folders\./);
+		// with no arguments, the last review of the side view, which did not change
+		assert.strictEqual((await api.getRipple()).state, 'none');
+		assert.deepStrictEqual([asked.length, store.state.review, store.state.rippleLayer], [3, undefined, undefined]);
+	});
+
+	test('markBase gives the paths that are not there in notFound', async () => {
+		const root = path.resolve('/p');
+		const created: string[][] = [];
+		const hostDeps = {
+			...deps.hostDeps,
+			marks: {
+				create: async (client: string, name: string, paths: string[]): Promise<MarkInfo> => {
+					created.push(paths);
+					return {
+						name, client, paths: paths.map((p) => path.join(root, p)), missing: [path.join(root, 'tests', 'new.cpp')], root, time: 0, bytes: 9,
+						files: [{ file: path.join(root, 'src', 'a.cpp'), copy: '1.txt' }],
+					};
+				},
+				list: async () => [],
+				remove: async () => false,
+			},
+		} as unknown as HostDeps;
+		const api = createApi({ ...deps, hostDeps }, events, 1, { client: 'review-tool' });
+		assert.deepStrictEqual(await api.markBase({ name: 'step-1', paths: ['src/a.cpp', 'tests/new.cpp'] }), {
+			name: 'step-1', files: 1, paths: ['src/a.cpp', 'tests/new.cpp'], notFound: ['tests/new.cpp'], time: '1970-01-01T00:00:00.000Z', bytes: 9,
+			note: 'get_diff, get_ripple and start_ripple with the base "mark:step-1" give the changes since this mark. A new mark with the same name replaces it. '
+				+ 'The paths of notFound are not there now. When a file is there, the diff since the mark gives it as a new file.',
+		});
+		assert.deepStrictEqual(created, [['src/a.cpp', 'tests/new.cpp']]);
 	});
 
 	test('A click on a button goes to the API objects of the client of the item, and an MCP client cannot add buttons', async () => {

@@ -134,6 +134,7 @@ The user decided to skip the beta. The first items of the side view and of the M
 
 - [ ] **A call in a lambda belongs to the function around the lambda.**
   A listener lambda that a function registers counts for this function, also if the lambda runs in each frame.
+  Since 14 November 2026, a lambda that can run later gives the functions that it calls the cause `callback` of `reachUnknown`. The engine knows only the lambdas of the standard algorithms, of a wait, of a call at once and of a local lambda that the function calls. Thus a lambda that a function of the project or of a different library runs at once, for example a visitor or `llvm::any_of`, also gives the cause `callback`.
 
 - [ ] **Vendored code in the project folders is a part of the project.**
   A copy of a library in a project folder, for example Dear ImGui, gets heat and adds frame paths. The user decided to keep this on 2026-11-13. A setting can skip such folders later.

@@ -57,16 +57,20 @@ suite('Marks of the clients', () => {
 		assert.deepStrictEqual([(await store.list('my-ext')).length, (await store.list('other')).length], [0, 1]);
 	});
 
-	test('A wrong name, a path that is not there, too many files and too many marks give an error, and no mark changes', async () => {
+	test('A wrong name, too many files and too many marks give an error, and no mark changes', async () => {
 		const store = new MarkStore(dir);
 		await assert.rejects(store.create('c', 'step 1', [SRC], ROOT, source), /"name" must have 1 to 64 letters/);
 		await assert.rejects(store.create('c', 'x', [], ROOT, source), /Give "paths"/);
-		await assert.rejects(store.create('c', 'x', [path.join(ROOT, 'none')], ROOT, source), /These paths are not there: .*none\. No mark changed\./);
-		for (let i = 0; i <= MAX_MARK_FILES; i++) {
+		for (let i = 0; i < MAX_MARK_FILES; i++) {
 			texts.set(file(`f${i}.cpp`), `int f${i};\n`);
 		}
 		await assert.rejects(store.create('c', 'x', [SRC], ROOT, source), new RegExp(`more than ${MAX_MARK_FILES} files`));
+		// a path that is not there counts as one file: the folder has the maximum of files, and the new file is one more
+		const first = ['a.cpp', 'b.hpp', 'CMakeLists.txt', 'logo.png'].map((name) => [file(name), texts.get(file(name))!] as const);
+		first.forEach(([f]) => texts.delete(f));
+		await assert.rejects(store.create('c', 'x', [SRC, file('new.cpp')], ROOT, source), new RegExp(`more than ${MAX_MARK_FILES} files`));
 		assert.deepStrictEqual(await store.list('c'), []);
+		first.forEach(([f, text]) => texts.set(f, text));
 		for (let i = 0; i < MAX_MARKS; i++) {
 			await store.create('c', `m${i}`, [file('a.cpp')], ROOT, source);
 		}
@@ -74,6 +78,26 @@ suite('Marks of the clients', () => {
 		// a mark with a name that the client has replaces it, also with the maximum of marks
 		await store.create('c', 'm0', [file('b.hpp')], ROOT, source);
 		assert.strictEqual((await store.list('c')).length, MAX_MARKS);
+	});
+
+	test('A path that is not there is a file with no text: the diff since the mark gives nothing for it, and then a new file', async () => {
+		const store = new MarkStore(dir);
+		const added = file('test_limit.cpp');
+		const folder = path.join(SRC, 'tests');
+		const mark = await store.create('my-ext', 'step-3', [file('a.cpp'), added, folder], ROOT, source);
+		assert.deepStrictEqual([mark.paths, mark.missing, mark.files.map((f) => path.basename(f.file))], [[file('a.cpp'), added, folder], [added, folder], ['a.cpp']]);
+		assert.strictEqual(store.copyOf(mark, added), undefined);
+		// the mark keeps the paths that were not there
+		assert.deepStrictEqual((await store.get('my-ext', 'step-3'))?.missing, [added, folder]);
+		// while the files are not there, the diff gives nothing for them
+		const before = await store.texts(mark);
+		assert.deepStrictEqual(await markDiff(mark, before, source, isCppFile), { files: [], deleted: [], other: [] });
+		// then the new file and a file in the new folder are new files
+		texts.set(added, 'int limit = 4;\n');
+		texts.set(path.join(folder, 'limit.cpp'), 'int x;\nint y;\n');
+		const diff = await markDiff(mark, before, source, isCppFile);
+		assert.deepStrictEqual(diff.files.map((f) => [path.basename(f.uri.fsPath), f.isNew, f.changes.lines]), [['test_limit.cpp', true, [1]], ['limit.cpp', true, [1, 2]]]);
+		assert.deepStrictEqual([diff.deleted, diff.other], [[], []]);
 	});
 
 	test('The diff since a mark gives the changed files, the new files and the deleted files', async () => {

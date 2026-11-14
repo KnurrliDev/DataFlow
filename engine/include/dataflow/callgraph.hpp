@@ -2,6 +2,7 @@
 
 #include <dataflow/calls.hpp>
 #include <dataflow/includers.hpp>
+#include <dataflow/outline.hpp>
 
 /*
   The call graph of the project, for the reach of the heat score:
@@ -10,10 +11,15 @@
       parse. the build folders in the project folders are not a part of the project
     > a node is a function definition in the project folders, by its usr: its qualified name, its file and its lines
     > an edge is a call of a function of the project, with its line and whether a loop runs it. a virtual call also goes
-      to the overrides of the called function in the project. a call in a lambda belongs to the function around it
+      to the overrides of the called function in the project. a call in a lambda belongs to the function around it. if
+      the lambda can run later, for example as the callback of a timer, the called function also has callers that the
+      graph cannot see. a lambda as the slot of a connection of qt is a slot: the signal calls the functions that the
+      lambda calls
     > the frame functions run in each frame: the overrides of the frame functions of unreal engine and qt, and the
       functions that a main loop calls. a main loop is a loop with no fixed number of iterations in main. if main has
-      no main loop, it is in the functions that main calls
+      no main loop, it is in the functions that main calls. the graph keeps the main loops with their first lines
+    > the callers that the graph cannot see, as a cause for each function: an override of a library, a slot, a use of
+      the address, a lambda that runs later, and the reflection of a framework, for example UFUNCTION or Q_INVOKABLE
     > the reach of a function: its direct callers, its transitive callers with their files, and its frame path
     > the graph keeps the functions of each file. in a scan, the first source file that parses a file of the project
       gets the functions of the file, and the other source files skip the bodies of its functions
@@ -29,10 +35,11 @@ namespace DataFlow {
   // a call of a function, by the usr of the called function
   struct GraphCall {
     std::string to_;
-    uint32_t line_   = 0;
-    bool isInLoop_   = false;
-    bool isVirtual_  = false;  // an override of the called function can run
-    bool isMainLoop_ = false;  // a loop with no fixed number of iterations runs the call
+    uint32_t line_     = 0;
+    uint32_t mainLoop_ = 0;  // the first line of the outermost loop with no fixed number of iterations around the call
+    bool isInLoop_     = false;
+    bool isVirtual_    = false;  // an override of the called function can run
+    bool isCallback_   = false;  // a lambda that can run later has the call, for example the callback of a timer
   };  // GraphCall
 
   // a use of the address of a function of the project, by its usr. a call through a pointer or a std::function can then
@@ -114,10 +121,14 @@ namespace DataFlow {
     uint32_t last_  = 0;
     std::string frame_;  // the frame function of a framework that the function overrides, for example AActor::Tick
     std::string libraryOverride_;  // a virtual function out of the project that the function overrides
-    bool isMain_   = false;
-    bool isSlot_   = false;                // the class declares the function in a slots section of qt
-    bool isSignal_ = false;                // a signal of qt of the project. its body is in a file of moc
-    bool isInit_   = false;                // no function: the initializers of the global variables of the file
+    std::string reflection_;  // the macro for the reflection of a framework, for example UFUNCTION(BlueprintCallable)
+    std::string declFile_;    // the file of the first declaration if it is not file_, for example a header
+    uint32_t declLine_ = 0;   // the line of the first declaration
+    bool isMain_       = false;
+    bool isSlot_       = false;            // the class declares the function in a slots section of qt
+    bool isSignal_     = false;            // a signal of qt of the project. its body is in a file of moc
+    bool isInit_       = false;            // no function: the initializers of the global variables of the file
+    bool isPrivate_    = false;            // a private member function. a user of a library cannot call it
     std::vector<std::string> overridden_;  // the usrs of the functions that it overrides directly
     std::vector<GraphCall> calls_;
     std::vector<GraphRef> refs_;
@@ -134,10 +145,13 @@ namespace DataFlow {
   };  // GraphEdge
 
   // the reason for callers that the call graph cannot see. cause: address (a pointer or a std::function can call the
-  // function), libraryOverride (a library calls the override) or slot (qt calls the slot). an empty cause: no reason
+  // function), libraryOverride (a library calls the override), slot (qt calls the slot), callback (a lambda that can
+  // run later calls the function) or reflection (the reflection of a framework can call the function, for example a
+  // blueprint of unreal engine or qml). an empty cause: no reason. a request can add the cause public
   struct GraphUnknown {
     std::string cause_;
-    std::string via_;  // the function that uses the address, the overridden function, or the signal
+    std::string via_;  // the function that uses the address, the overridden function, the signal, the function around
+                       // the lambda, or the macro
     std::string file_;
     uint32_t line_ = 0;
   };  // GraphUnknown
@@ -147,6 +161,12 @@ namespace DataFlow {
     int32_t node_ = -1;
     std::string reason_;  // for example "override of AActor::Tick"
   };  // GraphRoot
+
+  // a main loop: a loop whose calls make frame functions
+  struct GraphLoop {
+    int32_t node_  = -1;  // the function with the loop
+    uint32_t line_ = 0;   // the first line of the loop
+  };  // GraphLoop
 
   // the functions of a file. the graphs share them, thus a copy of a graph is fast
   using GraphFile = std::shared_ptr<const std::vector<GraphFunction>>;
@@ -177,6 +197,7 @@ namespace DataFlow {
     std::vector<std::vector<GraphEdge>> out_;
     std::vector<std::vector<int32_t>> callers_;  // the callers of each node, each one time
     std::vector<GraphRoot> frames_;              // the frame functions of the code
+    std::vector<GraphLoop> mainLoops_;           // the main loops whose calls make frame functions
     std::shared_ptr<const std::deque<GraphFunction>> signals_;  // the connected signals of qt of the project
     std::vector<GraphUnknown> unknown_;                         // the callers that the graph cannot see, of each node
 
@@ -378,6 +399,97 @@ namespace DataFlow {
       return text.contains("slots") || text.contains("SLOTS");
     }  // is_slot
 
+    // the lambda of an argument, through the implicit nodes, the parentheses, the casts and a copy or a move. null for
+    // a different argument
+    [[nodiscard]] inline const clang::LambdaExpr* lambda_in(const clang::Expr* _e) {
+      for (int32_t i = 0; _e && i < 8; ++i) {
+        _e = _e->IgnoreImplicit()->IgnoreParens();
+        if (const auto* l = llvm::dyn_cast<clang::LambdaExpr>(_e)) return l;
+        if (const auto* f = llvm::dyn_cast<clang::CXXFunctionalCastExpr>(_e))
+          _e = f->getSubExpr();
+        else if (const auto* c = llvm::dyn_cast<clang::CXXConstructExpr>(_e); c && c->getNumArgs() == 1)
+          _e = c->getArg(0);
+        else
+          return nullptr;
+      }
+      return nullptr;
+    }  // lambda_in
+
+    // the first node above an expression that uses its value, with its child on the way. the walk goes through the
+    // implicit nodes, the parentheses, the temporaries and the conversions, for example to std::function. the
+    // construction of a thread uses the value
+    [[nodiscard]] inline std::pair<const clang::Stmt*, const clang::Stmt*> user_of(const clang::Stmt* _e,
+                                                                                   const clang::ParentMap& _pm) {
+      const clang::Stmt* child = _e;
+      for (const clang::Stmt* p = _pm.getParent(child); p; child = p, p = _pm.getParent(p)) {
+        if (llvm::isa<clang::ImplicitCastExpr, clang::MaterializeTemporaryExpr, clang::CXXBindTemporaryExpr,
+                      clang::ParenExpr, clang::ExprWithCleanups, clang::CXXFunctionalCastExpr>(p))
+          continue;
+        if (const auto* c = llvm::dyn_cast<clang::CXXConstructExpr>(p);
+            c && c->getNumArgs() == 1 && thread_type_name(c->getType()).empty())
+          continue;
+        return {p, child};
+      }
+      return {nullptr, child};
+    }  // user_of
+
+    // the references to a variable in a statement
+    inline void add_refs(const clang::Stmt* _s, const clang::VarDecl& _v,
+                         std::vector<const clang::DeclRefExpr*>& _out) {
+      if (!_s) return;
+      if (const auto* r = llvm::dyn_cast<clang::DeclRefExpr>(_s); r && r->getDecl() == &_v) _out.push_back(r);
+      for (const clang::Stmt* c : _s->children()) add_refs(c, _v, _out);
+    }  // add_refs
+
+    [[nodiscard]] inline bool is_later_lambda(const clang::LambdaExpr& _l, const clang::ParentMap& _pm,
+                                              const int32_t _depth = 0);
+
+    // true if a reference to a local lambda runs the lambda now: a call of the variable, or an argument of a call that
+    // runs it before it returns, for example of a standard algorithm. no lambda around the call can run later. _l: the
+    // lambda of the variable
+    [[nodiscard]] inline bool is_call_now(const clang::DeclRefExpr& _ref, const clang::LambdaExpr& _l,
+                                          const clang::ParentMap& _pm, const int32_t _depth) {
+      const auto [user, child] = user_of(&_ref, _pm);
+      const auto* call         = llvm::dyn_cast_or_null<clang::CallExpr>(user);
+      if (!call) return false;
+      const auto* op = llvm::dyn_cast<clang::CXXOperatorCallExpr>(call);
+      const bool isCall =
+          op ? op->getOperator() == clang::OO_Call && op->getArg(0) == child : call->getCallee() == child;
+      if (!isCall && !(llvm::is_contained(call->arguments(), child) && is_synchronous_call(call))) return false;
+      for (const clang::Stmt *c = call, *p = _pm.getParent(c); p; c = p, p = _pm.getParent(p))
+        if (const auto* l = llvm::dyn_cast<clang::LambdaExpr>(p);
+            l && l != &_l && c == l->getBody() && is_later_lambda(*l, _pm, _depth + 1))
+          return false;
+      return true;
+    }  // is_call_now
+
+    // true if a lambda can run after the code around it: the slot of a connection, the callback of a timer, or a lambda
+    // that a thread, a library or a data member gets. these lambdas run now: a lambda of a standard algorithm or of a
+    // wait (is_synchronous), a lambda that the code calls at once, and a local lambda that the function only calls.
+    // _depth limits the walk through the lambdas around the calls of a local lambda
+    [[nodiscard]] inline bool is_later_lambda(const clang::LambdaExpr& _l, const clang::ParentMap& _pm,
+                                              const int32_t _depth) {
+      if (is_synchronous(&_l, _pm)) return false;
+      const auto [user, child] = user_of(&_l, _pm);
+      // a call at once, for example [&] { ... }()
+      if (const auto* op = llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(user);
+          op && op->getOperator() == clang::OO_Call && op->getArg(0) == child)
+        return false;
+
+      // a local variable with the lambda: each reference runs the lambda now
+      const auto* ds = llvm::dyn_cast_or_null<clang::DeclStmt>(user);
+      if (!ds || _depth >= 3) return true;
+      const clang::VarDecl* var = nullptr;
+      for (const clang::Decl* d : ds->decls())
+        if (const auto* v = llvm::dyn_cast<clang::VarDecl>(d); v && v->getInit() == child) var = v;
+      const clang::Stmt* scope = _pm.getParent(ds);
+      if (!var || !var->isLocalVarDecl() || !scope) return true;
+      std::vector<const clang::DeclRefExpr*> refs;
+      add_refs(scope, *var, refs);
+      return !std::ranges::all_of(refs,
+                                  [&](const clang::DeclRefExpr* _r) { return is_call_now(*_r, _l, _pm, _depth); });
+    }  // is_later_lambda
+
     // a name with no usr
     inline constexpr uint32_t no_name = UINT32_MAX;
 
@@ -510,39 +622,56 @@ namespace DataFlow {
     }  // member_pattern_of
 
     // the calls of a body: the calls of the functions of the project, the virtual calls, and the constructors of the
-    // project. a call in a lambda belongs to the body. the walk also records the uses of the address of a function of
-    // the project, and the connections of signals of qt to slots. with an index, it also records the uses of the data
-    // members and of the global variables of the project, and the switch statements on the enums of the project
+    // project. a call in a lambda belongs to the body, and a call in a lambda that can run later is a callback. the
+    // walk also records the uses of the address of a function of the project, and the connections of signals of qt to
+    // slots. with an index, it also records the uses of the data members and of the global variables of the project,
+    // and the switch statements on the enums of the project
     struct GraphCallWalker {
       const clang::SourceManager& sm_;
       ProjectFiles& files_;
       std::vector<GraphCall>& out_;
       std::vector<GraphRef>& refs_;
       std::vector<GraphConnect>& connects_;
-      GraphIndex* index_                                 = nullptr;
-      std::vector<GraphUse>* uses_                       = nullptr;
-      std::vector<GraphSwitch>* switches_                = nullptr;
-      llvm::SmallPtrSet<const clang::Expr*, 16> callees_ = {};  // the names that a call calls: no use of an address
+      GraphIndex* index_                                    = nullptr;
+      std::vector<GraphUse>* uses_                          = nullptr;
+      std::vector<GraphSwitch>* switches_                   = nullptr;
+      llvm::SmallPtrSet<const clang::Expr*, 16> callees_    = {};  // the names that a call calls: no use of an address
+      llvm::SmallPtrSet<const clang::LambdaExpr*, 4> slots_ = {};  // the lambdas that are the slot of a connection
+      const clang::Stmt* root_                              = nullptr;  // the statement of the walk
+      std::unique_ptr<clang::ParentMap> pm_                 = nullptr;  // the parents in root_, from the first lambda
 
-      // _loops: the number of loops around _s. _isMainLoop: a loop with no fixed number of iterations is around _s.
-      // _isWrite: the parent of _s can change the value of _s
-      void walk(const clang::Stmt* _s, const uint32_t _loops, const bool _isMainLoop, const bool _isWrite = false) {
+      // walks a body, or an initializer of a data member or of a global variable
+      void walk_root(const clang::Stmt* _root) {
+        root_ = _root;
+        pm_.reset();
+        walk(_root, 0, 0, false);
+      }  // walk_root
+
+      // _loops: the number of loops around _s. _mainLoop: the first line of the outermost loop with no fixed number of
+      // iterations around _s, or 0. _isCallback: a lambda that can run later has _s. _isWrite: the parent of _s can
+      // change the value of _s
+      void walk(const clang::Stmt* _s, const uint32_t _loops, const uint32_t _mainLoop, const bool _isCallback,
+                const bool _isWrite = false) {
         if (!_s) return;
-        uint32_t loops  = _loops;
-        bool isMainLoop = _isMainLoop;
+        uint32_t loops    = _loops;
+        uint32_t mainLoop = _mainLoop;
+        bool isCallback   = _isCallback;
         if (llvm::isa<clang::ForStmt, clang::WhileStmt, clang::DoStmt, clang::CXXForRangeStmt>(_s)) {
           ++loops;
-          isMainLoop = isMainLoop || is_open_loop(*_s);
+          if (mainLoop == 0 && is_open_loop(*_s)) mainLoop = line_of(_s->getBeginLoc());
         }
+        // the calls in a lambda that runs later are callbacks. a slot of a connection gets its callers from the signal
+        if (const auto* l = llvm::dyn_cast<clang::LambdaExpr>(_s); l && root_ && !isCallback && !slots_.contains(l))
+          isCallback = is_later_lambda(*l, parents());
         if (const auto* c = llvm::dyn_cast<clang::CallExpr>(_s)) {
           if (const clang::Expr* callee = c->getCallee()) callees_.insert(callee->IgnoreParenImpCasts());
           if (const clang::FunctionDecl* callee = called_function(c)) {
-            add(pattern_of(*callee), c->getBeginLoc(), loops > 0, is_virtual_call(*c), isMainLoop);
+            add(pattern_of(*callee), c->getBeginLoc(), loops > 0, is_virtual_call(*c), mainLoop, isCallback);
             if (is_connect(*callee)) connect(*c);
           }
         } else if (const auto* e = llvm::dyn_cast<clang::CXXConstructExpr>(_s)) {
           if (const clang::CXXConstructorDecl* ctor = e->getConstructor(); ctor && !ctor->isImplicit())
-            add(pattern_of(*ctor), e->getBeginLoc(), loops > 0, false, isMainLoop);
+            add(pattern_of(*ctor), e->getBeginLoc(), loops > 0, false, mainLoop, isCallback);
         } else if (const auto* r = llvm::dyn_cast<clang::DeclRefExpr>(_s); r && !callees_.contains(r)) {
           if (const auto* fn = llvm::dyn_cast<clang::FunctionDecl>(r->getDecl()))
             ref(pattern_of(*fn), r->getLocation());
@@ -551,13 +680,20 @@ namespace DataFlow {
           use(*_s, _isWrite);
           if (const auto* sw = llvm::dyn_cast<clang::SwitchStmt>(_s)) add_switch(*sw);
         }
-        for (const clang::Stmt* c : _s->children()) walk(c, loops, isMainLoop, index_ && is_write(*_s, c, _isWrite));
+        for (const clang::Stmt* c : _s->children())
+          walk(c, loops, mainLoop, isCallback, index_ && is_write(*_s, c, _isWrite));
       }  // walk
 
      private:
       [[nodiscard]] uint32_t line_of(const clang::SourceLocation _at) const {
         return sm_.getExpansionLineNumber(sm_.getExpansionLoc(_at));
       }  // line_of
+
+      // the parents of the statements of the root. only a root with a lambda needs them
+      [[nodiscard]] const clang::ParentMap& parents() {
+        if (!pm_) pm_ = std::make_unique<clang::ParentMap>(const_cast<clang::Stmt*>(root_));
+        return *pm_;
+      }  // parents
 
       // a use of a data member, a static data member or a global variable of the project. a constant is no use
       void use(const clang::Stmt& _s, const bool _isWrite) {
@@ -629,7 +765,7 @@ namespace DataFlow {
 
       // a connection with pointers to members: connect(sender, &Sender::signal, receiver, &Receiver::slot), or a
       // function as the slot. the arguments after the slot, for example the type of the connection, are no function. a
-      // lambda as the slot is a part of the body
+      // lambda as the slot connects the signal to each function of the project that the lambda calls
       void connect(const clang::CallExpr& _c) {
         if (_c.getNumArgs() < 3) return;
         const clang::DeclRefExpr* signalRef = function_ref_of(_c.getArg(1));
@@ -637,37 +773,65 @@ namespace DataFlow {
         if (!signal) return;
         const clang::DeclRefExpr* slotRef = nullptr;
         for (unsigned i = _c.getNumArgs(); i-- > 2 && !slotRef;) slotRef = function_ref_of(_c.getArg(i));
-        if (!slotRef) return;
+        const clang::LambdaExpr* lambda = nullptr;
+        for (unsigned i = _c.getNumArgs(); i-- > 2 && !slotRef && !lambda;) lambda = lambda_in(_c.getArg(i));
+        if (!slotRef && !lambda) return;
         // the connection, not a use of an address, gives the callers of the slot
         callees_.insert(signalRef);
-        callees_.insert(slotRef);
-        const auto* slot = llvm::cast<clang::FunctionDecl>(slotRef->getDecl());
-        if (!files_.contains(slot->getLocation())) return;
+        if (slotRef) {
+          callees_.insert(slotRef);
+          add_connect(*signal, llvm::cast<clang::FunctionDecl>(*slotRef->getDecl()), _c);
+          return;
+        }
+        slots_.insert(lambda);
+        std::vector<const clang::FunctionDecl*> called;
+        add_called(lambda->getBody(), called);
+        for (const clang::FunctionDecl* f : called) add_connect(*signal, *f, _c);
+      }  // connect
+
+      // a connection of a signal to a slot of the project
+      void add_connect(const clang::CXXMethodDecl& _signal, const clang::FunctionDecl& _slot,
+                       const clang::CallExpr& _c) {
+        if (!files_.contains(_slot.getLocation())) return;
         GraphConnect g;
-        g.signal_ = usr_of(pattern_of(*signal));
-        g.slot_   = usr_of(pattern_of(*slot));
+        g.signal_ = usr_of(pattern_of(_signal));
+        g.slot_   = usr_of(pattern_of(_slot));
         if (g.signal_.empty() || g.slot_.empty()) return;
-        g.signalName_ = signal->getQualifiedNameAsString();
-        if (files_.contains(signal->getLocation())) {
-          g.signalFile_ = file_of(sm_, signal->getLocation());
-          g.signalLine_ = line_of(signal->getLocation());
+        g.signalName_ = _signal.getQualifiedNameAsString();
+        if (files_.contains(_signal.getLocation())) {
+          g.signalFile_ = file_of(sm_, _signal.getLocation());
+          g.signalLine_ = line_of(_signal.getLocation());
         }
         g.line_ = line_of(_c.getBeginLoc());
         connects_.push_back(std::move(g));
-      }  // connect
+      }  // add_connect
+
+      // the functions of the project that a statement calls, each one time
+      void add_called(const clang::Stmt* _s, std::vector<const clang::FunctionDecl*>& _out) {
+        if (!_s) return;
+        const clang::FunctionDecl* fn = nullptr;
+        if (const auto* c = llvm::dyn_cast<clang::CallExpr>(_s))
+          fn = called_function(c);
+        else if (const auto* e = llvm::dyn_cast<clang::CXXConstructExpr>(_s); e && e->getConstructor())
+          fn = e->getConstructor()->isImplicit() ? nullptr : e->getConstructor();
+        if (fn) fn = &pattern_of(*fn);
+        if (fn && files_.contains(fn->getLocation()) && !llvm::is_contained(_out, fn)) _out.push_back(fn);
+        for (const clang::Stmt* c : _s->children()) add_called(c, _out);
+      }  // add_called
 
       // a call of a function out of the project counts only as a virtual call, because an override can be in the
       // project
       void add(const clang::FunctionDecl& _callee, const clang::SourceLocation _at, const bool _isInLoop,
-               const bool _isVirtual, const bool _isMainLoop) {
+               const bool _isVirtual, const uint32_t _mainLoop, const bool _isCallback) {
         if (!_isVirtual && !files_.contains(_callee.getLocation())) return;
         GraphCall c;
         c.to_ = usr_of(_callee);
         if (c.to_.empty()) return;
         c.line_       = line_of(_at);
+        c.mainLoop_   = _mainLoop;
         c.isInLoop_   = _isInLoop;
         c.isVirtual_  = _isVirtual;
-        c.isMainLoop_ = _isMainLoop;
+        c.isCallback_ = _isCallback;
         out_.push_back(std::move(c));
       }  // add
     };  // GraphCallWalker
@@ -699,6 +863,8 @@ namespace DataFlow {
       GraphIndex index_;
       std::unique_ptr<ProjectFiles> files_;
       llvm::DenseMap<clang::FileID, std::vector<GraphFunction>*> owned_;  // null for a file that the unit did not get
+      // the methods of each class that the reflection of a framework can call, with the macro
+      llvm::DenseMap<const clang::CXXRecordDecl*, std::vector<std::pair<const clang::Decl*, std::string>>> reflected_;
 
      public:
       GraphConsumer(clang::CompilerInstance& _ci, const GraphScope& _scope, GraphClaims& _claims, const size_t _unit,
@@ -736,6 +902,17 @@ namespace DataFlow {
         return it->second;
       }  // owned
 
+      // the macro of a method for the reflection of a framework, for example UFUNCTION(BlueprintCallable) or Q_PROPERTY
+      // READ. empty if there is none
+      [[nodiscard]] std::string reflection_of(const clang::CXXMethodDecl& _m) {
+        const clang::CXXRecordDecl* rd = _m.getParent();
+        const auto [it, isNew]         = reflected_.try_emplace(rd);
+        if (isNew) it->second = reflected_methods(*rd, ci_.getASTContext());
+        for (const auto& [method, macro] : it->second)
+          if (method->getCanonicalDecl() == _m.getCanonicalDecl()) return macro;
+        return {};
+      }  // reflection_of
+
       // each block of a namespace is a declaration of its own, thus the walk skips the namespaces and the classes of
       // the libraries
       void collect(const clang::DeclContext& _dc, const clang::SourceManager& _sm) {
@@ -770,24 +947,30 @@ namespace DataFlow {
         const std::string name = _fn.getNameAsString();
         const bool isGlobal    = _fn.getDeclContext()->getRedeclContext()->isTranslationUnit();
         g.isMain_ = _fn.isMain() || (isGlobal && (name == "wmain" || name == "WinMain" || name == "wWinMain"));
+        // the first declaration, for example in a public header of a library
+        const clang::FunctionDecl* first = _fn.getFirstDecl();
+        if (std::string file = file_of(_sm, first->getLocation()); file != g.file_) g.declFile_ = std::move(file);
+        g.declLine_ = _sm.getExpansionLineNumber(_sm.getExpansionLoc(first->getLocation()));
         if (const auto* m = llvm::dyn_cast<clang::CXXMethodDecl>(&_fn)) {
           for (const clang::CXXMethodDecl* o : m->getCanonicalDecl()->overridden_methods())
             if (std::string usr = usr_of(*o); !usr.empty()) g.overridden_.push_back(std::move(usr));
           g.frame_ = framework_frame_of(*m->getCanonicalDecl());
           // a frame function keeps its frame path
           if (g.frame_.empty()) g.libraryOverride_ = library_override_of(*m->getCanonicalDecl(), files());
-          g.isSlot_ = is_slot(*m, _sm, ci_.getLangOpts());
+          g.isSlot_     = is_slot(*m, _sm, ci_.getLangOpts());
+          g.reflection_ = reflection_of(*m);
+          g.isPrivate_  = m->getCanonicalDecl()->getAccess() == clang::AS_private;
         }
         GraphCallWalker walker{_sm, files(), g.calls_, g.refs_, g.connects_, &index_, &g.uses_, &g.switches_};
-        walker.walk(_fn.getBody(), 0, false);
+        walker.walk_root(_fn.getBody());
         if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(&_fn))
           for (const clang::CXXCtorInitializer* init : ctor->inits())
-            if (init->isWritten() && init->getInit()) walker.walk(init->getInit(), 0, false);
+            if (init->isWritten() && init->getInit()) walker.walk_root(init->getInit());
         _out.push_back(std::move(g));
       }  // add
 
-      // the uses of the addresses of functions in the initializer of a global or a static variable. they go into one
-      // entry for the file, with no node in the graph
+      // the uses of the addresses of functions in the initializer of a global or a static variable, and the calls in
+      // its lambdas that can run later. they go into one entry for the file, with no node in the graph
       void add_init(const clang::VarDecl& _v, const clang::SourceManager& _sm, std::vector<GraphFunction>& _out) {
         auto it = std::ranges::find_if(_out, [](const GraphFunction& _f) { return _f.isInit_; });
         if (it == _out.end()) {
@@ -801,7 +984,9 @@ namespace DataFlow {
         }
         std::vector<GraphCall> calls;  // a call of an initializer has no caller in the graph
         GraphCallWalker walker{_sm, files(), calls, it->refs_, it->connects_};
-        walker.walk(_v.getInit(), 0, false);
+        walker.walk_root(_v.getInit());
+        for (GraphCall& c : calls)
+          if (c.isCallback_) it->calls_.push_back(std::move(c));
       }  // add_init
     };  // GraphConsumer
 
@@ -998,6 +1183,7 @@ namespace DataFlow {
     _g.fileOf_.clear();
     _g.byUsr_.clear();
     _g.frames_.clear();
+    _g.mainLoops_.clear();
     std::vector<const std::string*> keys;
     for (const auto& [key, file] : _g.files_) keys.push_back(&key);
     std::ranges::sort(keys, [](const std::string* _a, const std::string* _b) { return *_a < *_b; });
@@ -1058,15 +1244,19 @@ namespace DataFlow {
       }
       return all[_usr] = std::move(out);
     };
+    // the nodes that a call can run: the called function, and the overrides for a virtual call
+    const auto targets_of = [&](const GraphCall& _c) {
+      std::vector<int32_t> out;
+      if (const auto it = _g.byUsr_.find(_c.to_); it != _g.byUsr_.end()) out.push_back(it->second);
+      if (_c.isVirtual_)
+        for (const int32_t o : all_overrides(_c.to_))
+          if (!llvm::is_contained(out, o)) out.push_back(o);
+      return out;
+    };
 
     for (size_t i = 0; i < count; ++i)
       for (const GraphCall& c : _g.nodes_[i]->calls_) {
-        std::vector<int32_t> targets;
-        if (const auto it = _g.byUsr_.find(c.to_); it != _g.byUsr_.end()) targets.push_back(it->second);
-        if (c.isVirtual_)
-          for (const int32_t o : all_overrides(c.to_))
-            if (!llvm::is_contained(targets, o)) targets.push_back(o);
-        for (const int32_t t : targets) {
+        for (const int32_t t : targets_of(c)) {
           if (t == int32_t(i)) continue;  // a recursion
           _g.out_[i].push_back(GraphEdge{t, c.line_, c.isInLoop_, false});
           if (!llvm::is_contained(_g.callers_[size_t(t)], int32_t(i))) _g.callers_[size_t(t)].push_back(int32_t(i));
@@ -1088,7 +1278,8 @@ namespace DataFlow {
       }
 
     // the frame functions: the overrides of the frame functions of the frameworks, and the functions that a main loop
-    // calls. the main loop is in main. if main has no main loop, it is in the functions that main calls
+    // calls. the main loop is in main. if main has no main loop, it is in the functions that main calls. each loop
+    // with such a call is a main loop
     const auto add_frame = [&](const int32_t _node, std::string _reason) {
       if (std::ranges::none_of(_g.frames_, [&](const GraphRoot& _r) { return _r.node_ == _node; }))
         _g.frames_.push_back(GraphRoot{_node, std::move(_reason)});
@@ -1098,18 +1289,24 @@ namespace DataFlow {
     for (size_t m = 0; m < count; ++m) {
       if (!_g.nodes_[m]->isMain_) continue;
       std::vector<int32_t> loopers{int32_t(m)};
-      if (std::ranges::none_of(_g.nodes_[m]->calls_, [](const GraphCall& _c) { return _c.isMainLoop_; }))
+      if (std::ranges::none_of(_g.nodes_[m]->calls_, [](const GraphCall& _c) { return _c.mainLoop_ > 0; }))
         for (const GraphEdge& e : _g.out_[m])
           if (!llvm::is_contained(loopers, e.to_)) loopers.push_back(e.to_);
       for (const int32_t f : loopers)
-        for (const GraphCall& c : _g.nodes_[size_t(f)]->calls_)
-          if (const auto it = _g.byUsr_.find(c.to_); c.isMainLoop_ && it != _g.byUsr_.end() && it->second != f)
-            add_frame(it->second, "called in the main loop of " + _g.nodes_[size_t(f)]->name_);
+        for (const GraphCall& c : _g.nodes_[size_t(f)]->calls_) {
+          const auto it = _g.byUsr_.find(c.to_);
+          if (c.mainLoop_ == 0 || it == _g.byUsr_.end() || it->second == f) continue;
+          add_frame(it->second, "called in the main loop of " + _g.nodes_[size_t(f)]->name_);
+          if (std::ranges::none_of(_g.mainLoops_,
+                                   [&](const GraphLoop& _l) { return _l.node_ == f && _l.line_ == c.mainLoop_; }))
+            _g.mainLoops_.push_back(GraphLoop{f, c.mainLoop_});
+        }
     }
 
     // the callers that the graph cannot see, the first cause of each node: a library calls an override, qt calls a slot
-    // of a signal of a library, a pointer or a std::function can call a function whose address the code uses, and qt
-    // can call a slot with no known caller
+    // of a signal of a library, a pointer or a std::function can call a function whose address the code uses, a lambda
+    // that can run later calls a function, qt can call a slot with no known caller, and the reflection of a framework
+    // can call a function with no known caller
     _g.unknown_.assign(count, {});
     const auto mark = [&](const int32_t _n, const char* _cause, const std::string& _via, const std::string& _file,
                           const uint32_t _line) {
@@ -1127,9 +1324,17 @@ namespace DataFlow {
         for (const GraphRef& r : f.refs_)
           if (const auto it = _g.byUsr_.find(r.to_); it != _g.byUsr_.end())
             mark(it->second, "address", f.name_, f.file_, r.line_);
+    for (size_t k = 0; k < keys.size(); ++k)
+      for (const GraphFunction& f : *_g.files_.at(*keys[k]))
+        for (const GraphCall& c : f.calls_)
+          if (c.isCallback_)
+            for (const int32_t t : targets_of(c)) mark(t, "callback", f.name_, f.file_, c.line_);
     for (size_t i = 0; i < count; ++i)
       if (const GraphFunction& f = *_g.nodes_[i]; f.isSlot_ && _g.callers_[i].empty())
         mark(int32_t(i), "slot", "a slots section", f.file_, f.first_);
+    for (size_t i = 0; i < count; ++i)
+      if (const GraphFunction& f = *_g.nodes_[i]; !f.reflection_.empty() && _g.callers_[i].empty())
+        mark(int32_t(i), "reflection", f.reflection_, f.file_, f.first_);
 
     // the index of the uses: the nodes that use each variable, and the nodes with a switch on each enum
     _g.usersOf_.clear();
@@ -1250,39 +1455,92 @@ namespace DataFlow {
   // the walk up the graph for the transitive callers of a function stops at this number of callers
   inline constexpr size_t max_transitive_callers = 1000;
 
-  // the nodes in the files of the tests. a folder with no separator is a name: a folder of the path with this name. a
-  // folder with a separator is a path: absolute, or relative to the project folders
-  [[nodiscard]] inline std::vector<char> test_nodes(const ProjectGraph& _g, const std::vector<std::string>& _folders) {
-    std::vector<char> out(_g.nodes_.size(), 0);
-    std::vector<std::string> names, dirs;
-    for (const std::string& f : _folders) {
-      if (f.empty()) continue;
-      if (f.find_first_of("/\\") == std::string::npos) {
-        names.push_back(normalize_path(f));
-      } else if (llvm::sys::path::is_absolute(f)) {
-        dirs.push_back(normalize_path(f));
-      } else {
-        for (const std::string& r : _g.roots_) dirs.push_back(normalize_path(r + "/" + f));
+  // the folders of a setting of the client, for example the folders of the tests. a folder with no separator is a name:
+  // a folder of the path with this name. a folder with a separator is a path: absolute, or relative to the project
+  // folders
+  class FolderSetting {
+    std::vector<std::string> folders_;                   // as the setting gives them
+    std::vector<std::pair<std::string, size_t>> names_;  // the key of a name, and the index of its folder
+    std::vector<std::pair<std::string, size_t>> paths_;  // the key of a path, and the index of its folder
+
+   public:
+    FolderSetting(const std::vector<std::string>& _folders, const std::vector<std::string>& _roots)
+        : folders_(_folders) {
+      for (size_t i = 0; i < _folders.size(); ++i) {
+        const std::string& f = _folders[i];
+        if (f.empty()) continue;
+        if (f.find_first_of("/\\") == std::string::npos) {
+          names_.emplace_back(normalize_path(f), i);
+        } else if (llvm::sys::path::is_absolute(f)) {
+          paths_.emplace_back(normalize_path(f), i);
+        } else {
+          for (const std::string& r : _roots) paths_.emplace_back(normalize_path(r + "/" + f), i);
+        }
       }
     }
-    if (names.empty() && dirs.empty()) return out;
-    for (size_t i = 0; i < _g.nodes_.size(); ++i) {
-      const std::string key     = normalize_path(_g.nodes_[i]->file_);
+
+    [[nodiscard]] bool is_empty() const { return names_.empty() && paths_.empty(); }
+
+    // the first folder of the setting with the file, or null
+    [[nodiscard]] const std::string* find(const std::string& _file) const {
+      const std::string key     = normalize_path(_file);
       const llvm::StringRef dir = llvm::sys::path::parent_path(key);
-      bool isTest = std::ranges::any_of(dirs, [&](const std::string& _d) { return Detail::is_under(key, _d); });
-      for (auto it = llvm::sys::path::begin(dir), end = llvm::sys::path::end(dir); !isTest && it != end; ++it)
-        isTest = llvm::is_contained(names, std::string(*it));
-      out[i] = isTest ? 1 : 0;
-    }
+      size_t first              = folders_.size();
+      for (const auto& [path, i] : paths_)
+        if (i < first && Detail::is_under(key, path)) first = i;
+      for (auto it = llvm::sys::path::begin(dir), end = llvm::sys::path::end(dir); it != end; ++it)
+        for (const auto& [name, i] : names_)
+          if (i < first && *it == name) first = i;
+      return first < folders_.size() ? &folders_[first] : nullptr;
+    }  // find
+  };  // FolderSetting
+
+  // the nodes in the files of the tests, by the folders of the setting
+  [[nodiscard]] inline std::vector<char> test_nodes(const ProjectGraph& _g, const std::vector<std::string>& _folders) {
+    std::vector<char> out(_g.nodes_.size(), 0);
+    const FolderSetting tests(_folders, _g.roots_);
+    if (tests.is_empty()) return out;
+    for (size_t i = 0; i < _g.nodes_.size(); ++i) out[i] = tests.find(_g.nodes_[i]->file_) ? 1 : 0;
     return out;
   }  // test_nodes
 
+  // the first lines of the main loops of a function. empty if the graph has no node for the function
+  [[nodiscard]] inline std::vector<uint32_t> main_loops_of(const ProjectGraph& _g, const clang::FunctionDecl& _fn) {
+    std::vector<uint32_t> out;
+    const auto it = _g.byUsr_.find(Detail::usr_of(Detail::pattern_of(_fn)));
+    if (it == _g.byUsr_.end()) return out;
+    for (const GraphLoop& l : _g.mainLoops_)
+      if (l.node_ == it->second) out.push_back(l.line_);
+    return out;
+  }  // main_loops_of
+
+  namespace Detail {
+    // the callers that the graph cannot see of a node: the cause of the graph, else the cause public for a function
+    // with its first declaration in a folder of _public, with the folder. a private member function and a signal are
+    // not public. nullopt if there is no cause
+    [[nodiscard]] inline std::optional<JsonObject> unknown_to_json(const ProjectGraph& _g, const int32_t _n,
+                                                                   const FolderSetting* _public) {
+      if (const GraphUnknown& u = _g.unknown_[size_t(_n)]; !u.cause_.empty())
+        return JsonObject{{"cause", u.cause_}, {"via", u.via_}, {"file", u.file_}, {"line", int64_t(u.line_)}};
+      const GraphFunction& f = *_g.nodes_[size_t(_n)];
+      if (!_public || f.isPrivate_ || f.isSignal_) return std::nullopt;
+      const std::string& file   = f.declFile_.empty() ? f.file_ : f.declFile_;
+      const std::string* folder = _public->find(file);
+      if (!folder) return std::nullopt;
+      return JsonObject{{"cause", "public"},
+                        {"via", *folder},
+                        {"file", file},
+                        {"line", int64_t(f.declLine_ > 0 ? f.declLine_ : f.first_)}};
+    }  // unknown_to_json
+  }  // namespace Detail
+
   // the reach of a function in the graph: the direct callers, the transitive callers, the files of the transitive
   // callers other than the file of the function, the frame path, the callers that the graph cannot see, and the test
-  // functions among the transitive callers. _tests: the nodes in the files of the tests, or empty. null if the graph
-  // has no node for the function
+  // functions among the transitive callers. _tests: the nodes in the files of the tests, or empty. _public: the folders
+  // of the public headers, or null. null if the graph has no node for the function
   [[nodiscard]] inline Json reach_to_json(const ProjectGraph& _g, const FramePaths& _paths,
-                                          const clang::FunctionDecl& _fn, const std::vector<char>& _tests = {}) {
+                                          const clang::FunctionDecl& _fn, const std::vector<char>& _tests = {},
+                                          const FolderSetting* _public = nullptr) {
     const auto it = _g.byUsr_.find(Detail::usr_of(Detail::pattern_of(_fn)));
     if (it == _g.byUsr_.end()) {
       // no source file of the scan includes the file of the function, thus it has no callers. a function that is newer
@@ -1335,9 +1593,7 @@ namespace DataFlow {
       if (step->second.depth_ > frame_max_depth) frame["isPastLimit"] = true;
       out["frame"] = std::move(frame);
     }
-    if (const GraphUnknown& u = _g.unknown_[size_t(n)]; !u.cause_.empty())
-      out["unknownCallers"] =
-          JsonObject{{"cause", u.cause_}, {"via", u.via_}, {"file", u.file_}, {"line", int64_t(u.line_)}};
+    if (std::optional<JsonObject> u = Detail::unknown_to_json(_g, n, _public)) out["unknownCallers"] = std::move(*u);
     if (!_tests.empty()) {
       JsonObject t{{"functions", int64_t(tests)}, {"files", JsonArray(testFiles)}};
       if (isCapped) t["isCapped"] = true;
@@ -1351,7 +1607,7 @@ namespace DataFlow {
   // the graph has no node for the function
   [[nodiscard]] inline Json callers_to_json(const ProjectGraph& _g, const FramePaths& _paths,
                                             const clang::FunctionDecl& _fn, const uint32_t _depth, const size_t _max,
-                                            const size_t _maxPaths = 5) {
+                                            const size_t _maxPaths = 5, const FolderSetting* _public = nullptr) {
     const auto it = _g.byUsr_.find(Detail::usr_of(Detail::pattern_of(_fn)));
     if (it == _g.byUsr_.end()) return Json(nullptr);
     const int32_t n = it->second;
@@ -1426,14 +1682,12 @@ namespace DataFlow {
                    {"callers", std::move(callers)},
                    {"framePaths", std::move(framePaths)}};
     if (isCapped) out["isCapped"] = true;
-    if (const GraphUnknown& u = _g.unknown_[size_t(n)]; !u.cause_.empty())
-      out["unknownCallers"] =
-          JsonObject{{"cause", u.cause_}, {"via", u.via_}, {"file", u.file_}, {"line", int64_t(u.line_)}};
+    if (std::optional<JsonObject> u = Detail::unknown_to_json(_g, n, _public)) out["unknownCallers"] = std::move(*u);
     return out;
   }  // callers_to_json
 
-  // the size of the graph, the frame functions and the source files that the scan could not parse. _scanned: the
-  // source files of the last scan
+  // the size of the graph, the frame functions, the main loops and the source files that the scan could not parse.
+  // _scanned: the source files of the last scan
   [[nodiscard]] inline JsonObject graph_to_json(const ProjectGraph& _g, const FramePaths& _paths,
                                                 const size_t _scanned) {
     size_t calls = 0;
@@ -1444,6 +1698,11 @@ namespace DataFlow {
                                   {"file", _g.nodes_[size_t(r.node_)]->file_},
                                   {"line", int64_t(_g.nodes_[size_t(r.node_)]->first_)},
                                   {"reason", r.reason_}});
+    JsonArray mainLoops;
+    for (const GraphLoop& l : _g.mainLoops_)
+      mainLoops.push_back(JsonObject{{"function", _g.nodes_[size_t(l.node_)]->name_},
+                                     {"file", _g.nodes_[size_t(l.node_)]->file_},
+                                     {"line", int64_t(l.line_)}});
     // the size of the index of the uses, with the memory of its parts
     size_t uses = 0, switches = 0, bytes = _g.names_->get_bytes();
     for (const GraphFunction* f : _g.nodes_) {
@@ -1460,6 +1719,7 @@ namespace DataFlow {
                       {"functions", int64_t(_g.nodes_.size())},
                       {"calls", int64_t(calls)},
                       {"frames", std::move(frames)},
+                      {"mainLoops", std::move(mainLoops)},
                       {"failed", JsonArray(_g.failed_)},
                       {"index", JsonObject{{"uses", int64_t(uses)},
                                            {"switches", int64_t(switches)},

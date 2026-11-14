@@ -69,7 +69,7 @@ The engine parses each file with the command of its compile database, with these
 | `dataflow/functions` | `file` | The function definitions of the file. A template is in the list one time, with no instantiations. If `##` in a macro makes the name of a function or of its class, the function also has `macroCall`: the text of the macro call on one line, for example `TEST_CASE("split")` of Catch2 or `TEST(Pool, Post)` of GoogleTest. |
 | `dataflow/functionAt` | `file`, `line`, `col` | The innermost function at the position, or null. If the position is in the body of a lambda in the function, `lambda` gives the index of the innermost lambda in the function and its range |
 | `dataflow/cfg` | `file`, and `function` or `line` and `col` | The control flow graph of the function, as JSON |
-| `dataflow/optionalAccess` | `file`, and `function` or `line` and `col` | The unchecked accesses to `std::optional` values in the function |
+| `dataflow/optionalAccess` | `file`, and `function` or `line` and `col` | The unchecked accesses to `std::optional` values in the function. A function with an error gets an error, because the analysis of Clang can stop the engine on an expression with an error. |
 | `dataflow/flow` | `file`, and `function` or `line` and `col`; `readFunctions` | The variables of the function, the references with their roles, and the edges from the definitions to the uses |
 | `dataflow/calls` | `file`, `eventFunctions`, `asyncFunctions`, `roots` | The call graph of the functions of the file: the functions, and each call with its data |
 | `dataflow/includes` | `file`, `roots` | The include hierarchy of the translation unit: the includes with their files and lines, the groups of the files, the uses of the includes of the main file, and the forward declarations that can replace them |
@@ -81,11 +81,11 @@ The engine parses each file with the command of its compile database, with these
 | `dataflow/logic` | `file`, `function` or `line` and `col`, `lambda`, `eventFunctions`, `nullableFunctions`, `checkFunctions` | The CFG blocks, the decisions, the else-if chains, the events, the nullable pointers and the effects of the function, or of a lambda in it |
 | `dataflow/structure` | `file`, `function` or `line` and `col`, `eventFunctions`, `asyncFunctions` | The statements of the function with their lines, branches and items, and the accesses with their paths, roles and scopes |
 | `dataflow/cost` | `file`, `minCopyBytes`, `unit` | The hidden C++ of all functions of the file: copies, conversions, temporaries, destructors, lookups and more. With `unit`, a source file that includes the header `file`, the engine parses the unit. Then the templates of the header get the items of their instantiations in the unit. The reply then has the parse of the unit. |
-| `dataflow/callers` | `file`, `function` or `line` and `col`, `depth`, `frameFunctions` | The callers of a function in the call graph up to `depth` calls (1 to 6, default 3), and its frame paths. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
-| `dataflow/place` | `file`, `line`, `frameFunctions` | The facts of a line: the function, the statements around the line, the locks at its start, and the reach of the function. See [The result of `dataflow/place`](#the-result-of-dataflowplace). |
+| `dataflow/callers` | `file`, `function` or `line` and `col`, `depth`, `frameFunctions`, `publicFolders` | The callers of a function in the call graph up to `depth` calls (1 to 6, default 3), and its frame paths. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
+| `dataflow/place` | `file`, `line`, `frameFunctions`, `publicFolders` | The facts of a line: the function, the statements around the line, the locks at its start, the names in scope, and the reach of the function. See [The result of `dataflow/place`](#the-result-of-dataflowplace). |
 | `dataflow/memberSites` | `file`, and `line` and `col` or `name` | The sites of the members of a type from the index of the call graph: the functions that use the data members of a class, a struct or a union, or the `switch` statements on an enum. See [The result of `dataflow/memberSites`](#the-result-of-dataflowmembersites). |
 | `dataflow/memberMetrics` | `file`, `frameFunctions` | The classes, the structs and the unions of the file, with the facts of each data member for the heat. See [The result of `dataflow/memberSites`](#the-result-of-dataflowmembersites). |
-| `dataflow/metrics` | `file`, `frameFunctions`, `testFolders` | The metrics of each function of the file, for the heat score: the decisions (`if`, the loops, the `case` labels, `catch`, `&&`, `\|\|` and `?:`), the deepest nesting of the decisions, the first and the last line of each loop, the lines of the body, the writes to data members, globals, static locals and data through reference or pointer parameters, the allocations and the copies in loops, `virtual` and `override`, and the file and the line of the first declaration. With a complete call graph, each function also has `reach`. `callGraph` gives the state of the call graph. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
+| `dataflow/metrics` | `file`, `frameFunctions`, `testFolders`, `publicFolders` | The metrics of each function of the file, for the heat score: the decisions (`if`, the loops, the `case` labels, `catch`, `&&`, `\|\|` and `?:`), the deepest nesting of the decisions, the first and the last line of each loop, the lines of the body, the writes to data members, globals, static locals and data through reference or pointer parameters, the allocations and the copies in loops, `virtual` and `override`, and the file and the line of the first declaration. With a complete call graph, each function also has `reach`. `callGraph` gives the state of the call graph. See [The result of `dataflow/callGraph`](#the-result-of-dataflowcallgraph). |
 | `dataflow/callGraph` | `roots`, `frameFunctions` | Makes the call graph of the project current, for the heat score: the size of the graph and the frame functions. The request needs no `file`. |
 | `dataflow/slice` | `file`, and `lines` and `deleted`, or `call`; `asyncFunctions`, `confidence` | The forward slice of changed lines or of a call: the steps and the exits in each function and lambda, and the callers in the same file |
 | `dataflow/tokens` | `file`, `first`, `last`, `bracketLevelPerType` | The text and the tokens of the lines `first` to `last`. The default is all lines. With `bracketLevelPerType`, the level of a bracket counts only the brackets of its type. |
@@ -105,7 +105,7 @@ The analyses that use the matchers of Clang, for example the `ExprMutationAnalyz
 ## The result of `dataflow/flow`
 
 - `variables`: the parameters, the local variables, the static locals and the structured bindings of the function. Each variable has `name`, `type`, `storage` and `declRef`. `declRef` is the index of the declaration in `refs`.
-- `refs`: each declaration and each use of a variable. Each reference has `var`, `role`, `line`, `col` and `len`. `alsoRead` is true for a write that also reads the old value, for example `x += 1`. `finding` gives a problem at the reference, for example `unchecked optional access`.
+- `refs`: each declaration and each use of a variable. Each reference has `var`, `role`, `line`, `col` and `len`. `alsoRead` is true for a write that also reads the old value, for example `x += 1`. `finding` gives a problem at the reference, for example `unchecked optional access`. A function with an error gets no `unchecked optional access`.
 - `edges`: pairs of indexes in `refs`. Each pair goes from a definition to a use that the definition can reach.
 - `hasCfg`: false if Clang made no control flow graph for the function. Then the result has the variables and the references, but no edges.
 - `cached`: true if the result comes from the same parse and the same options. The engine keeps the results of a parse until the next parse.
@@ -216,14 +216,26 @@ The request makes the call graph of the project current. The first request scans
 
 A node of the graph is a function definition in the project, by its USR. All instantiations of a template are one node: the pattern. An edge is a call of a function of the project, with its line and whether a loop runs it. A call in a lambda belongs to the function around the lambda. A virtual call also goes to the overrides of the called function in the project, also through other overrides. A constructor of the project is a call.
 
-Qt: a call of `QObject::connect` with a signal and a slot as pointers to members, for example `connect(a, &A::changed, b, &B::update)`, is an edge from the signal to the slot. A function as the slot also gives an edge. `qOverload`, `QOverload::of` and a cast of the pointer select the signal. Moc writes the body of a signal into a file of the build folder, which the scan skips. Thus a connected signal of the project gets a node with no body, and the calls of `emit` are edges to it. A lambda as the slot is a part of the function with the call of `connect`.
+A lambda can run later, after the code around it, for example the callback of a timer or a lambda that a thread or a function of a library gets. A call in such a lambda keeps its edge, and the called function also gets the cause `callback` (see below). These lambdas run at once and give no cause:
+
+- A lambda of an algorithm of the standard library, or the predicate of a wait of a condition variable, as `isSynchronous` of `dataflow/place`.
+- A lambda that the code calls at once, for example `[&] { ... }()`.
+- A local lambda that the function only calls, or only gives to such an algorithm, for example `const auto run = [&] { ... }; run();`. A call of the variable in a lambda that runs later makes the local lambda a lambda that runs later.
+
+Qt: a call of `QObject::connect` with a signal and a slot as pointers to members, for example `connect(a, &A::changed, b, &B::update)`, is an edge from the signal to the slot. A function as the slot also gives an edge. `qOverload`, `QOverload::of` and a cast of the pointer select the signal. Moc writes the body of a signal into a file of the build folder, which the scan skips. Thus a connected signal of the project gets a node with no body, and the calls of `emit` are edges to it. A lambda as the slot gives an edge from the signal to each function of the project that the lambda calls. The calls in the lambda also stay edges of the function with the call of `connect`, and they do not get the cause `callback`.
 
 The graph cannot see some callers. A node gets the first of these causes:
 
 - `libraryOverride`: the function overrides a virtual function out of the project, also through other overrides, for example `QObject::event`. An override of a frame function gets the frame path in its place.
-- `slot`: the slot of a signal out of the project, for example `QPushButton::clicked`.
+- `slot`: the slot of a signal out of the project, for example `QPushButton::clicked`, or a function that a lambda as such a slot calls.
 - `address`: a body, or the initializer of a global or a static variable, uses the address of the function, for example `&Dialog::accept`, or a function as a value of a `std::function`. A call and the signal and the slot of a connection are not such a use.
+- `callback`: a lambda that can run later calls the function. `via` is the function around the lambda, or `a global variable` for a lambda in the initializer of a global or a static variable. `file` and `line` give the call.
 - `slot`: a function in a `slots` section of Qt, with no caller in the graph. A string connection or QML can call such a slot.
+- `reflection`: a member function with no caller in the graph, after `UFUNCTION` of Unreal Engine, or after `Q_INVOKABLE`, `Q_SCRIPTABLE` or `Q_SLOT` of Qt, or a member function that a `Q_PROPERTY` names after `READ`, `WRITE`, `RESET`, `NOTIFY` or `BINDABLE`. A Blueprint, the console, a timer, QML or the meta-object system can call such a function by its name. `via` is the macro, for example `UFUNCTION(BlueprintCallable)` or `Q_PROPERTY READ`. The engine finds the macros as `dataflow/outline` does.
+
+A request with `publicFolders` adds one more cause to a node with no cause:
+
+- `public`: the first declaration of the function is in one of `publicFolders`, the folders of the public headers of a library. The users of the library in other projects can call the function. `via` is the folder of `publicFolders`, and `file` and `line` give the first declaration. A private member function and a signal do not get this cause. A folder of `publicFolders` is as a folder of `testFolders`.
 
 The frame functions run in each frame:
 
@@ -243,6 +255,7 @@ The reply:
 - `units`: the source files of the graph. `scanned`: the source files of this request. `isComplete`: the scans parsed all source files.
 - `functions` and `calls`: the nodes and the edges.
 - `frames`: each frame function with `name`, `file`, `line` and `reason`, for example `override of QWidget::paintEvent`, `called in the main loop of main` or `frame function of the setting`.
+- `mainLoops`: each main loop with `function`, `file` and `line`, the first line of the loop. A main loop is a loop whose calls give the reason `called in the main loop of`. The outermost loop with no fixed number of iterations around a call is the main loop of the call.
 - `failed`: the source files with no command, or that Clang could not parse at all. A parse with errors also gives the functions that Clang understood.
 - `index`: the size of the index of the uses: `uses` (a function and a variable that it uses), `switches`, `names` (the USRs and the names of the enumerators) and `bytes`, an estimate of its memory.
 - `ms`: the time of the request.
@@ -251,7 +264,7 @@ The reply:
 
 - `callers`: the functions that call the function directly. `transitiveCallers`: the functions that reach the function through calls, directly or through other functions. The walk up the graph stops at 1000 callers, and then `isCapped` is true. `callerFiles`: the files of the transitive callers, other than the file of the function.
 - `frame`, if the function is on a frame path: `reason`, the reason of the frame function; `path`, the functions from the frame function to the caller before the function; `isInLoop`, a caller on the frame path calls the function in a loop; `calls`, the number of calls from the frame function. A frame function has an empty `path`. After more than 8 calls, `isPastLimit` is true, and the heat score gives the path no points.
-- `unknownCallers`, if the graph cannot see some callers: `cause`, `via` (the function that uses the address, the overridden function, the signal, or `a slots section`), `file` and `line`.
+- `unknownCallers`, if the graph cannot see some callers: `cause`, `via` (the function that uses the address, the overridden function, the signal, `a slots section`, the function around the lambda, the macro, or the public folder), `file` and `line`.
 - `tests`, with `testFolders`: `functions`, the test functions among the transitive callers, and `files`, their first 5 files. A test function is a function in a file under one of `testFolders`. A folder with no separator is a name of a folder at any place of the path. A folder with a separator is a path, absolute or relative to `roots`.
 - `reach` is null if the graph has no node for the function, for example a function that is newer than the scan. If no source file of the scan includes the file of the function, the function has no callers.
 
@@ -286,7 +299,13 @@ The engine finds the innermost function of the main file whose lines contain the
   - `conditional`, an operator `?:`, with `branch`: `true`, `false` or `condition`.
   - `try` for the try block, and `catch` with `text`, the declaration of the exception or `...`.
   - `lambda` for the body of a lambda, with `text`, the captures and the parameters, and `isSynchronous`: true if the call runs the lambda before it returns, for example `std::for_each`.
+  - With a complete call graph, each loop also has `isMainLoop`: true if the loop is one of `mainLoops` of `dataflow/callGraph`.
 - `locks`: the mutexes that the code holds at the start of the line, as the locks of `dataflow/member`. A line between the statements of a block gets the locks before the next statement, and a line after the last statement gets the locks at the end of the block. The locks of a function do not go into a lambda that is not synchronous.
+- `inScope`: the names in scope at the start of the line, each with `name`, `type` (the type as text) and `kind`: `param`, `local` or `member`. The parameters come first, then the local variables, then the data members.
+  - The local variables are the variables of the blocks around the line before the statement with the line, the variable of a loop, of an `if`, of a `switch` or of a `catch` around the line, and the names of a structured binding. A name hides an outer name with the same name.
+  - The data members are the data members and the static data members of the class of a member function, then the members of its bases that are not private. A static member function has only the static data members.
+  - A lambda with no capture default sees only the variables that it captures, its init captures and its parameters. It sees the data members only if it captures `this`.
+  - `inScope` has a maximum of 60 names. With more names, `isInScopeCapped` is true.
 - `reach`: the reach of the function in the call graph, as in `dataflow/metrics`, or null with no complete call graph. `callGraph` gives the state of the call graph.
 
 ## The result of `dataflow/threads`

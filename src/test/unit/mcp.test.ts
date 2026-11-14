@@ -9,7 +9,8 @@ import type * as Api from '../../../api/dataflow-api';
 import { chooseWindow, forward, readWindows, TOKEN_FILE, tokenOf, WindowEntry, windowFileName } from '../../mcp/bridge';
 import { ExtensionTools } from '../../mcp/extensionTools';
 import { nameColumn } from '../../mcp/host';
-import { McpServer, McpTool, PROTOCOL_VERSIONS } from '../../mcp/server';
+import { tokenSource } from '../../mcp/manager';
+import { McpServer, McpTool, McpToolCall, PROTOCOL_VERSIONS } from '../../mcp/server';
 
 const TOKEN = 'test-token-0123456789';
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -129,6 +130,51 @@ suite('MCP server', () => {
 		const bad = await send(server.port, '{ not json');
 		assert.strictEqual(bad.status, 400);
 		assert.strictEqual(bad.body.error.code, -32700);
+	});
+
+	test('Each call of a tool gives the client, the tool, the arguments before the call, the time and the failure', async () => {
+		const calls: McpToolCall[] = [];
+		const logs: string[] = [];
+		// a tool of an extension can change its arguments
+		const change: McpTool = {
+			name: 'change', title: 'Change', description: 'Changes its arguments.', inputSchema: { type: 'object' }, isReadOnly: false,
+			call: async (args) => {
+				args.line = 9;
+				return { text: 'changed' };
+			},
+		};
+		const own = new McpServer({
+			port: 0, path: '/mcp', token: TOKEN, name: 'dataflow', title: 'DataFlow', version: '0.1.0', instructions: '', tools: [...tools, change], prompts: [],
+			log: (text) => logs.push(text),
+			onToolCall: (c) => {
+				calls.push(c);
+				if (c.tool === 'change') {
+					throw new Error('The listener failed.');
+				}
+			},
+		});
+		await own.start();
+		try {
+			const before = Date.now();
+			// before initialize, the call has no client
+			await send(own.port, rpc('tools/call', { name: 'echo', arguments: { line: 5 } }));
+			await send(own.port, rpc('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '2' } }));
+			await send(own.port, rpc('tools/call', { name: 'fail', arguments: {} }));
+			// an error of the listener does not change the result of the call
+			const changed = await send(own.port, rpc('tools/call', { name: 'change', arguments: { line: 5 } }));
+			assert.deepStrictEqual(changed.body.result, { content: [{ type: 'text', text: 'changed' }], isError: false });
+			// an unknown tool gives no call
+			await send(own.port, rpc('tools/call', { name: 'nothing' }));
+			assert.deepStrictEqual(calls.map((c) => [c.client, c.tool, c.args, c.isReadOnly, c.isError, c.error]), [
+				[undefined, 'echo', { line: 5 }, true, false, undefined],
+				['claude-code', 'fail', {}, false, true, 'The engine is not ready.'],
+				['claude-code', 'change', { line: 5 }, false, false, undefined],
+			]);
+			assert.ok(calls.every((c) => c.time >= before && c.time <= Date.now()), JSON.stringify(calls));
+			assert.deepStrictEqual(logs, ['MCP tool call: Error: The listener failed.']);
+		} finally {
+			await own.stop();
+		}
 	});
 
 	test('A server takes a free port if the port is in use', async () => {
@@ -424,5 +470,37 @@ suite('Tools of extensions in the MCP server', () => {
 		// a tool of a different client with the same MCP name
 		assert.throws(() => tools.register('Other', [{ name: 'taken', ...ok }]), /the MCP server has the tool other_taken already/);
 		tools.dispose();
+	});
+});
+
+suite('Token of the MCP server', () => {
+	test('2 calls at the same time get the same token, and the secret storage keeps it for the next window', async () => {
+		const stored = new Map<string, string>();
+		let stores = 0;
+		// the secret storage answers after a short time, as the keyring does
+		const secrets = {
+			get: async (key: string) => {
+				await sleep(20);
+				return stored.get(key);
+			},
+			store: async (key: string, value: string) => {
+				await sleep(20);
+				stores++;
+				stored.set(key, value);
+			},
+		};
+		const warnings: string[] = [];
+		const token = tokenSource(secrets, (m) => warnings.push(m));
+		const [a, b] = await Promise.all([token(), token()]);
+		assert.strictEqual(a, b);
+		assert.deepStrictEqual([stored.get('dataflow.mcp.token'), stores], [a, 1]);
+		assert.strictEqual(await tokenSource(secrets, (m) => warnings.push(m))(), a);
+		// with no secret storage, the token is only for the window, and it stays the same in the window
+		const failing = tokenSource({ get: async () => { throw new Error('no keyring'); }, store: async () => undefined }, (m) => warnings.push(m));
+		const [c, d] = await Promise.all([failing(), failing()]);
+		assert.strictEqual(c, d);
+		assert.notStrictEqual(c, a);
+		assert.strictEqual(warnings.length, 1);
+		assert.match(warnings[0], /The secret storage is not available, so the MCP token is only for this window: Error: no keyring/);
 	});
 });
