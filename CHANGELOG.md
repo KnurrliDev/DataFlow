@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
 
 - The engine does not stop now on a function with an error, for example on `future && n >= missing` with a `std::optional` `future`. The analysis of the unchecked optional accesses of Clang does not run on such a function. For this function, `dataflow/optionalAccess` gives an error, and `dataflow/flow` and `dataflow/calls` give no unchecked access. Before, the engine stopped with an access violation, and each new start stopped again on the same text.
 - The MCP server and the token file get the same token at the first start. Before, 2 requests for the token at the same time could make 2 different tokens. Then the bridge got the answer 401, and Claude Code showed the server as failed.
