@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.2
 
 - `highlight` and `show_line` get `reveal`. With `"reveal": "side"`, only the side view shows the place, and no text editor opens, also with a C++ text editor on the screen. With no side view, a new side view opens. Before, a C++ text editor on the screen also showed the place. Thus a click in an extension opened a text editor at one time, and only the side view at a different time. The API gets `reveal` in `HighlightArgs` and in `ShowLineArgs`, with the type `RevealMode`.
 
