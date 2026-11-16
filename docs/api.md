@@ -80,8 +80,8 @@ Each method runs a tool of the MCP server, with the same arguments and the same 
 | `showBlocks({ file, function, line, blocks })` | [`show_blocks`](tools.md#show_blocks) | view |
 | `showFlow({ file, line, name })` | [`show_flow`](tools.md#show_flow) | view |
 | `showLogicPath({ file, function, line, choices })` | [`show_logic_path`](tools.md#show_logic_path) | view |
-| `showLine({ file, line })` | [`show_line`](tools.md#show_line) | view |
-| `highlight({ file, ranges, append })` | [`highlight`](tools.md#highlight) | view |
+| `showLine({ file, line, reveal })` | [`show_line`](tools.md#show_line) | view |
+| `highlight({ file, ranges, append, reveal })` | [`highlight`](tools.md#highlight) | view |
 | `commentLines({ file, comments, append })` | [`comment_lines`](tools.md#comment_lines) | view |
 | `addDetail({ file, line, expression, title, text, actions })` | [`add_detail`](tools.md#add_detail) | view |
 | `clear({ file })` | [`clear`](tools.md#clear) | view |

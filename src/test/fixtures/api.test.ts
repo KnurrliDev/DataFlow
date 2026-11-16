@@ -97,6 +97,42 @@ suite('API for other extensions on the fixture', () => {
 		await assert.rejects(api.showLine({ line: 100000 }), /battery\.cpp has \d+ lines\./);
 	});
 
+	test('With reveal "side", highlight and showLine show a place only in the side view, and open no text editor', async function () {
+		this.timeout(30000);
+		const other = path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, 'src', 'worker_pool.cpp');
+		// battery.cpp is the C++ text editor on the screen
+		await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file()), vscode.ViewColumn.One);
+		const editors = () => vscode.window.visibleTextEditors.map((e) => path.basename(e.document.uri.fsPath)).sort().join();
+		let sideFile: string | null = null;
+		const waitForSide = async (expected: string) => {
+			const end = Date.now() + 10000;
+			while ((sideFile = (await api.getView()).sideView.file) !== expected && Date.now() < end) {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+			assert.strictEqual(sideFile, expected);
+		};
+		const before = editors();
+		try {
+			const notes = await api.highlight({ file: other, ranges: [{ lines: [1, 1], kind: 'info', note: 'Only in the side view' }], reveal: 'side' });
+			assert.strictEqual(notes.shown, 1);
+			await waitForSide(other);
+			assert.strictEqual(editors(), before);
+			const line = lineOf('return requests;');
+			assert.strictEqual((await api.showLine({ file: file(), line, reveal: 'side' })).line, line);
+			await waitForSide(file());
+			assert.strictEqual(editors(), before);
+			// with no reveal, the C++ text editor on the screen shows the place of the other file too
+			await api.highlight({ file: other, ranges: [{ lines: [1, 1], kind: 'info', note: 'In the text editor too' }] });
+			await waitFor(() => editors().includes('worker_pool.cpp'), 10000, editors);
+		} finally {
+			await api.clear({ file: other });
+			const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs)
+				.filter((t) => t.input instanceof vscode.TabInputText && t.input.uri.fsPath.toLowerCase() === other.toLowerCase());
+			await vscode.window.tabGroups.close(tabs);
+			await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file()), vscode.ViewColumn.One);
+		}
+	});
+
 	test('setLens turns a lens on and off, and clearFlow removes the trace of showFlow', async function () {
 		this.timeout(30000);
 		const heatWasOn = internals.store.state.lenses.heat;

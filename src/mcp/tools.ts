@@ -29,7 +29,7 @@ export interface McpHost {
 	outline(file: string | undefined, name: string | undefined, line: number | undefined): Promise<Api.OutlineFacts>;
 	heat(file: string | undefined, fn: string | undefined, lines?: [number, number]): Promise<Api.HeatFacts>;
 	showBlocks(file: string | undefined, fn: FunctionArg, blocks: ModelBlockInput[]): Promise<Api.ShowBlocksResult>;
-	highlight(file: string | undefined, ranges: ModelNoteInput[], append: boolean): Promise<Api.HighlightResult>;
+	highlight(file: string | undefined, ranges: ModelNoteInput[], append: boolean, isSideOnly?: boolean): Promise<Api.HighlightResult>;
 	comment(file: string | undefined, comments: ModelCommentInput[], append: boolean): Promise<Api.CommentLinesResult>;
 	detail(file: string | undefined, detail: ModelDetailInput): Promise<Api.AddDetailResult>;
 	clear(file?: string): Promise<Api.ClearResult>;
@@ -48,7 +48,7 @@ export interface McpHost {
 	markBase(name: unknown, paths: unknown): Promise<Api.MarkResult>;
 	deleteMark(name: unknown): Promise<Api.DeleteMarkResult>;
 	setLens(lens: string, isOn: boolean): Promise<Api.SetLensResult>;
-	showLine(file: string | undefined, line: number): Promise<Api.ShowLineResult>;
+	showLine(file: string | undefined, line: number, isSideOnly?: boolean): Promise<Api.ShowLineResult>;
 	clearFlow(): Promise<Api.ClearedResult>;
 	scanCallGraph(): Promise<Api.CallGraphFacts>;
 	stopCallGraph(): Promise<Api.StopCallGraphResult>;
@@ -85,6 +85,11 @@ const FILE = { type: 'string', description: 'The C++ file: an absolute path, or 
 const FUNCTION = { type: 'string', description: 'The function: its qualified name, for example electricity::power_ctrl::process, its name, or the text of its macro call (macroCall). Default: the function at the cursor.' };
 const LINE_IN_FUNCTION = { type: 'integer', minimum: 1, description: 'A line in the function. Use it for an overloaded name, or instead of "function".' };
 const LINES = { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 2, maxItems: 2, description: 'The first and the last line, from 1.' };
+// side: only the side view shows the place, and no text editor opens. For a client with its own view of the place
+const REVEAL = {
+	type: 'string', enum: ['side'],
+	description: 'side: only the side view shows the place, and no text editor opens. Default: with a C++ text editor on the screen, the text editor beside the side view also shows the place.',
+};
 // The guides: the id of a guide, the force for a guide of a different owner, and the data of a client on a step
 const GUIDE_ID = { type: 'string', description: 'The id of a guide, for example "g2". get_view gives the guides of the stack. Default: the top guide, which shows.' };
 const FORCE = {
@@ -386,9 +391,9 @@ export function createTools(host: McpHost): McpTool[] {
 			{ file: FILE, function: FUNCTION, line: LINE_IN_FUNCTION, choices: CHOICES }, [], false, (a) => host.showLogicPath(a.text('file'), a.fn(), a.raw('choices'))),
 		tool('show_line', 'Show a line',
 			'Moves the cursor to a line of a C++ file, and shows the line in the DataFlow side view and in the text editor beside it. '
-			+ 'The lenses follow the cursor: they show the function of the line.',
-			{ file: FILE, line: { type: 'integer', minimum: 1, description: 'The line.' } },
-			['line'], false, (a) => host.showLine(a.text('file'), a.requiredLine('line'))),
+			+ 'The lenses follow the cursor: they show the function of the line. With "reveal": "side", only the side view shows the line.',
+			{ file: FILE, line: { type: 'integer', minimum: 1, description: 'The line.' }, reveal: REVEAL },
+			['line'], false, (a) => host.showLine(a.text('file'), a.requiredLine('line'), a.text('reveal') === 'side')),
 		tool('highlight', 'Highlight code',
 			'Colors lines or blocks in the DataFlow side view and shows a note at the first line of each range. Give "lines" or the id of a block from show_blocks. '
 			+ 'If more functions have a block with the id, also give "function". A new call replaces your notes of the file, except with "append". '
@@ -409,8 +414,9 @@ export function createTools(host: McpHost): McpTool[] {
 					}, ['kind', 'note']),
 				},
 				append: { type: 'boolean', description: 'true: keep the old notes of the file. Default: false.' },
+				reveal: REVEAL,
 			},
-			['ranges'], false, (a) => host.highlight(a.text('file'), a.list<ModelNoteInput>('ranges'), a.flag('append'))),
+			['ranges'], false, (a) => host.highlight(a.text('file'), a.list<ModelNoteInput>('ranges'), a.flag('append'), a.text('reveal') === 'side')),
 		tool('comment_lines', 'Comment lines',
 			'Shows a short comment after the code of single lines in the DataFlow side view, for example to explain a line that is hard to read. '
 			+ 'A comment has the color of the comments of the model, or a color that you select, for example one color for each topic. A comment does not color its line. '

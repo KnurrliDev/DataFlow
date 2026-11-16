@@ -317,9 +317,14 @@ export interface NoteInput {
 	actions?: ItemAction[];
 }
 
+// side: only the side view shows the place, and no text editor opens. With no side view, a new side view opens. Default:
+// with a C++ text editor on the screen, the text editor beside the side view also shows the place
+export type RevealMode = 'side';
+
 export interface HighlightArgs extends FileArgs {
 	ranges: NoteInput[];
 	append?: boolean; // keep the old notes of the file
+	reveal?: RevealMode;
 }
 
 export type CommentColor = 'blue' | 'green' | 'purple' | 'yellow' | 'orange' | 'red' | 'gray';
@@ -371,6 +376,7 @@ export interface SetLensArgs {
 
 export interface ShowLineArgs extends FileArgs {
 	line: number;
+	reveal?: RevealMode;
 }
 
 export type GuideKind = 'change' | 'ripple' | 'context' | 'risk' | 'test';

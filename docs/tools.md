@@ -633,6 +633,7 @@ Moves the cursor to a line of a C or C++ file, and shows the line in the side vi
 | --- | --- | --- |
 | `file` | text | See the common parameters. |
 | `line` | integer | Necessary. The line. |
+| `reveal` | text | `side`: only the side view shows the line, and no text editor opens, also with a C++ text editor on the screen. With no side view, a new side view opens. |
 
 Example request: "Go to the line that starts the solver."
 
@@ -645,6 +646,7 @@ Colors lines or blocks in the side view, and shows a note at the first line of e
 | `file` | text | See the common parameters. |
 | `ranges` | list | Necessary. The ranges with their notes, with a minimum of one range. |
 | `append` | true or false | `true` keeps the old notes of the client in the file. The default is `false`: a new call replaces the notes of the client in the file. |
+| `reveal` | text | `side`: only the side view shows the notes, and no text editor opens. The default is the text editor beside the side view too, if a C++ text editor is on the screen. |
 
 Each range has these fields:
 

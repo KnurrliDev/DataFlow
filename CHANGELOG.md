@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `highlight` and `show_line` get `reveal`. With `"reveal": "side"`, only the side view shows the place, and no text editor opens, also with a C++ text editor on the screen. With no side view, a new side view opens. Before, a C++ text editor on the screen also showed the place. Thus a click in an extension opened a text editor at one time, and only the side view at a different time. The API gets `reveal` in `HighlightArgs` and in `ShowLineArgs`, with the type `RevealMode`.
+
 ## 0.6.1
 
 - The engine does not stop now on a function with an error, for example on `future && n >= missing` with a `std::optional` `future`. The analysis of the unchecked optional accesses of Clang does not run on such a function. For this function, `dataflow/optionalAccess` gives an error, and `dataflow/flow` and `dataflow/calls` give no unchecked access. Before, the engine stopped with an access violation, and each new start stopped again on the same text.

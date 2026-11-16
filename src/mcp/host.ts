@@ -803,8 +803,8 @@ export class DataFlowMcpHost implements McpHost {
 	}
 
 	// Notes on ranges or on blocks. append keeps the old notes of the file. Each note gets an id after the ids of the old
-	// notes, so a client can remove it
-	async highlight(file: string | undefined, ranges: ModelNoteInput[], append = false): Promise<Api.HighlightResult> {
+	// notes, so a client can remove it. isSideOnly: only the side view shows the notes, and no text editor opens
+	async highlight(file: string | undefined, ranges: ModelNoteInput[], append = false, isSideOnly = false): Promise<Api.HighlightResult> {
 		this.checkActions(Array.isArray(ranges) && ranges.some((r) => !!r && typeof r === 'object' && r.actions !== undefined));
 		const doc = await this.document(file);
 		const f = doc.uri.fsPath;
@@ -817,7 +817,7 @@ export class DataFlowMcpHost implements McpHost {
 		const all = append ? [...(old?.notes ?? []), ...notes].sort((a, b) => a.first - b.first || a.last - b.last) : notes;
 		this.setLayer({ file: f, fn: old?.fn, client: this.deps.client(), blocks: old?.blocks ?? [], notes: all, comments: old?.comments ?? [], details: old?.details ?? [] });
 		this.showLayers();
-		await this.reveal(doc, new vscode.Position(Math.max(0, notes[0].first - 1), 0));
+		await this.reveal(doc, new vscode.Position(Math.max(0, notes[0].first - 1), 0), vscode.TextEditorRevealType.AtTop, isSideOnly);
 		return {
 			file: f,
 			shown: notes.length,
@@ -1264,8 +1264,9 @@ export class DataFlowMcpHost implements McpHost {
 		};
 	}
 
-	// Moves the cursor to a line, and shows it in the side view. The lenses follow the cursor
-	async showLine(file: string | undefined, line: number): Promise<Api.ShowLineResult> {
+	// Moves the cursor to a line, and shows it in the side view. The lenses follow the cursor. isSideOnly: only the side
+	// view shows the line, and no text editor opens
+	async showLine(file: string | undefined, line: number, isSideOnly = false): Promise<Api.ShowLineResult> {
 		const doc = await this.document(file);
 		if (!isCpp(doc) && !INCLUDE_FILE.test(doc.uri.fsPath)) {
 			throw new Error(`${doc.uri.fsPath} is not a C or C++ file. The side view shows only C and C++ files.`);
@@ -1274,7 +1275,12 @@ export class DataFlowMcpHost implements McpHost {
 			throw new Error(`${path.basename(doc.uri.fsPath)} has ${doc.lineCount} lines.`);
 		}
 		const text = doc.lineAt(line - 1).text;
-		await this.deps.side.goTo(doc.uri.fsPath, line, Math.max(0, text.search(/\S/)));
+		const col = Math.max(0, text.search(/\S/));
+		if (isSideOnly) {
+			this.deps.side.showPlace(doc, new vscode.Position(line - 1, col));
+		} else {
+			await this.deps.side.goTo(doc.uri.fsPath, line, col);
+		}
 		return { file: doc.uri.fsPath, line, text: text.trim().slice(0, 300), shown: true };
 	}
 
@@ -1607,10 +1613,11 @@ export class DataFlowMcpHost implements McpHost {
 	// Shows a place for the user, and opens the side view. The focus stays, for example in the terminal of the MCP client.
 	// With a C++ text editor on the screen, the text editor beside the side view shows the place. With no C++ text editor,
 	// for example with Claude Code in the other editor group, only the side view shows the place, and its cursor goes to
-	// the place.
-	private async reveal(doc: vscode.TextDocument, pos: vscode.Position, type = vscode.TextEditorRevealType.AtTop): Promise<void> {
+	// the place. isSideOnly: only the side view shows the place, also with a C++ text editor on the screen, for a client with
+	// its own view of the place
+	private async reveal(doc: vscode.TextDocument, pos: vscode.Position, type = vscode.TextEditorRevealType.AtTop, isSideOnly = false): Promise<void> {
 		const { side } = this.deps;
-		if (!side.hasCodeEditor) {
+		if (isSideOnly || !side.hasCodeEditor) {
 			side.showPlace(doc, pos);
 			return;
 		}
