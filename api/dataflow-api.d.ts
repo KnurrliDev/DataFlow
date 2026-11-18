@@ -654,12 +654,23 @@ export type HeatSignal = { group: 'reach' | 'risk' | 'history'; points: number; 
 	| { id: 'callerFiles'; value: number }
 	| { id: 'includeReach'; value: { file: string; units: number; total: number } } // the source files with the declaration
 	| { id: 'virtual'; value: 'override' | 'virtual' }
+	// GUI code: all points count half, except the points of data that threads share. class: the class of the member
+	// function is a GUI class or derives from one, and base is the nearest GUI class. calls: at least half of the calls,
+	// and at least 3, go to GUI APIs, the most calls first. total: all calls of a known function. 0 points
+	| { id: 'gui'; value: { kind: 'class'; class: string; base: string } | { kind: 'calls'; calls: number; total: number; apis: string[] } }
 	| { id: 'decisions' | 'depth' | 'length' | 'commits'; value: number } // length: the lines of the body
 	| { id: 'writes' | 'sharedUnprotected' | 'sharedLocked'; value: string[] } // the names of the data
 	| { id: 'loopCosts'; value: { allocations: number; copies: number } }
 	| { id: 'fixes'; value: string[] } // the summaries of the commits that fix bugs
 	| { id: 'recent'; value: 'uncommitted' | 'recent' }
 );
+
+// Why a function is GUI code. class: the class of the member function is a GUI class or derives from one. calls: at
+// least half of the calls of the function, and at least 3, go to GUI APIs
+export interface GuiFacts {
+	kind: 'class' | 'calls';
+	reason: string;
+}
 
 export interface HeatFacts {
 	file: string;
@@ -674,6 +685,9 @@ export interface HeatFacts {
 		risk: number;
 		history: number;
 		siloed?: boolean;
+		// GUI code, for example a member function of a class that derives from QWidget, or a function that mostly calls
+		// ImGui. All points count half, except the points of data that threads share. reason tells why it is GUI code
+		gui?: GuiFacts;
 		// false until the scan of the call graph is complete: the reach has no callers and no frame path. The score can
 		// then be too low, or too high, because the half points of a siloed function also do not apply
 		isReachComplete: boolean;
@@ -871,6 +885,7 @@ export interface HotChange {
 	score: number;
 	band: HeatBand;
 	isReachComplete: boolean;
+	gui?: GuiFacts; // GUI code: all points count half, except the points of data that threads share
 	reasons: string[];
 	file: string;
 }

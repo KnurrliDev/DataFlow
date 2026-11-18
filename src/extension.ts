@@ -1657,6 +1657,10 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	const testFoldersOf = (uri: vscode.Uri | undefined): string[] => settingOf<string[]>('dataflow.heat', 'testFolders', uri, ['test', 'tests']);
 	// The folders of the public headers of a library: the users of the library in other projects can call their functions
 	const publicFoldersOf = (uri: vscode.Uri | undefined): string[] => settingOf<string[]>('dataflow.heat', 'publicFolders', uri, []);
+	// More GUI classes and GUI namespaces: the points of GUI code count half
+	const guiNamesOf = (uri: vscode.Uri | undefined) => ({
+		classes: settingOf<string[]>('dataflow.heat', 'guiClasses', uri, []), namespaces: settingOf<string[]>('dataflow.heat', 'guiNamespaces', uri, []),
+	});
 
 	// Scans the call graph of the project in the engine, or the source files that changed after the last scan. The scan
 	// does not block: the side view shows its progress, and the heat of the file of the lens comes again at its end
@@ -1732,7 +1736,7 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		const file = doc.uri.fsPath;
 		const roots = projectRoots();
 		const [metrics, threadsModel, blame, types] = await Promise.all([
-			client.metrics(file, frameFunctionsOf(doc.uri), testFoldersOf(doc.uri), publicFoldersOf(doc.uri), token),
+			client.metrics(file, frameFunctionsOf(doc.uri), testFoldersOf(doc.uri), publicFoldersOf(doc.uri), guiNamesOf(doc.uri), token),
 			client.threads(file, { asyncFunctions: asyncFunctionsOf(doc.uri), roots }, token).catch(() => undefined),
 			blameOf(doc).catch(() => undefined),
 			client.memberMetrics(file, frameFunctionsOf(doc.uri), token).catch(() => undefined),

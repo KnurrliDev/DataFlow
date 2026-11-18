@@ -106,13 +106,15 @@ namespace DataFlow {
       return JsonObject{{"kind", "other"}, {"elementKind", int64_t(_el.getKind())}};
     }  // element_to_json
 
-    // true if the name of the function is in the list. an item with "::" is a qualified name
-    [[nodiscard]] inline bool name_in(const clang::FunctionDecl* _fn, const std::vector<std::string>& _names) {
-      if (!_fn || !_fn->getIdentifier()) return false;
+    // true if the name of the declaration is in the list, for example of a function, a class or a namespace. an item
+    // with "::" is a qualified name
+    [[nodiscard]] inline bool name_in(const clang::NamedDecl* _decl, const std::vector<std::string>& _names) {
+      if (!_decl || !_decl->getIdentifier()) return false;
       for (std::string_view n : _names) {
         if (n.starts_with("::")) n.remove_prefix(2);
         const bool isQualified = n.find("::") != std::string_view::npos;
-        if (isQualified ? _fn->getQualifiedNameAsString() == n : _fn->getName() == llvm::StringRef(n.data(), n.size()))
+        if (isQualified ? _decl->getQualifiedNameAsString() == n
+                        : _decl->getName() == llvm::StringRef(n.data(), n.size()))
           return true;
       }
       return false;

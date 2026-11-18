@@ -1,6 +1,11 @@
 import * as assert from 'assert';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { MemberMetricsMember, MemberMetricsModel, MetricsFunction, ThreadsModel } from '../../engine/client';
-import { bandOf, bandText, buildHeat, changedFunctions, flamesOf, heatFact, HeatInputs, hottestIn, parseBlame, unknownCallersText } from '../../lenses/heat';
+import { bandOf, bandText, buildHeat, changedFunctions, flamesOf, guiText, heatFact, HeatInputs, hottestIn, parseBlame, unknownCallersText } from '../../lenses/heat';
+import { DataFlowMcpHost, type HostDeps } from '../../mcp/host';
+import { StateStore } from '../../state/store';
 
 // The heat score: the parse of the blame of git, the points of each signal, the maximum of each group, the bands and
 // the flames
@@ -331,6 +336,70 @@ suite('Heat', () => {
 		assert.deepStrictEqual(heat.functions[2].reasons[0], {
 			group: 'reach', points: 0, text: heat.functions[2].reasons[0].text, id: 'reachUnknown', value: { cause: 'public', via: 'include', file: FILE, line: 2 },
 		});
+	});
+
+	test('GUI code: all points count half, except the points of data that threads share, and a point counts half one time at most', async () => {
+		const frame = { reason: 'called in the main loop of main', path: ['main'], isInLoop: true, calls: 1 };
+		const reach = { callers: 2, transitiveCallers: 3, callerFiles: 1, frame };
+		const viewGui = { kind: 'class' as const, class: 'ui::View', base: 'QWidget' };
+		const paint = (gui?: MetricsFunction['gui']) => fn('paint', 10, 40, { decisions: 10, reach, ...(gui ? { gui } : {}) });
+		// an unprotected access of data that two threads share in paint
+		const threads = {
+			threads: [], captures: [], isTruncated: false, analysisMs: 0, cached: false,
+			functions: [{ name: 'paint', qualifiedName: 'rate::paint', kind: 'function', file: FILE, line: 10, first: 11, last: 40, threads: [-1] }],
+			items: [{
+				key: 'jobs', label: 'jobs_', kind: 'member', type: 'int', isAtomic: false,
+				refs: [
+					{ file: FILE, line: 20, col: 1, len: 4, role: 'write', thread: -1, fn: 0, path: 'jobs_', sub: [], locks: [], order: {}, guards: [], via: [] },
+					{ file: FILE, line: 90, col: 1, len: 4, role: 'read', thread: 0, fn: 1, path: 'jobs_', sub: [], locks: [], order: {}, guards: [], via: [] },
+				],
+			}],
+		} as unknown as ThreadsModel;
+
+		// reach: 40 frame path + 10 loop + 4 callers + 1 file = 55. risk: 9 decisions + 6 shared = 15
+		const plain = buildHeat(inputs([paint()], { threads })).functions[0];
+		assert.deepStrictEqual([plain.reach, plain.risk, plain.score, plain.gui], [55, 15, 70, undefined]);
+		// GUI code: 55 / 2 = 27 reach, and 9 / 2 + 6 = 10 risk
+		const gui = buildHeat(inputs([paint(viewGui)], { threads })).functions[0];
+		assert.deepStrictEqual([gui.reach, gui.risk, gui.history, gui.score, gui.isSiloed], [27, 10, 0, 37, false]);
+		const reason = 'GUI code: ui::View derives from QWidget. All points count half, except the points of data that threads share';
+		assert.deepStrictEqual(gui.gui, { kind: 'class', reason });
+		assert.deepStrictEqual(gui.reasons.find((r) => r.id === 'gui'), { group: 'reach', points: 0, text: reason, id: 'gui', value: viewGui });
+		assert.deepStrictEqual(heatFact(gui).gui, { kind: 'class', reason });
+
+		// a siloed function of GUI code: its 9 risk points count half one time, not a quarter
+		const label = (gui?: MetricsFunction['gui']) => fn('label', 50, 60, { decisions: 10, reach: { callers: 1, transitiveCallers: 1, callerFiles: 0 }, ...(gui ? { gui } : {}) });
+		const calls = { kind: 'calls' as const, calls: 4, total: 5, apis: ['ImGui'] };
+		const [siloed, siloedGui] = buildHeat(inputs([label(), label(calls)])).functions;
+		assert.deepStrictEqual([siloed.isSiloed, siloed.reach, siloed.risk], [true, 2, 4]);
+		assert.deepStrictEqual([siloedGui.isSiloed, siloedGui.reach, siloedGui.risk], [true, 1, 4]);
+		assert.strictEqual(siloedGui.gui?.reason, 'GUI code: 4 of 5 calls go to ImGui. All points count half, except the points of data that threads share');
+		assert.strictEqual(guiText({ kind: 'calls', calls: 3, total: 3, apis: ['QWidget', 'Panel'] }),
+			'GUI code: 3 of 3 calls go to QWidget and Panel. All points count half, except the points of data that threads share');
+		assert.strictEqual(guiText({ kind: 'class', class: 'QWidget', base: 'QWidget' }),
+			'GUI code: QWidget is a GUI class. All points count half, except the points of data that threads share');
+
+		// get_heat and the API give gui with its reason, and the signal with its evidence
+		const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-gui-'));
+		// VS Code opens an .inc file as plain text, so DataFlow does not start for it
+		const file = path.join(dir, 'view.inc');
+		writeFileSync(file, Array.from({ length: 60 }, () => '').join('\n'));
+		const model = buildHeat(inputs([paint(viewGui)], { threads }));
+		const deps = {
+			store: new StateStore(),
+			engine: () => ({ currentState: 'ready' }),
+			roots: () => [dir],
+			flushChange: () => undefined,
+			heat: async () => model,
+		} as unknown as HostDeps;
+		try {
+			const facts = await new DataFlowMcpHost(deps).heat(file, undefined);
+			assert.deepStrictEqual([facts.functions[0].score, facts.functions[0].gui], [37, { kind: 'class', reason }]);
+			assert.deepStrictEqual(facts.functions[0].signals.find((s) => s.id === 'gui')?.value, viewGui);
+			assert.ok(facts.functions[0].reasons.includes(`${reason} (+0 reach)`), JSON.stringify(facts.functions[0].reasons));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test('The bands and the flames come from the score', () => {

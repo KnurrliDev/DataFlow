@@ -483,6 +483,13 @@ A connection of a signal of the project to a slot, for example `connect(this, &P
 
 The functions in the folders of the tests are test functions. The tab **Heat** tells the test functions that reach a function, with their files. They give no points. The setting `dataflow.heat.testFolders` gives the folders of the tests. The default is the folders with the name `test` or `tests` at any place in the project.
 
+### GUI code
+
+All points of GUI code count half, except the points of data that threads share. A point counts half one time at most: in a siloed function of GUI code, the risk and the history also count half, not a quarter. The tab **Heat** tells why a function is GUI code. A function is GUI code in these cases:
+
+- It is a member function of a class that is a GUI class or derives from one. DataFlow knows `QWidget`, `QGraphicsItem` and `QQuickItem` of Qt, `SWidget`, `UUserWidget` and `UWidget` of Unreal Engine, `wxWindow` of wxWidgets and `CWnd` of MFC. The setting `dataflow.heat.guiClasses` adds more classes.
+- At least half of its calls, and at least 3 calls, go to GUI APIs: the functions of a GUI namespace, or the member functions of GUI classes. DataFlow knows the namespace `ImGui`. The setting `dataflow.heat.guiNamespaces` adds more namespaces.
+
 ## Change Ripple
 
 Change Ripple shows the code that the changes of your branch affect, as a story for a review.
@@ -605,6 +612,8 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | `dataflow.heat.frameFunctions` | `[]` | More frame functions for Heat, for example `Renderer::frame` or `frame`. A frame function runs in each frame, and the functions that it calls are on the frame path. A name is a qualified name, or the end of a qualified name after `::`. See [The call graph](#the-call-graph). |
 | `dataflow.heat.testFolders` | `["test", "tests"]` | The folders of the tests for Heat. A name with no `/` is a folder with this name at any place in the project. A path is absolute, or relative to the project folder. Heat tells the test functions that reach a function. See [The call graph](#the-call-graph). |
 | `dataflow.heat.publicFolders` | `[]` | The folders of the public headers of a library for Heat, for example `include`. A function with its first declaration in these folders has callers in other projects that the call graph cannot see. It gets a reason with no points, and it is never siloed. A name with no `/` is a folder with this name at any place in the project. A path is absolute, or relative to the project folder. See [The call graph](#the-call-graph). |
+| `dataflow.heat.guiClasses` | `[]` | More GUI classes for Heat, for example `Canvas`. A member function of a class that is a GUI class or derives from one is GUI code, and its points count half. A name with `::` is a qualified name. See [GUI code](#gui-code). |
+| `dataflow.heat.guiNamespaces` | `[]` | More namespaces of GUI APIs for Heat, for example `ImPlot`. A function with at least half of its calls, and at least 3 calls, to GUI APIs is GUI code. A name with `::` is a qualified name. See [GUI code](#gui-code). |
 | `dataflow.ripple.asyncFunctions` | `std::async`, `QtConcurrent::run`, `tf::Executor::async`, `Async`, `AsyncTask`, `AsyncThread`, `AsyncPool`, `UE::Tasks::Launch` | Functions that run a callable on a different thread and return its result. Change Ripple continues with the result of a call of one of these functions, and marks the step as async. Flow Lens shows the callable of a data member trace on a different thread. Call Hierarchy shows the calls in the callable as calls on a different thread. Threads and races shows the callable as a worker thread. A name with `::` is a qualified name. |
 | `dataflow.ripple.baseRef` | empty | The target branch of Change Ripple, if you did not select one with **Target** in the Change Ripple bar. Change Ripple compares the files with the merge base of `HEAD` and this ref. If the ref starts with `origin/` and does not exist, Change Ripple uses the local branch. If the ref is empty or does not exist, Change Ripple uses the default branch of the remote, then `origin/main`, `main`, `origin/master` or `master`. |
 | `dataflow.ripple.maxDepth` | `2` | The number of caller levels that Change Ripple analyzes after a return value, from 0 to 5. |

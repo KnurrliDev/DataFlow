@@ -14,6 +14,8 @@
       through a non-const reference parameter or through a pointer parameter. the accesses of the structure give them
     > costs in loops: the allocations and the copies of hidden c++ in a loop of the function
     > the lines of the body, virtual and override, and the first declaration of the function
+    > gui code: the class of a member function is a gui class or derives from one, or at least half of the calls, and
+      at least 3 calls, go to a gui api. the heat score counts the points of gui code half
 */
 
 namespace DataFlow {
@@ -23,6 +25,26 @@ namespace DataFlow {
     std::string path_;
     std::string scope_;  // member, global or param
   };  // MetricsWrite
+
+  // why a function is gui code:
+  //   > class: the class of the member function is a gui class or derives from one, for example from QWidget
+  //   > calls: at least half of the calls of the function, and at least 3 calls, go to a gui api: a function of a gui
+  //     namespace such as ImGui, or a member function of a gui class
+  struct MetricsGui {
+    std::string kind_;               // class or calls. empty: the function is not gui code
+    std::string class_;              // class: the class of the member function
+    std::string base_;               // class: the nearest gui class that the class is or derives from
+    uint32_t calls_ = 0;             // calls: the calls to the gui apis
+    uint32_t total_ = 0;             // calls: all calls of a known function, but no operator calls
+    std::vector<std::string> apis_;  // calls: the gui namespaces and classes, the most calls first, at most 3
+  };  // MetricsGui
+
+  // the gui classes and the gui namespaces. a request adds the names of the settings to the known names
+  struct GuiOptions {
+    std::vector<std::string> classes_    = {"QWidget",     "QGraphicsItem", "QQuickItem", "SWidget",
+                                            "UUserWidget", "UWidget",       "wxWindow",   "CWnd"};
+    std::vector<std::string> namespaces_ = {"ImGui"};
+  };  // GuiOptions
 
   struct FunctionMetrics {
     const clang::FunctionDecl* fn_ = nullptr;
@@ -36,6 +58,7 @@ namespace DataFlow {
     std::vector<MetricsWrite> writes_;
     std::string decl_file_;  // the file of the first declaration, for example the header of a member function
     uint32_t decl_line_ = 0;
+    MetricsGui gui_;
   };  // FunctionMetrics
 
   namespace Detail {
@@ -110,17 +133,67 @@ namespace DataFlow {
       }
       return out;
     }  // shared_writes
+
+    // the nearest gui class that a class is or derives from: the class itself, then its bases, then their bases.
+    // nullptr if there is none. a base with no definition, for example a dependent base, is not known
+    [[nodiscard]] inline const clang::CXXRecordDecl* gui_base(const clang::CXXRecordDecl* _record,
+                                                              const std::vector<std::string>& _classes) {
+      std::vector<const clang::CXXRecordDecl*> queue{_record};
+      std::set<const clang::CXXRecordDecl*> seen;
+      for (size_t i = 0; i < queue.size(); ++i) {
+        const clang::CXXRecordDecl* r = queue[i]->getDefinition() ? queue[i]->getDefinition() : queue[i];
+        if (!seen.insert(r->getCanonicalDecl()).second) continue;
+        if (name_in(r, _classes)) return r;
+        if (!r->hasDefinition()) continue;
+        for (const clang::CXXBaseSpecifier& b : r->bases())
+          if (const clang::CXXRecordDecl* base = b.getType()->getAsCXXRecordDecl()) queue.push_back(base);
+      }
+      return nullptr;
+    }  // gui_base
+
+    // the calls of a body to a known function, also in its lambdas: all calls, and the calls to each gui api. _api_of
+    // gives the gui api of a function, or an empty text. an operator call does not count
+    template <class ApiOf>
+    void count_calls(const clang::Stmt* _s, const ApiOf& _api_of, uint32_t& _total,
+                     std::map<std::string, uint32_t>& _apis) {
+      if (!_s) return;
+      if (const auto* call = llvm::dyn_cast<clang::CallExpr>(_s);
+          call && !llvm::isa<clang::CXXOperatorCallExpr>(call)) {
+        if (const clang::FunctionDecl* callee = call->getDirectCallee()) {
+          ++_total;
+          if (std::string api = _api_of(*callee); !api.empty()) ++_apis[std::move(api)];
+        }
+      }
+      for (const clang::Stmt* c : _s->children()) count_calls(c, _api_of, _total, _apis);
+    }  // count_calls
   }  // namespace Detail
 
   // the metrics of the functions with a body. _insts: the instantiations of the templates of the functions, for the
-  // items of hidden c++
+  // items of hidden c++. _gui: the gui classes and the gui namespaces
   [[nodiscard]] inline std::vector<FunctionMetrics> build_metrics(const std::vector<const clang::FunctionDecl*>& _fns,
-                                                                  const Instantiations& _insts,
-                                                                  clang::ASTContext& _ctx) {
+                                                                  const Instantiations& _insts, clang::ASTContext& _ctx,
+                                                                  const GuiOptions& _gui) {
     const clang::SourceManager& sm    = _ctx.getSourceManager();
     const std::vector<CostItem> costs = build_costs(_fns, _insts, _ctx, CostOptions{});
     StructureOptions structure_opts;
     structure_opts.hasReaches_ = false;
+
+    // the gui class of each class, with one search for each class
+    std::map<const clang::CXXRecordDecl*, const clang::CXXRecordDecl*> gui_bases;
+    const auto gui_of = [&](const clang::CXXRecordDecl* _record) {
+      const auto [it, isNew] = gui_bases.try_emplace(_record->getCanonicalDecl(), nullptr);
+      if (isNew) it->second = Detail::gui_base(_record, _gui.classes_);
+      return it->second;
+    };
+    // the gui api of a called function: its gui namespace, or the gui class of a member function. empty if it has none
+    const auto api_of = [&](const clang::FunctionDecl& _callee) -> std::string {
+      for (const clang::DeclContext* dc = _callee.getDeclContext(); dc; dc = dc->getParent())
+        if (const auto* ns = llvm::dyn_cast<clang::NamespaceDecl>(dc); ns && Detail::name_in(ns, _gui.namespaces_))
+          return ns->getQualifiedNameAsString();
+      if (const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(&_callee); method && gui_of(method->getParent()))
+        return method->getParent()->getQualifiedNameAsString();
+      return {};
+    };
 
     std::vector<FunctionMetrics> out;
     for (int32_t i = 0; i < int32_t(_fns.size()); ++i) {
@@ -160,6 +233,28 @@ namespace DataFlow {
         m.isOverride_ = method->getCanonicalDecl()->size_overridden_methods() > 0;
       }
 
+      // gui code: a member function of a gui class, or a function that mostly calls gui apis
+      const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(&fn);
+      if (const clang::CXXRecordDecl* base = method ? gui_of(method->getParent()) : nullptr) {
+        m.gui_.kind_  = "class";
+        m.gui_.class_ = method->getParent()->getQualifiedNameAsString();
+        m.gui_.base_  = base->getQualifiedNameAsString();
+      } else {
+        uint32_t total = 0;
+        std::map<std::string, uint32_t> apis;
+        Detail::count_calls(body, api_of, total, apis);
+        uint32_t calls = 0;
+        for (const auto& [api, n] : apis) calls += n;
+        if (calls >= 3 && 2 * calls >= total) {
+          m.gui_.kind_  = "calls";
+          m.gui_.calls_ = calls;
+          m.gui_.total_ = total;
+          std::vector<std::pair<std::string, uint32_t>> sorted(apis.begin(), apis.end());
+          std::ranges::stable_sort(sorted, [](const auto& _a, const auto& _b) { return _a.second > _b.second; });
+          for (size_t k = 0; k < sorted.size() && k < 3; ++k) m.gui_.apis_.push_back(sorted[k].first);
+        }
+      }
+
       const clang::FunctionDecl* decl = fn.getFirstDecl();
       m.decl_file_                    = Detail::file_of(sm, decl->getLocation());
       m.decl_line_                    = walker.line_of(decl->getLocation());
@@ -188,6 +283,16 @@ namespace DataFlow {
       if (m.isVirtual_) o["virtual"] = true;
       if (m.isOverride_) o["override"] = true;
       o["declaration"] = JsonObject{{"file", m.decl_file_}, {"line", int64_t(m.decl_line_)}};
+      if (m.gui_.kind_ == "class") {
+        o["gui"] = JsonObject{{"kind", "class"}, {"class", m.gui_.class_}, {"base", m.gui_.base_}};
+      } else if (m.gui_.kind_ == "calls") {
+        JsonArray apis;
+        for (const std::string& a : m.gui_.apis_) apis.push_back(a);
+        o["gui"] = JsonObject{{"kind", "calls"},
+                              {"calls", int64_t(m.gui_.calls_)},
+                              {"total", int64_t(m.gui_.total_)},
+                              {"apis", std::move(apis)}};
+      }
       fns.push_back(std::move(o));
     }
     return JsonObject{{"functions", std::move(fns)}};

@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Logic Map is off by default. Before, it was on. To turn it on, click **Logic Map** in the toolbar of the side view, or run **DataFlow: Toggle Logic Map**. **DataFlow: Why Does This Line Run**, the tool `show_logic_path` and `showLogicPath` of the API also turn it on.
+- Heat: all points of GUI code count half, except the points of data that threads share. A member function of a class that is a GUI class or derives from one is GUI code: `QWidget`, `QGraphicsItem`, `QQuickItem`, `SWidget`, `UUserWidget`, `UWidget`, `wxWindow` or `CWnd`. A function with at least half of its calls, and at least 3 calls, to GUI APIs is GUI code too, for example to `ImGui`. A point counts half one time at most, also in a siloed function. The tab Heat tells why a function is GUI code. The new settings `dataflow.heat.guiClasses` and `dataflow.heat.guiNamespaces` add GUI classes and GUI namespaces.
+- `get_heat` and `getHeat` give `gui` with `kind` and `reason` for a function of GUI code, and the signal `gui` with its evidence. The hottest changes of `get_review` and `get_diff` also give `gui`. The engine request `dataflow/metrics` gives `gui`, and it gets the parameters `guiClasses` and `guiNamespaces`.
 
 ## 0.7.0
 

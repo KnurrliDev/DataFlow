@@ -820,16 +820,23 @@ namespace DataFlow {
     // the metrics of the functions of the file for the heat score: decisions, depth, loops, writes and costs in loops.
     // with a complete call graph, also the reach of each function. frameFunctions: the frame functions of the setting.
     // testFolders: the folders of the tests, for the test functions among the callers. publicFolders: the folders of
-    // the public headers of a library, for the callers in other projects
+    // the public headers of a library, for the callers in other projects. guiClasses and guiNamespaces: more gui
+    // classes and gui namespaces, for the gui code
     if (_method == "dataflow/metrics")
       return post_file_request(_srv, *_id, *file,
                                [&srv = _srv, names = Detail::get_strings(&params, "frameFunctions"),
                                 testFolders   = Detail::get_strings(&params, "testFolders"),
-                                publicFolders = Detail::get_strings(&params, "publicFolders")](
+                                publicFolders = Detail::get_strings(&params, "publicFolders"),
+                                guiClasses    = Detail::get_strings(&params, "guiClasses"),
+                                guiNamespaces = Detail::get_strings(&params, "guiNamespaces")](
                                    clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
+                                 GuiOptions gui;
+                                 gui.classes_.insert(gui.classes_.end(), guiClasses.begin(), guiClasses.end());
+                                 gui.namespaces_.insert(gui.namespaces_.end(), guiNamespaces.begin(),
+                                                        guiNamespaces.end());
                                  const std::vector<const clang::FunctionDecl*> fns = main_file_functions(_ast);
                                  const std::vector<FunctionMetrics> metrics =
-                                     build_metrics(fns, main_file_instantiations(_ast), _ast.getASTContext());
+                                     build_metrics(fns, main_file_instantiations(_ast), _ast.getASTContext(), gui);
                                  JsonObject out               = metrics_to_json(metrics, _ast.getSourceManager());
                                  const Detail::GraphView view = Detail::graph_view(srv, names);
                                  if (JsonArray* list = out.getArray("functions"); list && view.graph_) {

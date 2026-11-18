@@ -253,6 +253,7 @@ export interface SideHeatReason {
 	group: 'reach' | 'risk' | 'history';
 	points: number;
 	text: string;
+	id?: string; // the kind of the signal, for example gui
 }
 
 // The heat score of a function. Lines start at 1
@@ -269,6 +270,7 @@ export interface SideHeatFunction {
 	risk: number;
 	history: number;
 	isSiloed: boolean; // the risk and the history count half, because the reach is small
+	gui?: { kind: 'class' | 'calls'; reason: string }; // GUI code: all points count half, but not the points of shared data
 	reasons: SideHeatReason[];
 }
 

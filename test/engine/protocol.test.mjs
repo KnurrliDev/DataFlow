@@ -750,6 +750,67 @@ test('metrics: the decisions, the depth, the loops, the shared writes, the costs
 	assert.deepEqual(where(readings.declaration), { file: header.toLowerCase(), line: headerLine });
 });
 
+test('metrics: a member function of a GUI class and a function that mostly calls a GUI API are GUI code', async () => {
+	const added = [
+		'class QWidget {',
+		' public:',
+		'  virtual ~QWidget() = default;',
+		'  virtual void paintEvent(int) {}',
+		'  void update() {}',
+		'};',
+		'class DfPanel : public QWidget {',
+		' public:',
+		'  void paintEvent(int _e) override { update(); }',
+		'  int count() const { return 3; }',
+		'};',
+		'namespace ImGui {',
+		'  inline bool Begin(const char*) { return true; }',
+		'  inline void End() {}',
+		'  inline void Text(const char*) {}',
+		'}',
+		'namespace DfUi { inline void label() {} }',
+		'int df_value(int _n) { return _n + 1; }',
+		'void df_imgui_panel() { if (ImGui::Begin("p")) { ImGui::Text("a"); ImGui::Text("b"); } ImGui::End(); df_value(1); }',
+		'void df_few_gui() { ImGui::Begin("p"); ImGui::End(); }',
+		'void df_mostly_logic() { ImGui::Text("a"); ImGui::Text("b"); ImGui::Text("c"); df_value(1); df_value(2); df_value(3); df_value(4); }',
+		'void df_widget_calls(DfPanel& _p) { _p.update(); _p.update(); _p.count(); }',
+		'void df_ui() { DfUi::label(); DfUi::label(); DfUi::label(); }',
+		'struct DfCanvasBase { void draw() {} };',
+		'struct DfCanvas : DfCanvasBase { void redraw() { draw(); } };',
+	];
+	const base = readFileSync(fixture, 'utf8').replace(/\r?\n?$/, '\n');
+	engine.notify('textDocument/didOpen', { file: fixture, text: base + added.join('\n') + '\n', version: 21 });
+	try {
+		const res = await engine.send('dataflow/metrics', { file: fixture });
+		assert.equal(res.error, undefined, JSON.stringify(res.error));
+		assert.equal(res.result.errorCount, 0, res.result.errors.join('\n'));
+		const gui = (r, name) => {
+			const f = r.result.functions.find((x) => x.qualifiedName === name);
+			assert.ok(f, `no function ${name}`);
+			return f.gui ?? null;
+		};
+
+		// each member function of a class that is or derives from a GUI class
+		assert.deepEqual(gui(res, 'QWidget::paintEvent'), { kind: 'class', class: 'QWidget', base: 'QWidget' });
+		assert.deepEqual(gui(res, 'DfPanel::paintEvent'), { kind: 'class', class: 'DfPanel', base: 'QWidget' });
+		assert.deepEqual(gui(res, 'DfPanel::count'), { kind: 'class', class: 'DfPanel', base: 'QWidget' });
+		// at least half of the calls, and at least 3, go to a GUI namespace or to the member functions of GUI classes
+		assert.deepEqual(gui(res, 'df_imgui_panel'), { kind: 'calls', calls: 4, total: 5, apis: ['ImGui'] });
+		assert.deepEqual(gui(res, 'df_widget_calls'), { kind: 'calls', calls: 3, total: 3, apis: ['QWidget', 'DfPanel'] });
+		// 2 calls are too few, and 3 of 7 calls are less than half
+		assert.deepEqual([gui(res, 'df_few_gui'), gui(res, 'df_mostly_logic'), gui(res, 'df_value')], [null, null, null]);
+		assert.deepEqual([gui(res, 'df_ui'), gui(res, 'DfCanvas::redraw')], [null, null]);
+
+		// the settings add a GUI class and a GUI namespace
+		const more = await engine.send('dataflow/metrics', { file: fixture, guiClasses: ['DfCanvasBase'], guiNamespaces: ['DfUi'] });
+		assert.equal(more.error, undefined, JSON.stringify(more.error));
+		assert.deepEqual(gui(more, 'df_ui'), { kind: 'calls', calls: 3, total: 3, apis: ['DfUi'] });
+		assert.deepEqual(gui(more, 'DfCanvas::redraw'), { kind: 'class', class: 'DfCanvas', base: 'DfCanvasBase' });
+	} finally {
+		engine.notify('textDocument/didClose', { file: fixture });
+	}
+});
+
 test('templates: no instantiations in the function list, and Hidden C++ gets the items of the instantiations', async () => {
 	const base = readFileSync(fixture, 'utf8').replace(/\r?\n?$/, '\n');
 	const first = base.split('\n').length;

@@ -342,6 +342,19 @@ export interface MetricsFunction extends EngineFunction {
 	override?: boolean;
 	declaration: { file: string; line: number }; // the first declaration, for example in a header
 	reach?: MetricsReach | null; // undefined: the call graph is not complete. null: the call graph has no node for the function
+	gui?: MetricsGui; // the function is GUI code
+}
+
+// Why a function is GUI code. class: the class of the member function is a GUI class or derives from one, and base is
+// the nearest GUI class. calls: at least half of the calls, and at least 3, go to GUI APIs: the GUI namespaces and the
+// member functions of GUI classes, the most calls first, at most 3. total: all calls of a known function
+export type MetricsGui = { kind: 'class'; class: string; base: string } | { kind: 'calls'; calls: number; total: number; apis: string[] };
+
+// The GUI classes and the GUI namespaces of the settings. The engine adds them to the classes and the namespaces that
+// it knows
+export interface GuiNames {
+	classes: string[];
+	namespaces: string[];
 }
 
 // The reach of a function in the call graph of the engine
@@ -944,9 +957,9 @@ export class EngineClient implements vscode.Disposable {
 
 	// The metrics of the functions of the file, for the heat score. With a complete call graph, also the reach of each
 	// function. frameFunctions: the names of more frame functions. testFolders and publicFolders: the folders of the
-	// tests and of the public headers of a library
-	metrics(file: string, frameFunctions: string[], testFolders: string[], publicFolders: string[], token?: vscode.CancellationToken): Promise<FileResult & MetricsModel> {
-		return this.request('dataflow/metrics', { file, frameFunctions, testFolders, publicFolders }, token);
+	// tests and of the public headers of a library. gui: more GUI classes and GUI namespaces
+	metrics(file: string, frameFunctions: string[], testFolders: string[], publicFolders: string[], gui: GuiNames, token?: vscode.CancellationToken): Promise<FileResult & MetricsModel> {
+		return this.request('dataflow/metrics', { file, frameFunctions, testFolders, publicFolders, guiClasses: gui.classes, guiNamespaces: gui.namespaces }, token);
 	}
 
 	// The callers of a function in the call graph up to a depth from 1 to 6, and its frame paths

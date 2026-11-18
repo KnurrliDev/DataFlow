@@ -75,6 +75,8 @@ The score is the sum of the reach, the risk and the history points. If the reach
 
 The half points need the callers, because only the callers show that a function is siloed. Until the call graph is available, the risk and the history points count fully, and the score tells that the reach is not complete.
 
+All points of GUI code count half, except the points of data that threads share. A member function of a class that is a GUI class or derives from one is GUI code, for example of `QWidget`, `SWidget` or `UUserWidget`. A function with at least half of its calls, and at least 3 calls, to GUI APIs is GUI code too, for example to `ImGui`. A point counts half one time at most: the risk and the history of a siloed function of GUI code count half, not a quarter.
+
 Each function gets 1 to 5 flames from its score:
 
 | Score | Flames |

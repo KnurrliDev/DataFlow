@@ -1,5 +1,5 @@
 import type * as Api from '../../api/dataflow-api';
-import type { MemberMetricsMember, MemberMetricsModel, MetricsFunction, MetricsModel, MetricsReach, ThreadsModel, UnknownCallersCause } from '../engine/client';
+import type { MemberMetricsMember, MemberMetricsModel, MetricsFunction, MetricsGui, MetricsModel, MetricsReach, ThreadsModel, UnknownCallersCause } from '../engine/client';
 import { sameFile } from './member';
 
 // The heat score of the functions of a file: how much a change of a function can break. The score adds points of
@@ -26,6 +26,8 @@ export interface HeatFunction {
 	risk: number;
 	history: number;
 	isSiloed: boolean; // the reach is less than 10 with the callers, thus the risk and the history count half
+	// GUI code: all points count half, except the points of data that threads share. reason: why it is GUI code
+	gui?: { kind: 'class' | 'calls'; reason: string };
 	isReachComplete: boolean; // the call graph gives the reach of the function: its callers and its frame path
 	reachUnknown?: { cause: UnknownCallersCause; text: string }; // callers that the call graph cannot see
 	tests?: { functions: number; files: string[]; isCapped?: boolean }; // the test functions that reach the function
@@ -187,6 +189,19 @@ export function unknownCallersText(u: NonNullable<MetricsReach['unknownCallers']
 	return `Callers that the call graph cannot see: ${unknownCallersReason(u)}`;
 }
 
+// A list of names with "and" before the last name
+const andText = (names: string[]): string => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0] ?? '');
+
+// The text of GUI code: why the function is GUI code, and the half points
+export function guiText(gui: MetricsGui): string {
+	const why = gui.kind === 'calls' ? `${gui.calls} of ${gui.total} calls go to ${andText(gui.apis)}`
+		: gui.class === gui.base ? `${gui.class} is a GUI class` : `${gui.class} derives from ${gui.base}`;
+	return `GUI code: ${why}. All points count half, except the points of data that threads share`;
+}
+
+// The risk points of the data that threads share. GUI code keeps them in full
+const SHARED_IDS: ReadonlySet<string> = new Set(['sharedUnprotected', 'sharedLocked']);
+
 // The reach points: the frame path, the callers and their files from the call graph of the engine, the include reach of
 // the declaration, and an interface. Callers that the graph cannot see, a frame path past the limit and the tests give
 // reasons with no points
@@ -256,6 +271,9 @@ function reachReasons(fn: MetricsFunction, inputs: HeatInputs): HeatReason[] {
 			group: 'reach', points: 2, text: fn.override ? 'Override of a virtual function' : 'Virtual function',
 			id: 'virtual', value: fn.override ? 'override' : 'virtual',
 		});
+	}
+	if (fn.gui) {
+		out.push({ group: 'reach', points: 0, text: guiText(fn.gui), id: 'gui', value: fn.gui.kind === 'calls' ? { ...fn.gui, apis: [...fn.gui.apis] } : { ...fn.gui } });
 	}
 	return out;
 }
@@ -373,12 +391,18 @@ export function buildHeat(inputs: HeatInputs): HeatModel {
 		const reach = reachReasons(fn, inputs).sort(byPoints);
 		const risk = riskReasons(fn, inputs).sort(byPoints);
 		const history = historyReasons(fn, inputs).sort(byPoints);
-		const reachPoints = Math.min(MAX_REACH, sum(reach));
+		const reachSum = Math.min(MAX_REACH, sum(reach));
 		// only the callers show that a function is siloed. With callers that the graph cannot see, it is not
-		const isSiloed = !!fn.reach && !fn.reach.unknownCallers && reachPoints < SILOED_REACH;
-		const factor = isSiloed ? 0.5 : 1;
-		const riskPoints = Math.floor(Math.min(MAX_RISK, sum(risk)) * factor);
-		const historyPoints = Math.floor(Math.min(MAX_HISTORY, sum(history)) * factor);
+		const isSiloed = !!fn.reach && !fn.reach.unknownCallers && reachSum < SILOED_REACH;
+		// a point counts half one time at most: GUI code halves all points but the points of data that threads share, and a
+		// siloed function halves its risk and its history
+		const isGui = !!fn.gui;
+		const half = isGui || isSiloed ? 0.5 : 1;
+		const riskSum = Math.min(MAX_RISK, sum(risk));
+		const sharedSum = Math.min(riskSum, sum(risk.filter((r) => SHARED_IDS.has(r.id))));
+		const reachPoints = Math.floor(reachSum * (isGui ? 0.5 : 1));
+		const riskPoints = Math.floor((riskSum - sharedSum) * half + sharedSum * (isSiloed ? 0.5 : 1));
+		const historyPoints = Math.floor(Math.min(MAX_HISTORY, sum(history)) * half);
 		const score = Math.min(100, reachPoints + riskPoints + historyPoints);
 		return {
 			name: fn.name,
@@ -393,6 +417,7 @@ export function buildHeat(inputs: HeatInputs): HeatModel {
 			risk: riskPoints,
 			history: historyPoints,
 			isSiloed,
+			...(fn.gui ? { gui: { kind: fn.gui.kind, reason: guiText(fn.gui) } } : {}),
 			isReachComplete: !!fn.reach,
 			...(fn.reach?.unknownCallers ? { reachUnknown: { cause: fn.reach.unknownCallers.cause, text: unknownCallersText(fn.reach.unknownCallers) } } : {}),
 			...(fn.reach?.tests ? { tests: { ...fn.reach.tests, files: [...fn.reach.tests.files] } } : {}),
@@ -487,6 +512,7 @@ export function heatFact(fn: HeatFunction, reasons = 3): Omit<Api.HotChange, 'fi
 	const top = [...fn.reasons].sort(byPoints).slice(0, reasons);
 	return {
 		function: fn.qualifiedName || fn.name, lines: [fn.first, fn.last], score: fn.score, band: bandText(fn.band), isReachComplete: fn.isReachComplete,
+		...(fn.gui ? { gui: { ...fn.gui } } : {}),
 		reasons: top.map((r) => `${r.text} (+${r.points} ${r.group})`),
 	};
 }

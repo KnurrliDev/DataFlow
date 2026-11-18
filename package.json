@@ -580,6 +580,24 @@
           "scope": "resource",
           "markdownDescription": "The folders of the public headers of a library for the lens Heat, for example `include`. The users of the library in other projects can call a function with its first declaration in these folders, but the call graph cannot see these callers. Thus such a function gets a reason with no points, and it is never siloed. A private member function does not get the reason. A name with no `/` is a folder with this name at any place in the project. A path is absolute, or relative to the project folder."
         },
+        "dataflow.heat.guiClasses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "More GUI classes for the lens Heat, for example `Canvas`. A member function of a class that is a GUI class or derives from one is GUI code. All points of GUI code count half, except the points of data that threads share. DataFlow knows `QWidget`, `QGraphicsItem`, `QQuickItem`, `SWidget`, `UUserWidget`, `UWidget`, `wxWindow` and `CWnd`. A name with `::` is a qualified name."
+        },
+        "dataflow.heat.guiNamespaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "More namespaces of GUI APIs for the lens Heat, for example `ImPlot`. A function is GUI code if at least half of its calls, and at least 3 calls, go to the functions of these namespaces or to the member functions of GUI classes. All points of GUI code count half, except the points of data that threads share. DataFlow knows `ImGui`. A name with `::` is a qualified name."
+        },
         "dataflow.ripple.asyncFunctions": {
           "type": "array",
           "items": {

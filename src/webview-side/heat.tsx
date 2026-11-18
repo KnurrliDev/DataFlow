@@ -38,8 +38,10 @@ function HeatFunctionView({ fn }: { fn: SideHeatFunction }) {
 			<div class="flow-title"><strong class="mono">{fn.qualifiedName || fn.name}</strong></div>
 			<div class="heat-score-line"><Flames count={fn.flames} /><span>{heatTitle(fn)}</span></div>
 			{fn.isSiloed && <p class="sub heat-siloed">The reach is less than 10, thus the risk and the history count half.</p>}
+			{fn.gui && <p class="sub heat-gui">{fn.gui.reason}.</p>}
 			{(['reach', 'risk', 'history'] as const).map((group) => {
-				const reasons = fn.reasons.filter((r) => r.group === group);
+				// the note above shows GUI code
+				const reasons = fn.reasons.filter((r) => r.group === group && r.id !== 'gui');
 				return (
 					<div class="heat-group">
 						<div class="heat-group-title">{GROUP_NAMES[group]} <span class="sub">{fn[group]} of {GROUP_MAX[group]}</span></div>

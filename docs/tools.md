@@ -483,6 +483,8 @@ Gives the heat score of each function of a file, as the lens Heat shows it: how 
 
 Each function has its lines, its score from 0 to 100, its band and its flames. It also has the points of reach, risk and history, and the reasons with their points. `siloed` is true if the reach is less than 10. Then the risk and the history count half. The notices tell which signals are not available, for example the history with no git repository.
 
+`gui` tells that the function is GUI code, with its `kind` and its `reason`. With `kind` `class`, the function is a member function of a class that is a GUI class or derives from one, for example `QWidget`. With `kind` `calls`, at least half of its calls, and at least 3 calls, go to GUI APIs, for example `ImGui`. All points of GUI code count half, except the points of data that threads share. A point counts half one time at most, also in a siloed function.
+
 The callers and the frame path come from the call graph of the project. The first call starts the scan of the call graph and does not wait for it. Until the scan is complete, `callGraph` tells the progress, and the reach has no callers and no frame path. Call the tool again later for the complete scores. If the user stopped the scan, `callGraph` tells it.
 
 `isReachComplete` is false for a function until the call graph gives its reach. Then the score can be too low or too high, because the half points of a siloed function also do not apply. The result also gives `isReachComplete` for the file.
@@ -510,6 +512,7 @@ Such a function is never siloed. `tests` gives the number of the test functions 
 | `callerFiles` | The number of the other files of the callers |
 | `includeReach` | The file of the declaration, the source files that include it, and all source files |
 | `virtual` | `override` or `virtual` |
+| `gui` | `kind` `class` with the class (`class`) and its nearest GUI class (`base`), or `kind` `calls` with the calls to GUI APIs (`calls`), all calls (`total`) and the GUI APIs with the most calls first (`apis`). 0 points. |
 | `decisions`, `depth`, `length`, `commits` | The number. `length` is the number of the lines of the body. |
 | `writes`, `sharedUnprotected`, `sharedLocked` | The names of the data |
 | `loopCosts` | The allocations and the copies in loops |
@@ -816,7 +819,7 @@ Parameters: none.
 
 Gives the files that the user wants to review: the C and C++ files under the paths, with their number of lines. The changed files come first. If the git repository of the project has a target branch, a changed file also has its diff against the merge base, with the line numbers of the working tree. The target branch is the branch that you selected for Change Ripple, else the automatic target branch. A folder gives its C and C++ files, also in its subfolders, but not in build folders. The result has a maximum of 50 files.
 
-A changed file also has `changedFunctions`: the functions with a changed line, with their heat score and their band. `hottestChanges` gives the changed functions of all files, the hottest first, with the three reasons that give the most points. Thus the model can start its plan with the hottest changes. The heat of the changed files takes some seconds, and a maximum of 30 seconds.
+A changed file also has `changedFunctions`: the functions with a changed line, with their heat score and their band. `hottestChanges` gives the changed functions of all files, the hottest first, with the three reasons that give the most points, and `gui` for GUI code, as `get_heat` gives it. Thus the model can start its plan with the hottest changes. The heat of the changed files takes some seconds, and a maximum of 30 seconds.
 
 Change Ripple does not run for this tool. The model reads the files with the other read tools.
 
@@ -861,7 +864,7 @@ Example request: "Make a review plan for these files."
 
 ### get_diff
 
-Gives the changes for a diff walk: the hunks of the changed C and C++ files against a base. Each hunk has an id, its first and its last changed line in the working tree, and its number of added and removed lines. It also has its diff with the line numbers of the working tree. A removed line in a diff has no line number. The engine gives the functions with a changed line, and the functions that a hunk adds. Each hunk also has `heat`: the heat score and the band of each function with a changed line. `hottestChanges` gives the changed functions, the hottest first, with their hunks and the three reasons that give the most points. With many files, this can take some seconds.
+Gives the changes for a diff walk: the hunks of the changed C and C++ files against a base. Each hunk has an id, its first and its last changed line in the working tree, and its number of added and removed lines. It also has its diff with the line numbers of the working tree. A removed line in a diff has no line number. The engine gives the functions with a changed line, and the functions that a hunk adds. Each hunk also has `heat`: the heat score and the band of each function with a changed line. `hottestChanges` gives the changed functions, the hottest first, with their hunks, the three reasons that give the most points, and `gui` for GUI code. With many files, this can take some seconds.
 
 | Parameter | Type | Function |
 | --- | --- | --- |

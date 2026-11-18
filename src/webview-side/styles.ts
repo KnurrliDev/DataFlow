@@ -911,7 +911,7 @@ button.mnote { cursor: pointer; }
 .heat-item .flames { flex: none; min-width: 4.4em; color: var(--hc); }
 .heat-score { flex: none; min-width: 2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
 .heat-item .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.heat-siloed { margin: -4px 0 8px !important; }
+.heat-siloed, .heat-gui { margin: -4px 0 8px !important; }
 /* the scan of the call graph: the progress with the button Stop, and the frame functions of the last scan */
 .heat-scan { display: grid; gap: 4px; margin: 4px 0 10px; }
 .heat-scan-line { display: flex; align-items: center; gap: 8px; color: var(--vscode-descriptionForeground); }

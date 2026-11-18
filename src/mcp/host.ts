@@ -494,7 +494,8 @@ export class DataFlowMcpHost implements McpHost {
 			isReachComplete: model.isReachComplete,
 			functions: functions.slice(0, MAX_ITEMS).map((h) => ({
 				name: h.qualifiedName || h.name, lines: [h.first, h.last], score: h.score, band: bandText(h.band), flames: h.flames,
-				reach: h.reach, risk: h.risk, history: h.history, ...(h.isSiloed ? { siloed: true } : {}), isReachComplete: h.isReachComplete,
+				reach: h.reach, risk: h.risk, history: h.history, ...(h.isSiloed ? { siloed: true } : {}), ...(h.gui ? { gui: { ...h.gui } } : {}),
+				isReachComplete: h.isReachComplete,
 				...(h.reachUnknown ? { reachUnknown: { ...h.reachUnknown } } : {}),
 				...(h.tests ? { tests: { ...h.tests, files: [...h.tests.files] } } : {}),
 				reasons: h.reasons.map((r) => `${r.text} (+${r.points} ${r.group})`),
