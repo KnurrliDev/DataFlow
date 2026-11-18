@@ -164,7 +164,8 @@ export class StateStore implements vscode.Disposable {
 		databases: [],
 		isDatabaseSearchDone: false,
 		parsing: [],
-		lenses: { flow: true, logic: true, cost: true, review: false, includes: true, calls: true, threads: true, heat: false },
+		// Logic Map, Change Ripple and Heat start only on demand
+		lenses: { flow: true, logic: false, cost: true, review: false, includes: true, calls: true, threads: true, heat: false },
 		modelLayers: [],
 		isModelShown: true,
 		guidesBelow: [],

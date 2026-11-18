@@ -77,7 +77,7 @@ suite('API for other extensions', () => {
 			state: 'none', note: 'No review of Change Ripple shows. Call start_ripple, or ask the user to run "DataFlow: Review Changes".',
 		});
 		assert.deepStrictEqual(await api.setLens({ lens: 'heat', on: true }), {
-			lens: 'heat', on: true, changed: true, lenses: ['flow', 'logic', 'cost', 'includes', 'calls', 'threads', 'heat'],
+			lens: 'heat', on: true, changed: true, lenses: ['flow', 'cost', 'includes', 'calls', 'threads', 'heat'],
 		});
 		assert.strictEqual((await api.setLens({ lens: 'heat', on: true })).changed, false);
 		assert.deepStrictEqual(await api.callTool('stop_call_graph'), { stopped: false, state: 'none' });

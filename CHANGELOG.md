@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Logic Map is off by default. Before, it was on. To turn it on, click **Logic Map** in the toolbar of the side view, or run **DataFlow: Toggle Logic Map**. **DataFlow: Why Does This Line Run**, the tool `show_logic_path` and `showLogicPath` of the API also turn it on.
+
 ## 0.7.0
 
 - DataFlow updates itself from its releases on GitHub. It looks for a new release 1 minute after it starts in a window, and then each 6 hours. It installs the new version in the background, and a notification offers a reload of the window. The old version runs until the reload. The new command **DataFlow: Check for Updates** looks for a new version at once.

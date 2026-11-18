@@ -40,8 +40,8 @@ To use the side view, do these steps:
    - Click **Open Side View** in the DataFlow view.
 
    The side view opens beside the editor.
-3. Look at the toolbar of the side view. All lenses are on by default, but Change Ripple is off. When you turn on a lens, the side view also opens.
-4. To turn a lens on or off, click its switch in the toolbar: **Flow Lens**, **Logic Map**, **Hidden C++**, **Includes**, **Calls**, **Threads** or **Change Ripple**. In a narrow side view, the switches go to a second row of the toolbar.
+3. Look at the toolbar of the side view. Flow Lens, Hidden C++, Includes, Calls and Threads are on by default. Logic Map, Heat and Change Ripple are off. When you turn on a lens, the side view also opens.
+4. To turn a lens on or off, click its switch in the toolbar: **Flow Lens**, **Logic Map**, **Hidden C++**, **Includes**, **Calls**, **Threads**, **Heat** or **Change Ripple**. In a narrow side view, the switches go to a second row of the toolbar.
 5. Scroll the editor or the side view. The other view shows the same first line.
 6. To move the cursor of the editor to a line, click the line in the side view.
 7. Look at the lens bar under the toolbar. The lens bar has a group of controls for each lens that is on: Flow Lens during a trace, Logic Map and Hidden C++.
@@ -250,7 +250,7 @@ After you change a header of the trace, for example the header of the class, Dat
 
 Logic Map shows one path through the function. Each decision has an option. At the start, each decision has the option that runs the most lines, so the path goes past the early returns.
 
-1. Put the cursor in a function in the editor. Logic Map is on by default. To turn it off or on, click **Logic Map** in the toolbar of the side view, or run **DataFlow: Toggle Logic Map**. If the cursor is in the body of a lambda, Logic Map shows the path through the lambda.
+1. Put the cursor in a function in the editor. Logic Map is off by default. To turn it on or off, click **Logic Map** in the toolbar of the side view, or run **DataFlow: Toggle Logic Map**. **DataFlow: Why Does This Line Run** also turns it on. If the cursor is in the body of a lambda, Logic Map shows the path through the lambda.
 2. Look at the code. The lines of the steps of the path have a light background in the color of the path. A box shows an event on the path. A red dashed box and a red hint show a pointer that can be null.
 3. Move the cursor to a line in the editor, or click a line in the side view. If the path cannot reach the line, Logic Map selects the options that make the line run. Your other choices stay.
 4. Look at the path panel at the right of the code. If the panel is closed, click **Details**, then the tab **Logic Map**. The panel shows:
@@ -553,7 +553,7 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | **DataFlow: Trace Variable** | Ctrl+Alt+F | Starts Flow Lens on the variable or the data member at the cursor. |
 | **DataFlow: Clear Trace** | | Removes the trace of Flow Lens. |
 | **DataFlow: Toggle Logic Map** | | Turns Logic Map on or off. |
-| **DataFlow: Why Does This Line Run** | | Shows the decisions and the values that the line at the cursor needs. |
+| **DataFlow: Why Does This Line Run** | | Shows the decisions and the values that the line at the cursor needs. It turns on Logic Map. |
 | **DataFlow: Reset Logic Map Choices** | | Removes your choices in Logic Map. |
 | **DataFlow: Show Card at Cursor** | Ctrl+Alt+K | Shows the card of the item at the cursor, or closes it. |
 | **DataFlow: Toggle Hidden C++** | Ctrl+Alt+H | Turns Hidden C++ on or off. |

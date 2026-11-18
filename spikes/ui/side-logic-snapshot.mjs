@@ -175,8 +175,8 @@ try {
 	}
 	await sleep(4000); // the start of the engine
 
-	// the side view opens, and Logic Map is on: it is on by default, and the profile can keep it off. The Explorer
-	// closes, so the side view is wider
+	// the side view opens, and the script turns on Logic Map: it is off by default. The Explorer closes, so the side view
+	// is wider
 	await command('DataFlow: Open Side View');
 	for (let i = 0; i < 40 && !side; i++) { side = await findSide(); if (!side) { await sleep(250); } }
 	if (!side) { throw new Error('the side view was not found'); }

@@ -316,18 +316,18 @@ suite('Side view: indent guides', () => {
 });
 
 suite('Side view: lenses', () => {
-	test('All lenses but Change Ripple and Heat are on by default, and the lens that turns on last is the last lens', () => {
+	test('All lenses but Logic Map, Change Ripple and Heat are on by default, and the lens that turns on last is the last lens', () => {
 		const store = new StateStore();
-		// Change Ripple and Heat run git and more requests, so they start only on demand
-		assert.deepStrictEqual(store.state.lenses, { flow: true, logic: true, cost: true, review: false, includes: true, calls: true, threads: true, heat: false });
+		// Logic Map, Change Ripple and Heat start only on demand. Change Ripple and Heat run git and more requests
+		assert.deepStrictEqual(store.state.lenses, { flow: true, logic: false, cost: true, review: false, includes: true, calls: true, threads: true, heat: false });
 		assert.strictEqual(store.state.lastLens, undefined);
 		store.toggleLens('review');
 		assert.strictEqual(store.state.lastLens, 'review');
-		// a lens that turns off does not change the last lens
-		store.toggleLens('logic');
-		assert.deepStrictEqual([store.state.lenses.logic, store.state.lastLens], [false, 'review']);
 		store.toggleLens('logic');
 		assert.deepStrictEqual([store.state.lenses.logic, store.state.lastLens], [true, 'logic']);
+		// a lens that turns off does not change the last lens
+		store.toggleLens('review');
+		assert.deepStrictEqual([store.state.lenses.review, store.state.lastLens], [false, 'logic']);
 		store.dispose();
 	});
 });
