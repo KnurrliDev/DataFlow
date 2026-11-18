@@ -21,6 +21,7 @@ tsconfig.webview.json
 # the types of the API for other extensions
 !api/dataflow-api.d.ts
 **/.vscode-test.*
+*.vsix.sig
 .clang-format
 TODO.md
 open-editor.bat

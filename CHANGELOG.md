@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- DataFlow updates itself from its releases on GitHub. It looks for a new release 1 minute after it starts in a window, and then each 6 hours. It installs the new version in the background, and a notification offers a reload of the window. The old version runs until the reload. The new command **DataFlow: Check for Updates** looks for a new version at once.
+- The new setting `dataflow.update.mode` controls the updates: `auto` installs a new version, `ask` asks first, and `off` does not look for new versions. If the setting `extensions.autoUpdate` of VS Code is `false`, `auto` also asks first.
+- DataFlow installs only a package with a correct signature. `npm run package` writes the signature `<package>.sig` with a private key that is not in the repository, and each release has the package and its signature. The signature contains the version, so an old package cannot come back as a new version.
+
 ## 0.6.2
 
 - `highlight` and `show_line` get `reveal`. With `"reveal": "side"`, only the side view shows the place, and no text editor opens, also with a C++ text editor on the screen. With no side view, a new side view opens. Before, a C++ text editor on the screen also showed the place. Thus a click in an extension opened a text editor at one time, and only the side view at a different time. The API gets `reveal` in `HighlightArgs` and in `ShowLineArgs`, with the type `RevealMode`.

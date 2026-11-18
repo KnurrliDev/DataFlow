@@ -366,3 +366,20 @@ test('Change Ripple: the story, the wave, the cards with their notes and exits, 
 	assert.ok(r.changeView.changed.length > 0);
 	assert.equal(r.dirty, false);
 });
+
+test('Self-update: an installed package installs a signed release, runs it after the reload, and refuses an old package as a new version', { timeout: 600000 }, async () => {
+	const r = await run('update-snapshot.mjs');
+	const { old, next, replay } = r.versions;
+	const folder = (version) => `knurrlidev.dataflow-${version}`;
+	assert.deepEqual(r.before, [folder(old)]);
+	// the new version is installed by itself, and the old version runs until the reload
+	assert.deepEqual(r.offer, { text: `DataFlow ${next} is installed. Reload the window to use it.`, buttons: ['Reload', 'Release Notes'] });
+	assert.ok(r.afterInstall.folders.includes(folder(next)), JSON.stringify(r.afterInstall));
+	assert.equal(r.afterInstall.engine, folder(old));
+	assert.equal(r.afterReload.engine, folder(next));
+	// the package of the new version, with its signature, comes again as a higher version
+	assert.deepEqual(r.ask, { text: `DataFlow ${replay} is available. You have version ${next}.`, buttons: ['Update', 'Release Notes', 'Skip This Version'] });
+	assert.equal(r.refused.text, `DataFlow did not install version ${replay}, because the signature of the package is not correct.`);
+	assert.ok(!r.afterRefusal.folders.includes(folder(replay)), JSON.stringify(r.afterRefusal));
+	assert.equal(r.afterRefusal.engine, folder(next));
+});

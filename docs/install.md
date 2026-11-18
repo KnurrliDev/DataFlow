@@ -9,6 +9,7 @@ DataFlow is not in the Visual Studio Marketplace.
 
 - [Supported systems](#supported-systems)
 - [Install the VSIX](#install-the-vsix)
+- [Update DataFlow](#update-dataflow)
 - [Build from the source code](#build-from-the-source-code)
 - [Open your first project](#open-your-first-project)
 
@@ -30,9 +31,33 @@ You need VS Code 1.120 or later.
 
 4. Open a C++ project. [Open your first project](#open-your-first-project) tells how.
 
-To update DataFlow, install the VSIX of the new release. VS Code replaces the old version.
+After this install, DataFlow updates itself. See [Update DataFlow](#update-dataflow).
 
 Your project must build on the computer. The engine parses the code with the compile commands of the project, and it uses the headers of the compiler and of the libraries of the project, for example of Visual Studio and Qt.
+
+## Update DataFlow
+
+DataFlow gets new versions from its [releases on GitHub](https://github.com/KnurrliDev/DataFlow/releases):
+
+1. DataFlow looks for a new release 1 minute after it starts in a window, and then each 6 hours.
+2. DataFlow downloads the package of the new release and its signature. It installs the package only if the signature is correct.
+3. A notification tells you that the new version is installed. Click **Reload**. The old version runs until the window reloads.
+
+To look for a new version now, run **DataFlow: Check for Updates**.
+
+The setting `dataflow.update.mode` controls the updates:
+
+| Value | Function |
+| --- | --- |
+| `auto` | DataFlow installs a new version, and then offers a reload. This is the default value. |
+| `ask` | DataFlow asks before it downloads a new version. You can skip a version. |
+| `off` | DataFlow does not look for new versions. The command **DataFlow: Check for Updates** still works. |
+
+If the setting `extensions.autoUpdate` of VS Code is `false`, the value `auto` also asks first.
+
+For an update, DataFlow connects only to GitHub. It sends no data of your project.
+
+Versions 0.6.2 and earlier do not update themselves. To get the updates, install the VSIX of a later release one time. A window that runs DataFlow from the source code also does not update itself.
 
 ## Build from the source code
 

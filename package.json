@@ -108,6 +108,11 @@
         "category": "DataFlow"
       },
       {
+        "command": "dataflow.checkForUpdates",
+        "title": "Check for Updates",
+        "category": "DataFlow"
+      },
+      {
         "command": "dataflow.traceVariable",
         "title": "Trace Variable",
         "category": "DataFlow"
@@ -620,6 +625,22 @@
           "maximum": 65535,
           "scope": "application",
           "description": "The port of the MCP server on 127.0.0.1. If a different program uses the port, the server takes a free port. 0 always takes a free port."
+        },
+        "dataflow.update.mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "ask",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Install a new version, then offer a reload of the window.",
+            "Ask before DataFlow installs a new version.",
+            "Do not look for new versions. The command DataFlow: Check for Updates still works."
+          ],
+          "default": "auto",
+          "scope": "application",
+          "description": "How DataFlow gets a new version from its releases on GitHub. DataFlow installs only a package with a correct signature. If the setting extensions.autoUpdate is false, DataFlow asks first."
         }
       }
     },

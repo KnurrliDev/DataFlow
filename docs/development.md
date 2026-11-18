@@ -22,8 +22,9 @@ This document tells how to change, run, test and release the code of DataFlow. [
 | `src/mcp/` | The MCP server. `server.ts`: the protocol over HTTP. `tools.ts`: the tools and the prompts. `host.ts`: the data and the changes of the view. `manager.ts`: the start, the token and the setup. `bridge.ts`: the bridge for clients that start programs. `claude.ts`: the plugin and the settings of the connection to Claude Code. The logical blocks of a model have their data in `src/lenses/blocks.ts`. `layers.ts` keeps the layers of the model and the guided review for the next session. |
 | `src/review/` | Change Ripple: the diff against the target branch (`git.ts`), the target branches (`targets.ts`) and the ripple (`ripple.ts`). The guided review has its data in `guide.ts`. |
 | `src/api/` | The API for other extensions. `api.ts` makes an API object with its own host of the MCP tools for each extension, and it sends the events. |
+| `src/update/` | The updates of an installed package from the releases on GitHub. `release.ts`: the data of a release and the check of a signature. `updater.ts`: the checks, the download and the install. `start.ts`: the command, the timer and the notifications. |
 | `api/dataflow-api.d.ts` | The types of the API for other extensions. The tools of the MCP server give their data in these types, so the compiler finds a difference between the data and the file. The VSIX package contains the file. |
-| `scripts/` | `build-engine.mjs` builds the engine. `build-webviews.mjs` bundles the script of the side view with esbuild. `prepare-fixtures.mjs` prepares the fixture projects for the tests. `docs-screenshots.mjs` makes the screenshots of the documents. `package-vsix.mjs` makes the VSIX package. |
+| `scripts/` | `build-engine.mjs` builds the engine. `build-webviews.mjs` bundles the script of the side view with esbuild. `prepare-fixtures.mjs` prepares the fixture projects for the tests. `docs-screenshots.mjs` makes the screenshots of the documents. `package-vsix.mjs` makes the VSIX package and its signature. `sign-vsix.mjs` signs a package. `make-signing-key.mjs` makes the key pair of the signatures. |
 | `engine/` | The analysis engine in C++ |
 | `media/` | The icon of DataFlow |
 | `test/fixtures/` | A CMake project, a qmake project and an Unreal Engine 5 project for the tests. The test of Change Ripple uses a git copy of the CMake project. |
@@ -57,7 +58,7 @@ To open the second window without the debugger, run `open-editor.bat` in the roo
 
 1. Type `npm test`. This command runs the unit tests and the tests on the fixture projects.
 2. Type `npm run test:engine`. This command runs the protocol tests of the engine.
-3. Type `npm run compile`, then `npm run test:ui`. This command runs the tests of the side view. Each script of `spikes/ui/` starts the copy of VS Code and does work in the side view. It reads the elements of the webview through the remote debugging protocol. The tests take about 5 minutes. The script `side-clients-snapshot.mjs` also loads the small extension of `spikes/ui/client-extension/`. That extension uses the API for extensions as a second client of the side view.
+3. Type `npm run compile`, then `npm run test:ui`. This command runs the tests of the side view. Each script of `spikes/ui/` starts the copy of VS Code and does work in the side view. It reads the elements of the webview through the remote debugging protocol. The tests take about 5 minutes. The script `side-clients-snapshot.mjs` also loads the small extension of `spikes/ui/client-extension/`. That extension uses the API for extensions as a second client of the side view. The script `update-snapshot.mjs` makes VSIX packages, and it tests a real update with a release server on your computer.
 
 Do not use the mouse or the keyboard during the tests of the side view, because the scripts use the command palette.
 
@@ -99,6 +100,7 @@ A release is a VSIX package for Windows x64 on the GitHub page of the releases. 
    - It copies the engine and the builtin headers of Clang from `build/engine` into `engine/bin`. The extension looks for its engine in this folder.
    - It runs `vsce package --target win32-x64 --no-dependencies`. vsce compiles the extension, and it writes `dataflow-win32-x64-<version>.vsix` into the root folder of the repository.
    - It removes `engine/bin`. Without this step, the development host would use this copy of the engine, and not a new build in `build/engine`.
+   - It writes the signature `dataflow-win32-x64-<version>.vsix.sig` with the private key. See [The signing key](#the-signing-key).
 4. Install the VSIX in VS Code, and open a C++ project. Make sure that the status line of the side view shows **Engine: ready**.
 5. Commit the changes, and push them.
 6. Make a tag for the version, and push the tag:
@@ -108,11 +110,25 @@ A release is a VSIX package for Windows x64 on the GitHub page of the releases. 
    git push origin v0.1.0
    ```
 
-7. On GitHub, open the releases of the repository, and click **Draft a new release**. Select the tag, write the changes of `CHANGELOG.md` as the notes, and attach the VSIX file. Then click **Publish release**.
+7. On GitHub, open the releases of the repository, and click **Draft a new release**. Select the tag, write the changes of `CHANGELOG.md` as the notes, and attach the VSIX file and its `.sig` file. Then click **Publish release**.
+
+The installed versions of DataFlow look for the latest published release. They install it only if the tag is `v<version>`, and if the release has the two files with the names of step 3. A release with no `.sig` file does not update DataFlow.
 
 The package has no `node_modules` folder, because the extension has no runtime dependencies. If you add a runtime dependency, remove the option `--no-dependencies` from the script, or bundle the dependency.
 
 vsce changes the relative links of `README.md` in the package to links to the repository on GitHub, for example the links to the screenshots. Thus the files of these links must be on the branch `master` on GitHub.
+
+### The signing key
+
+The updater of DataFlow installs a package only with a correct signature. Thus a person who gets access to the GitHub account cannot send a package to the users of DataFlow through the updater.
+
+- The private key is the file `.dataflow\update-signing-key.pem` in your user folder. The environment variable `DATAFLOW_SIGNING_KEY` can name a different file. Do not put this file into the repository.
+- Keep a safe copy of the private key. Without the key, you cannot sign a release, and each user must install the next version by hand.
+- The public key is the value `UPDATE_PUBLIC_KEY` in `src/update/release.ts`.
+- `node scripts/make-signing-key.mjs` makes a new key pair, and writes the public key to the console. The script does not replace a key.
+- To change the key, put the new public key into `UPDATE_PUBLIC_KEY`, and sign this release with the old key. Sign the next releases with the new key.
+
+Without the private key, `npm run package` makes a package with no signature. The updater does not install such a package.
 
 ## Publisher ID
 

@@ -51,6 +51,7 @@ import { typeDefinitionLine } from './side/outline';
 import type { SideAction, SideCallListSite, SideGuide, SideStepHeat, SideViewState } from './side/protocol';
 import { CallGraphView, Lens, LogicPathState, StateStore } from './state/store';
 import { StatusBar } from './statusbar';
+import { startUpdater } from './update/start';
 
 // The exports of the extension: getApi for other extensions (api/dataflow-api.d.ts), and the objects that the
 // integration tests read. Code gets them from getExtension(...).exports.
@@ -3438,6 +3439,9 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 	const apiEvents = new ApiEvents(apiDeps);
 	context.subscriptions.push(apiEvents);
 	const getApi = (version: 1, options?: DataFlowApiOptions) => createApi(apiDeps, apiEvents, version, options);
+
+	// An installed package gets new versions from the releases on GitHub
+	startUpdater(context, log);
 	return { getApi, store, side, home, mcp, mcpHost, layers };
 }
 

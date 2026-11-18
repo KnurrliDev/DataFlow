@@ -13,5 +13,6 @@ test/fixtures/unreal/*/Saved/
 # example code from another project. it stays local and is not committed
 example/
 *.vsix
+*.vsix.sig
 # the copy of the engine for the VSIX package. scripts/package-vsix.mjs makes it and removes it
 engine/bin/

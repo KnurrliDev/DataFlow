@@ -31,7 +31,7 @@ DataFlow works on Windows 64-bit with VS Code 1.120 or later. Your project needs
 
 ## Quickstart with Claude Code
 
-1. Download the VSIX file of the [latest release](https://github.com/KnurrliDev/DataFlow/releases/latest). In VS Code, install it with **Extensions: Install from VSIX…**. [Install DataFlow](docs/install.md) also tells how to build DataFlow from the source code.
+1. Download the VSIX file of the [latest release](https://github.com/KnurrliDev/DataFlow/releases/latest). In VS Code, install it with **Extensions: Install from VSIX…**. After this install, DataFlow [updates itself](docs/install.md#update-dataflow) from the releases on GitHub. [Install DataFlow](docs/install.md) also tells how to build DataFlow from the source code.
 2. Install the Claude Code extension in VS Code.
 3. Open the folder of a C++ project with a compile database.
 4. Open a C++ file. DataFlow starts and asks if it can connect to Claude Code. Click **Connect**.

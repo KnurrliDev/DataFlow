@@ -549,6 +549,7 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | **DataFlow: Make Unreal Compile Database** | | Lets UnrealBuildTool make the compile database of an Unreal Engine 5 project. See [Unreal Engine projects](#unreal-engine-projects). |
 | **DataFlow: Restart Engine** | | Starts the engine again. |
 | **DataFlow: Show Log** | | Shows the log of DataFlow. |
+| **DataFlow: Check for Updates** | | Looks for a new release of DataFlow on GitHub. See [Update DataFlow](install.md#update-dataflow). |
 | **DataFlow: Trace Variable** | Ctrl+Alt+F | Starts Flow Lens on the variable or the data member at the cursor. |
 | **DataFlow: Clear Trace** | | Removes the trace of Flow Lens. |
 | **DataFlow: Toggle Logic Map** | | Turns Logic Map on or off. |
@@ -609,3 +610,4 @@ Run the commands from the Command Palette (Ctrl+Shift+P). The keys work when the
 | `dataflow.ripple.maxDepth` | `2` | The number of caller levels that Change Ripple analyzes after a return value, from 0 to 5. |
 | `dataflow.mcp.enabled` | `false` | Start the MCP server of DataFlow when the extension starts. The agent mode of VS Code starts the server when it needs it. See [Use the MCP tools](tools.md). |
 | `dataflow.mcp.port` | `47321` | The port of the MCP server on 127.0.0.1, from 0 to 65535. If a different program uses the port, the server takes a free port. `0` always takes a free port. |
+| `dataflow.update.mode` | `auto` | How DataFlow gets a new version from its releases on GitHub: `auto` installs it and offers a reload, `ask` asks first, and `off` does not look for new versions. See [Update DataFlow](install.md#update-dataflow). |
