@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - DataFlow updates itself from its releases on GitHub. It looks for a new release 1 minute after it starts in a window, and then each 6 hours. It installs the new version in the background, and a notification offers a reload of the window. The old version runs until the reload. The new command **DataFlow: Check for Updates** looks for a new version at once.
 - The new setting `dataflow.update.mode` controls the updates: `auto` installs a new version, `ask` asks first, and `off` does not look for new versions. If the setting `extensions.autoUpdate` of VS Code is `false`, `auto` also asks first.
