@@ -319,7 +319,7 @@ namespace DataFlow {
     _srv.isInitialized_ = true;
 
     return JsonObject{
-        {"name", "dataflow-engine"},   {"version", "0.7.0"},          {"clang", clang::getClangFullVersion()},
+        {"name", "dataflow-engine"},   {"version", "0.8.0"},          {"clang", clang::getClangFullVersion()},
         {"databases", std::move(dbs)}, {"threads", int64_t(threads)}, {"cacheSize", int64_t(cache_size)},
         {"loadMs", elapsed_ms(start)}};
   }  // handle_initialize
