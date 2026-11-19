@@ -2351,6 +2351,117 @@ test('a function with an error gets no analysis of the optional accesses, becaus
 	}
 });
 
+test('a destructor of a class with a data member of a type with no definition does not stop the engine', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-undefined-'));
+	const file = path.join(dir, 'holder.cpp');
+	writeFileSync(file, [
+		'#include <string>',
+		'struct Missing;',
+		'template <class T> struct Undefined;',
+		'struct Holder {',
+		'  Missing value_;', // 5: the cfg of ~Holder read the destructor of Missing and stopped the engine
+		'  Undefined<int> box_;',
+		'  std::string name_;',
+		'  ~Holder();',
+		'};',
+		'Holder::~Holder() {',
+		'  std::string last = name_;',
+		'}',
+		'struct Fine {',
+		'  std::string text_;',
+		'  ~Fine() {}',
+		'};',
+	].join('\n') + '\n');
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file, arguments: ['clang++', '-std=c++20', '-c', file] }]));
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 1, cacheSize: 2 })).error, undefined);
+		const cost = await own.send('dataflow/cost', { file, minCopyBytes: 16 });
+		assert.equal(cost.error, undefined, JSON.stringify(cost.error));
+		assert.equal(cost.result.errorCount, 2, cost.result.errors.join('\n'));
+		// the body of the destructor keeps its items: the copy of name_, and the destructor of last at the brace
+		assert.deepEqual(cost.result.items.map((i) => `${i.line} ${i.kind}`), ['11 copy', '12 destructor']);
+
+		// the cfg of ~Holder has no destructors of the data members. ~Fine keeps the destructor of text_
+		const others = async (name) => {
+			const res = await own.send('dataflow/cfg', { file, function: name });
+			assert.equal(res.error, undefined, JSON.stringify(res.error));
+			return res.result.cfg.blocks.flatMap((b) => b.elements).filter((e) => e.kind === 'other').length;
+		};
+		assert.deepEqual([await others('~Holder'), await others('~Fine')], [0, 1]);
+
+		// the optional analysis of clang builds the same cfg, so it does not run on ~Holder. flow and calls still work
+		const flow = await own.send('dataflow/flow', { file, function: '~Holder', readFunctions: [] });
+		assert.equal(flow.error, undefined, JSON.stringify(flow.error));
+		const access = await own.send('dataflow/optionalAccess', { file, function: '~Holder' });
+		assert.equal(access.error?.message, 'the function has an error, so the optional analysis did not run');
+		const calls = await own.send('dataflow/calls', { file, eventFunctions: [], asyncFunctions: [], roots: [dir] });
+		assert.equal(calls.error, undefined, JSON.stringify(calls.error));
+		assert.equal(own.proc.exitCode, null);
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('a missing include is a usual error: the parse, the scan of the call graph and the check of forward declarations instantiate the templates after it', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-missing-'));
+	const write = (name, lines) => {
+		const file = path.join(dir, name);
+		writeFileSync(file, lines.join('\n') + '\n');
+		return file;
+	};
+	write('present.h', ['#pragma once', 'inline int present_value() { return 1; }']);
+	// moc files that the build did not make yet. 25 errors are more than the default limit of clang, and the error at
+	// the limit is also fatal
+	const missing = Array.from({ length: 25 }, (_, i) => `#include "moc_missing_${i + 1}.cpp"`);
+	const main = write('main.cpp', [
+		...missing,
+		'#include "present.h"', // 26
+		'#include <vector>',
+		'template <class T>',
+		'struct Box {',
+		'  T value_{};',
+		'  T get() const { return value_; }',
+		'};',
+		'int read_box() {',
+		'  Box<int> box;',
+		'  std::vector<int> items;',
+		'  items.push_back(present_value());',
+		'  return box.get() + int(items.size());',
+		'}',
+		'int caller() { return read_box(); }',
+	]);
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file: main, arguments: ['clang++', '-std=c++20', '-c', main] }]));
+	const own = startEngine(env('DATAFLOW_ENGINE'));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 1, cacheSize: 2 })).error, undefined);
+		// each missing include is one error. no false error comes after them, for example in <type_traits>
+		const fns = await own.send('dataflow/functions', { file: main });
+		assert.equal(fns.error, undefined, JSON.stringify(fns.error));
+		assert.equal(fns.result.errorCount, 25, fns.result.errors.join('\n'));
+		assert.ok(fns.result.errors.every((e) => e.endsWith('file not found')), fns.result.errors.join('\n'));
+
+		// the scan of the call graph instantiates Box<int>, so read_box calls Box::get
+		const scan = await own.send('dataflow/callGraph', { roots: [dir], frameFunctions: [] });
+		assert.equal(scan.error, undefined, JSON.stringify(scan.error));
+		const metrics = await own.send('dataflow/metrics', { file: main, frameFunctions: [], testFolders: [], publicFolders: [] });
+		assert.equal(metrics.error, undefined, JSON.stringify(metrics.error));
+		assert.deepEqual(Object.fromEntries(metrics.result.functions.map((f) => [f.qualifiedName, f.reach?.callers])),
+			{ 'Box::get': 1, read_box: 1, caller: 0 });
+
+		// the check with no include of present.h finds the use of present_value after the missing includes
+		const check = await own.send('dataflow/checkForward', { file: main, line: 26, text: '' });
+		assert.equal(check.error, undefined, JSON.stringify(check.error));
+		assert.equal(check.result.errorCount, 26, JSON.stringify(check.result.errors));
+	} finally {
+		await own.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('gives the threads and the shared data of a file: starts, joins, locks, order and conditions', async () => {
 	const root = path.join(repo, 'test/fixtures/battery');
 	const res = await engine.send('dataflow/threads', { file: fixture, asyncFunctions: ['tf::Executor::async'], roots: [root] });

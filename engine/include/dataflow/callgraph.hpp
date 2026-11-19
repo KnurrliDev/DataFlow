@@ -1006,6 +1006,14 @@ namespace DataFlow {
       std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance& _ci, llvm::StringRef) override {
         return std::make_unique<GraphConsumer>(_ci, scope_, claims_, unit_, out_, isParsed_, names_);
       }  // CreateASTConsumer
+
+     protected:
+      // a missing include is a usual error, as in the parse of the requests. else the calls into templates after it
+      // are lost
+      bool BeginInvocation(clang::CompilerInstance& _ci) override {
+        _ci.getDiagnostics().setFatalsAsError(true);
+        return clang::ASTFrontendAction::BeginInvocation(_ci);
+      }  // BeginInvocation
     };  // GraphAction
 
     // a parse with the unsaved text of the open files. the parser asks the consumer whether it skips a function body

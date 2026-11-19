@@ -1397,6 +1397,16 @@ namespace DataFlow {
   namespace Detail {
     constexpr size_t max_check_errors = 20;
 
+    // a parse with no code generation. a missing include is a usual error, as in the parse of the requests, so the
+    // errors after it show
+    class CheckAction : public clang::SyntaxOnlyAction {
+     protected:
+      bool BeginInvocation(clang::CompilerInstance& _ci) override {
+        _ci.getDiagnostics().setFatalsAsError(true);
+        return clang::SyntaxOnlyAction::BeginInvocation(_ci);
+      }  // BeginInvocation
+    };  // CheckAction
+
     // a parse with no code generation, with the unsaved text of the open files
     class CheckFactory : public clang::tooling::FrontendActionFactory {
       const std::vector<Buffer>& buffers_;
@@ -1404,7 +1414,7 @@ namespace DataFlow {
      public:
       explicit CheckFactory(const std::vector<Buffer>& _buffers) : buffers_(_buffers) {}
 
-      std::unique_ptr<clang::FrontendAction> create() override { return std::make_unique<clang::SyntaxOnlyAction>(); }
+      std::unique_ptr<clang::FrontendAction> create() override { return std::make_unique<CheckAction>(); }
 
       bool runInvocation(std::shared_ptr<clang::CompilerInvocation> _inv, clang::FileManager* _files,
                          std::shared_ptr<clang::PCHContainerOperations> _pch,

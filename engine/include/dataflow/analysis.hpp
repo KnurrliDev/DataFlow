@@ -143,10 +143,32 @@ namespace DataFlow {
       }
     };  // ErrorFinder
 
+    // true if a base class or a data member of the class has a class type with no definition, for example a data
+    // member of a type with only a forward declaration. code with errors can have such a type. a class with no
+    // definition also gives true
+    [[nodiscard]] inline bool has_undefined_part(const clang::CXXRecordDecl& _rd, const clang::ASTContext& _ctx) {
+      if (!_rd.hasDefinition()) return true;
+      const auto is_undefined = [&](const clang::QualType _t) -> bool {
+        const clang::CXXRecordDecl* rd = _ctx.getBaseElementType(_t)->getAsCXXRecordDecl();
+        return rd && !rd->hasDefinition();
+      };
+      for (const clang::CXXBaseSpecifier& b : _rd.vbases())
+        if (is_undefined(b.getType())) return true;
+      for (const clang::CXXBaseSpecifier& b : _rd.bases())
+        if (is_undefined(b.getType())) return true;
+      for (const clang::FieldDecl* f : _rd.fields())
+        if (is_undefined(f->getType())) return true;
+      return false;
+    }  // has_undefined_part
+
     // true if the function has an expression with an error. the dataflow framework of clang can stop the engine on
-    // such an expression, for example on a check of a std::optional with an error after it
+    // such an expression, for example on a check of a std::optional with an error after it. a destructor of a class
+    // with a part of a type with no definition also gives true. the cfg of the framework stops the engine on it
     [[nodiscard]] inline bool has_errors(const clang::FunctionDecl& _fn) {
       if (_fn.isInvalidDecl()) return true;
+      if (const auto* dtor = llvm::dyn_cast<clang::CXXDestructorDecl>(&_fn);
+          dtor && has_undefined_part(*dtor->getParent(), _fn.getASTContext()))
+        return true;
       ErrorFinder finder;
       if (const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(&_fn))
         for (const clang::CXXCtorInitializer* init : ctor->inits())
@@ -220,7 +242,13 @@ namespace DataFlow {
       if (!s->getInc()) s->setInc(placeholder_ref());
     }
 
-    std::unique_ptr<clang::CFG> out = clang::CFG::buildCFG(_decl, _body, &_ctx, _opts);
+    // for the implicit destructors of a destructor, clang reads the destructor of each base class and data member. a
+    // type with no definition stops the engine there. thus such a cfg gets no declaration, and it has no implicit
+    // destructors of the bases and the data members
+    const auto* dtor = llvm::dyn_cast_or_null<clang::CXXDestructorDecl>(_decl);
+    const clang::Decl* decl =
+        dtor && _opts.AddImplicitDtors && Detail::has_undefined_part(*dtor->getParent(), _ctx) ? nullptr : _decl;
+    std::unique_ptr<clang::CFG> out = clang::CFG::buildCFG(decl, _body, &_ctx, _opts);
 
     // the ast gets its nodes back. the cfg keeps the placeholders, and the context keeps their memory
     for (const Saved& v : saved) {

@@ -274,6 +274,11 @@ namespace DataFlow {
     // instantiates them again at its end, for example 7 s after each edit of a file with the headers of clang
     if (!args.empty())
       args.insert(args.begin() + 1, {std::string("-Xclang"), std::string("-fpch-instantiate-templates")});
+    // no limit for the errors. at the limit, clang gives a fatal error and stops the instantiation of templates, for
+    // example after 20 includes of moc files that the build did not make yet
+    if (!args.empty())
+      args.insert(args.begin() + 1,
+                  {std::string("-Xclang"), std::string("-ferror-limit"), std::string("-Xclang"), std::string("0")});
     if (_ctx && !args.empty()) {
       const std::string prefix = context_path(*_ctx, _file);
       if (is_cl)

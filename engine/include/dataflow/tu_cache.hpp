@@ -265,6 +265,9 @@ namespace DataFlow {
       _e.diags_     = std::make_unique<ErrorCollector>();
       _e.diag_opts_ = std::make_shared<clang::DiagnosticOptions>();
       auto diags    = clang::CompilerInstance::createDiagnostics(*fs, *_e.diag_opts_, _e.diags_.get(), false);
+      // a fatal error, for example a missing include, is a usual error. after a fatal error, clang stops the
+      // instantiation of templates. then the rest of the parse gets false errors and types with no definition
+      diags->setFatalsAsError(true);
 
       constexpr bool preambles_in_memory     = true;
       constexpr uint32_t preamble_after      = 1;     // build the preamble with the first parse
