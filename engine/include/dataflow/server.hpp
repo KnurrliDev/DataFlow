@@ -3,6 +3,7 @@
 #include <dataflow/callgraph.hpp>
 #include <dataflow/calls.hpp>
 #include <dataflow/cost.hpp>
+#include <dataflow/crash.hpp>
 #include <dataflow/definition.hpp>
 #include <dataflow/flow.hpp>
 #include <dataflow/includers.hpp>
@@ -78,15 +79,20 @@ namespace DataFlow {
         uint32_t running_ = 0;
         bool isDone_      = false;
       };
-      const auto helpers = std::make_shared<Helpers>();
+      const auto helpers           = std::make_shared<Helpers>();
+      // a crash in a helper reports the request of the calling thread
+      const Detail::CrashLine line = Detail::crash_line;
       for (uint32_t i = 1; i < _count; ++i)
-        post([helpers, &_fn]() {
+        post([helpers, &_fn, line]() {
           {
             const std::lock_guard lock(helpers->mutex_);
             if (helpers->isDone_) return;
             ++helpers->running_;
           }
-          _fn();
+          {
+            const RequestScope crash_report(line);
+            _fn();
+          }
           {
             const std::lock_guard lock(helpers->mutex_);
             --helpers->running_;
@@ -328,6 +334,7 @@ namespace DataFlow {
     }
 
     _srv.pool_->post([&_srv, id = _id, key, file = _file, work = std::move(_work), cancelled]() {
+      const RequestScope crash_report(id);
       const auto finish = [&](std::expected<Json, std::string>&& _res) {
         {
           const std::lock_guard lock(_srv.cancel_mutex_);
@@ -413,6 +420,7 @@ namespace DataFlow {
 
     _srv.pool_->post([&_srv, id = _id, key, roots = Detail::get_strings(_params, "roots"),
                       names = Detail::get_strings(_params, "frameFunctions"), cancelled]() {
+      const RequestScope crash_report(id);
       const auto start = std::chrono::steady_clock::now();
       std::shared_ptr<const ProjectGraph> old;
       {
@@ -609,6 +617,15 @@ namespace DataFlow {
     const auto file = Detail::get_string(_params, "file");
     if (!file) return reply(std::unexpected(_method + " needs a file"));
 
+    // a test of the report of a crash. see is_test_crash
+    if (is_test_crash(_method, *file)) {
+      _srv.pool_->post([id = *_id]() {
+        const RequestScope crash_report(id);
+        crash_now();
+      });
+      return;
+    }
+
     if (_method == "dataflow/functions")
       return post_file_request(_srv, *_id, *file, [](clang::ASTUnit& _ast) -> std::expected<JsonObject, std::string> {
         JsonArray out;
@@ -628,6 +645,7 @@ namespace DataFlow {
       const auto text = Detail::get_string(&params, "text");
       if (!line || *line < 1 || !text) return reply(std::unexpected("dataflow/checkForward needs a line and a text"));
       _srv.pool_->post([&srv = _srv, id = *_id, file = *file, line = uint32_t(*line), text = *text]() {
+        const RequestScope crash_report(id);
         const std::optional<FileContext> ctx = Detail::context_of(srv, file);
         const auto cmd                       = get_command(srv.dbs_, file, srv.resource_dir_, ctx ? &*ctx : nullptr);
         if (!cmd) return Protocol::reply_error(id, Protocol::ec_internal, cmd.error());
@@ -649,6 +667,7 @@ namespace DataFlow {
     // or of the directives of an open file scans again. roots: the project folders
     if (_method == "dataflow/includers") {
       _srv.pool_->post([&srv = _srv, id = *_id, file = *file, roots = Detail::get_strings(&params, "roots")]() {
+        const RequestScope crash_report(id);
         const auto start = std::chrono::steady_clock::now();
         std::shared_ptr<const UnitIndex> index;
         bool isScanned = false;

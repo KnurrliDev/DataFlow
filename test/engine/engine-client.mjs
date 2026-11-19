@@ -1,8 +1,9 @@
 // A small JSON-RPC client for dataflow-engine, for the engine tests.
 import { spawn } from 'node:child_process';
 
-export function startEngine(exe) {
-	const proc = spawn(exe, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+// env: more environment variables for the engine, for example DATAFLOW_TEST_CRASH
+export function startEngine(exe, env = {}) {
+	const proc = spawn(exe, [], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env } });
 	const waiters = new Map();
 	const notifications = [];
 	let buf = Buffer.alloc(0);

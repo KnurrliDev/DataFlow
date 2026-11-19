@@ -1,7 +1,8 @@
 import { spawn } from 'child_process';
 import * as vscode from 'vscode';
 import type { SideOutlineData, SideOutlinePlace } from '../side/protocol';
-import { RpcConnection } from './rpc';
+import { CrashMemory, describeRequest, EngineRequest, fileBlockMessage, requestBlockMessage, requestOf, restartsBefore } from './crashes';
+import { RpcConnection, RpcRequestError } from './rpc';
 import type { TokenLegend, TokenLine } from './tokens';
 
 // The types of the engine protocol. Lines and columns start at 1.
@@ -776,6 +777,13 @@ export interface EngineStatus {
 
 export type EngineState = 'stopped' | 'starting' | 'ready' | 'failed';
 
+// A request or a file that the client does not send to the engine again, because the engine stopped on it
+export interface EngineBlock {
+	request?: EngineRequest;
+	file?: string;
+	message: string;
+}
+
 // The context of a file that a source file includes as a part of its code, for example an .inc file of a unity build:
 // the source file and the line of the #include. The engine parses the file after the lines of the source file before
 // the #include
@@ -820,6 +828,10 @@ export class EngineClient implements vscode.Disposable {
 	private readonly contexts = new Map<string, IncludeContext>();
 	// The try of a context for each file with parse errors: true if the file got a context. One try for each file
 	private readonly contextTries = new Map<string, Promise<boolean>>();
+	// The requests in flight, and the requests that stopped the engine. They stay over the restarts
+	private readonly crashes = new CrashMemory(pathKey);
+	// The time when the engine got ready, for the count of the restarts
+	private readyAt?: number;
 
 	private readonly stateEmitter = new vscode.EventEmitter<EngineState>();
 	readonly onDidChangeState = this.stateEmitter.event;
@@ -831,6 +843,9 @@ export class EngineClient implements vscode.Disposable {
 	// The progress of the scan of the call graph, one time each second
 	private readonly progressEmitter = new vscode.EventEmitter<EngineProgress>();
 	readonly onProgress = this.progressEmitter.event;
+	// A request or a file that the client does not send again, because the engine stopped on it
+	private readonly blockEmitter = new vscode.EventEmitter<EngineBlock>();
+	readonly onDidBlock = this.blockEmitter.event;
 
 	constructor(private readonly options: EngineOptions) {}
 
@@ -846,9 +861,14 @@ export class EngineClient implements vscode.Disposable {
 		this.setState('starting');
 		const { log } = this.options;
 		const proc = spawn(this.options.enginePath, [], { stdio: 'pipe', windowsHide: true });
-		proc.stderr.on('data', (data: Buffer) => log.warn(`engine: ${data.toString().trimEnd()}`));
+		proc.stderr.on('data', (data: Buffer) => {
+			const text = data.toString();
+			log.warn(`engine: ${text.trimEnd()}`);
+			this.crashes.onStderr(text);
+		});
 		proc.on('error', (error) => log.error(`The engine did not start: ${error.message}`));
-		proc.on('exit', (code) => this.onExit(code));
+		// close comes after the last text of the engine on stderr, for example the line of a crash
+		proc.on('close', (code) => this.onExit(code));
 
 		this.rpc = new RpcConnection(proc);
 		this.rpc.onNotification((n) => {
@@ -880,6 +900,7 @@ export class EngineClient implements vscode.Disposable {
 			for (const { file, unit, line } of this.contexts.values()) {
 				this.rpc.notify('dataflow/context', { file, unit, line });
 			}
+			this.readyAt = Date.now();
 			this.setState('ready');
 			return result;
 		} catch (error) {
@@ -1060,6 +1081,7 @@ export class EngineClient implements vscode.Disposable {
 		this.statusEmitter.dispose();
 		this.contextEmitter.dispose();
 		this.progressEmitter.dispose();
+		this.blockEmitter.dispose();
 	}
 
 	// A request for a file. If the parse of the file alone has errors, and the file is a part of a source file, for
@@ -1082,11 +1104,30 @@ export class EngineClient implements vscode.Disposable {
 		return hasContext && !token?.isCancellationRequested ? this.send<T>(method, params, token) : res;
 	}
 
+	// Sends a request, if it did not stop the engine before. A reply ends the request. At a stop of the engine, the
+	// request stays in flight for onExit
 	private send<T>(method: string, params: unknown, token?: vscode.CancellationToken): Promise<T> {
 		if (!this.rpc || this.state !== 'ready') {
 			return Promise.reject(new Error('The engine is not ready.'));
 		}
-		return this.rpc.request<T>(method, params, token);
+		const request = requestOf(method, params);
+		const reason = this.crashes.reasonToSkip(request);
+		if (reason) {
+			return Promise.reject(new Error(reason));
+		}
+		let id = 0;
+		return this.rpc.request<T>(method, params, token, (sent) => {
+			id = sent;
+			this.crashes.begin(sent, request);
+		}).then((res) => {
+			this.crashes.end(id);
+			return res;
+		}, (error: unknown) => {
+			if (error instanceof RpcRequestError) {
+				this.crashes.end(id);
+			}
+			throw error;
+		});
 	}
 
 	// Gives a file the context of the source file that includes it, after a parse of the file alone with errors. One try
@@ -1119,8 +1160,37 @@ export class EngineClient implements vscode.Disposable {
 		if (this.isStopping) {
 			return;
 		}
-		this.options.log.error(`The engine stopped with exit code ${code}.`);
+		const { log } = this.options;
+		log.error(`The engine stopped with exit code ${code}.`);
+
+		// the request that stopped the engine, and the requests and the files that the client does not send again
+		const stop = this.crashes.onStop();
+		if (stop.culprit) {
+			log.error(`The engine stopped in ${describeRequest(stop.culprit)}.`);
+		} else if (stop.inFlight.length > 0) {
+			log.error(`The engine did not tell the request of the stop. In flight: ${stop.inFlight.map(describeRequest).join(', ')}.`);
+		}
+		const blockedFiles = new Set(stop.blockedFiles.map(pathKey));
+		for (const request of stop.blocked) {
+			const message = requestBlockMessage(request);
+			log.warn(message);
+			// a file that is blocked now gets one message for all of its requests
+			if (!request.file || !blockedFiles.has(pathKey(request.file))) {
+				this.blockEmitter.fire({ request, message });
+			}
+		}
+		for (const file of stop.blockedFiles) {
+			const message = fileBlockMessage(file);
+			log.warn(message);
+			this.blockEmitter.fire({ file, message });
+		}
+
 		this.setState('failed');
+		const restarts = restartsBefore(this.restarts, this.readyAt, Date.now());
+		if (restarts < this.restarts) {
+			log.info('The engine ran for 5 minutes or more with no stop, so the count of the restarts starts again.');
+		}
+		this.restarts = restarts;
 		if (wasReady && this.restarts < MAX_RESTARTS) {
 			this.restarts++;
 			this.options.log.info(`Restart ${this.restarts} of ${MAX_RESTARTS}.`);

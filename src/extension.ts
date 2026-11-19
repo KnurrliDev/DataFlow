@@ -366,6 +366,16 @@ export function activate(context: vscode.ExtensionContext): DataFlowInternals {
 		engine = client;
 		client.onDidChangeState((state) => store.update({ engine: state }));
 		client.onDidSetContext(onDidSetContext);
+		// a request or a file that stopped the engine. The client does not send it again, and the user gets one message
+		client.onDidBlock((block) => {
+			void vscode.window.showWarningMessage(`DataFlow: ${block.message}`, 'Restart Engine', 'Show Log').then((choice) => {
+				if (choice === 'Restart Engine') {
+					void vscode.commands.executeCommand('dataflow.restartEngine');
+				} else if (choice === 'Show Log') {
+					log.show();
+				}
+			});
+		});
 		client.onStatus((status) => {
 			const parsing = store.state.parsing.filter((f) => f !== status.file);
 			// the end of a parse goes to the event onDidParse of the API

@@ -2405,6 +2405,29 @@ test('a destructor of a class with a data member of a type with no definition do
 	}
 });
 
+test('a crash in a request writes the id of the request to stderr, and then the engine stops', async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-crash-'));
+	const file = path.join(dir, 'crash.cpp');
+	writeFileSync(file, 'int df_crash() { return 1; }\n');
+	const db = path.join(dir, 'compile_commands.json');
+	writeFileSync(db, JSON.stringify([{ directory: dir, file, arguments: ['clang++', '-std=c++20', '-c', file] }]));
+	// the engine stops with an access violation in each request dataflow/cost for crash.cpp
+	const own = startEngine(env('DATAFLOW_ENGINE'), { DATAFLOW_TEST_CRASH: 'dataflow/cost', DATAFLOW_TEST_CRASH_FILE: 'crash.cpp' });
+	const closed = new Promise((resolve) => own.proc.on('close', (code, signal) => resolve({ code, signal })));
+	try {
+		assert.equal((await own.send('initialize', { compileCommands: [db], maxThreads: 2, cacheSize: 2 })).error, undefined);
+		const fns = await own.send('dataflow/functions', { file });
+		assert.equal(fns.error, undefined, JSON.stringify(fns.error));
+		const { id } = own.request('dataflow/cost', { file, minCopyBytes: 16 });
+		const { code, signal } = await closed;
+		assert.ok(code !== 0 || signal, `code ${code}, signal ${signal}`);
+		assert.match(own.getStderr(), new RegExp(`^dataflow-engine: the engine stopped in request ${id}$`, 'm'));
+	} finally {
+		if (own.proc.exitCode === null && own.proc.signalCode === null) own.proc.kill();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('a missing include is a usual error: the parse, the scan of the call graph and the check of forward declarations instantiate the templates after it', async () => {
 	const dir = mkdtempSync(path.join(os.tmpdir(), 'dataflow-missing-'));
 	const write = (name, lines) => {

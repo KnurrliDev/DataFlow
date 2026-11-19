@@ -35,10 +35,12 @@ export class RpcConnection implements vscode.Disposable {
 		proc.on('exit', () => this.rejectAll(new Error('The engine stopped.')));
 	}
 
-	request<T>(method: string, params: unknown, token?: vscode.CancellationToken): Promise<T> {
+	// onSend gets the id of the request before the engine gets the request
+	request<T>(method: string, params: unknown, token?: vscode.CancellationToken, onSend?: (id: number) => void): Promise<T> {
 		const id = ++this.nextId;
 		return new Promise<T>((resolve, reject) => {
 			this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+			onSend?.(id);
 			this.write({ jsonrpc: '2.0', id, method, params });
 			token?.onCancellationRequested(() => this.notify('$/cancelRequest', { id }));
 		});

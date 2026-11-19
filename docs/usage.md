@@ -60,6 +60,8 @@ To use the side view, do these steps:
 
 The status line of the side view shows the state of the engine and the compile databases. It also has buttons to select a project, select the compile database, show the log and restart the engine.
 
+If a crash stops the engine, DataFlow starts it again, up to 3 times. After 5 minutes with no stop, the count starts again. The engine tells which request it ran at the crash. DataFlow does not send this request for this file again, and a warning tells you the lens and the file. The other lenses and the other files continue to work. If 2 requests of a file stop the engine, DataFlow does not send requests for that file again. To try again, run **DataFlow: Restart Engine**.
+
 ### Go to a definition
 
 To go to the definition of a name in the side view, hold Ctrl and click the name. On macOS, use Cmd. If the setting `editor.multiCursorModifier` is `ctrlCmd`, use Alt, as in the text editor.
